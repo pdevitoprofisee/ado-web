@@ -12,7 +12,7 @@ import { startInstance } from '../start'
 // RPC id — so a curl-based "it 403'd" proves nothing. The guard is the level at
 // which these rules are actually decided, so that is where they are exercised.
 
-const ORIGIN = 'http://127.0.0.1:3000'
+const ORIGIN = 'http://127.0.0.1:7331'
 const PASSED = Symbol('handler reached')
 
 type Middleware = { options: { server: (ctx: unknown) => unknown } }
@@ -44,7 +44,7 @@ async function runChain(
 function browserCall(headers: Record<string, string> = {}): Request {
   return new Request(`${ORIGIN}/_serverFn/x`, {
     headers: {
-      host: '127.0.0.1:3000',
+      host: '127.0.0.1:7331',
       'sec-fetch-site': 'same-origin',
       [LAUNCH_TOKEN_HEADER]: currentLaunchToken(),
       ...headers,
@@ -64,7 +64,7 @@ describe('the chain is wired', () => {
     expect((await runChain(foreign) as Response).status).toBe(403)
 
     const noOriginAtAll = new Request(`${ORIGIN}/_serverFn/x`, {
-      headers: { host: '127.0.0.1:3000', [LAUNCH_TOKEN_HEADER]: currentLaunchToken() },
+      headers: { host: '127.0.0.1:7331', [LAUNCH_TOKEN_HEADER]: currentLaunchToken() },
     })
     expect((await runChain(noOriginAtAll) as Response).status).toBe(403)
   })
@@ -89,7 +89,7 @@ describe('Host validation', () => {
   it('rejects a request with no Host header', async () => {
     // srvx fills request.url from the socket's local address when Host is
     // absent, so request.url here is a perfectly innocent
-    // http://127.0.0.1:3000/… — the raw header is the only thing that tells
+    // http://127.0.0.1:7331/… — the raw header is the only thing that tells
     // the truth.
     const request = new Request(`${ORIGIN}/_serverFn/x`, {
       headers: {
@@ -112,7 +112,7 @@ describe('Host validation', () => {
   it('accepts every loopback spelling, on any port', async () => {
     // localhost:<random port> is what the prerenderer sends: `pnpm build`
     // drives the app through a Vite preview server on port 0.
-    for (const host of ['127.0.0.1:3000', 'localhost:52341', 'LocalHost', '[::1]:3000']) {
+    for (const host of ['127.0.0.1:7331', 'localhost:52341', 'LocalHost', '[::1]:7331']) {
       const request = new Request(`${ORIGIN}/`, { headers: { host, 'sec-fetch-site': 'same-origin' } })
       expect(await runChain(request, { pathname: '/', handlerType: 'router' }), host).toBe(PASSED)
     }
@@ -122,7 +122,7 @@ describe('Host validation', () => {
 describe('launch token', () => {
   it('rejects a server function call with no token', async () => {
     const request = new Request(`${ORIGIN}/_serverFn/x`, {
-      headers: { host: '127.0.0.1:3000', 'sec-fetch-site': 'same-origin' },
+      headers: { host: '127.0.0.1:7331', 'sec-fetch-site': 'same-origin' },
     })
 
     expect((await runChain(request) as Response).status).toBe(403)
@@ -139,7 +139,7 @@ describe('launch token', () => {
 
   it('does not require a token for the document request', async () => {
     // The shell has to load before anything can fetch a token.
-    const request = new Request(`${ORIGIN}/`, { headers: { host: '127.0.0.1:3000' } })
+    const request = new Request(`${ORIGIN}/`, { headers: { host: '127.0.0.1:7331' } })
     expect(await runChain(request, { pathname: '/', handlerType: 'router' })).toBe(PASSED)
   })
 
@@ -156,7 +156,7 @@ describe('launch token', () => {
 describe('the bootstrap', () => {
   it('hands the token to a same-origin browser fetch and forbids caching', async () => {
     const request = new Request(`${ORIGIN}${LAUNCH_TOKEN_PATH}`, {
-      headers: { host: '127.0.0.1:3000', 'sec-fetch-site': 'same-origin' },
+      headers: { host: '127.0.0.1:7331', 'sec-fetch-site': 'same-origin' },
     })
 
     const response = await runChain(request, {
@@ -174,7 +174,7 @@ describe('the bootstrap', () => {
     // Sec-Fetch-Site, Origin or Referer at all. Start's default CSRF filter
     // would skip this path because it is not a serverFn; the widened one does not.
     const request = new Request(`${ORIGIN}${LAUNCH_TOKEN_PATH}`, {
-      headers: { host: '127.0.0.1:3000' },
+      headers: { host: '127.0.0.1:7331' },
     })
 
     const response = await runChain(request, {

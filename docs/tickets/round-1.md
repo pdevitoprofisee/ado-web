@@ -33,7 +33,7 @@ Phases 3 and 4 are the reason this project exists; phase 1 exists to make them c
 
 ## T-001 — Live API inventory spike
 
-**Type:** task (HITL — needs a real credential) · **Status:** claimed · **Blocked by:** —
+**Type:** task (HITL — needs a real credential) · **Status:** resolved · **Blocked by:** —
 
 **Do this first.** Two of its answers can delete work from the route, and it costs an
 afternoon with a real PAT.
@@ -51,47 +51,86 @@ is edited in the same commit.
 
 **Explicitly not in scope:** any application code. This is a throwaway script.
 
-### The script exists — it needs credentials
+### Resolution
 
-[`scripts/live-inventory.mjs`](../../scripts/live-inventory.mjs) is written and answers all
-six unknowns plus the fan-out pricing, writing `docs/research/live-inventory.md` with the
-raw response under every verdict. Secrets are redacted from the output; no token value is
-written to disk.
+Run against the live `Profisee` org; raw responses in
+[`docs/research/live-inventory.md`](../research/live-inventory.md). The map is edited in
+this same commit — two answers deleted planned work.
 
-To finish this ticket:
+| Unknown | Answer | What it changes |
+|---|---|---|
+| 1 · org-wide cross-project PR list | **YES** — 164 active PRs over 2 projects, matching per-project enumeration across all 6 exactly | **The per-project fan-out is deleted.** One call covers the org |
+| 2 · Sonar rule descriptions to a token | **YES** — `htmlDesc` + `mdDesc` + sections, 3.0–12.8 KB vs the [1101 metadata-only bytes](../research/sonar-rules-show-unauthenticated.json) anonymous, `requiredEntitlements: []` | **Rule detail renders in-app.** The `rules.sonarsource.com` scrape is deleted |
+| 3 · Sonar `genre`/`name` | genre `SonarCloud`, name `quality gate` | Confirms the status filter T-006 keys on |
+| 4 · comment-likes write endpoint | Route **exists and reads** — 401 anon, 200 authed, 404 for an invented sibling. Write **unproven** | Likes render; no toggle until a write is proven |
+| 5 · Sonar line drift | **Not reproduced** — analysis post-dated the last push by 8 min | One negative sample. Note 6 stands: anchor defensively |
+| 6 · max `$top` | **Clamps at 1000**, and short pages are not last pages | Rewrites T-004's paging loop — see below |
+| — · fan-out rate cost | **Could not measure** | T-004's concurrency cap stays an explicit guess |
 
-1. **ADO PAT** at `https://dev.azure.com/{org}/_usersSettings/tokens` with **Code (read &
-   write)**, **Build (read & execute)**, and **Identity (read)**. Read-only would answer
-   five of the six unknowns; `vso.code_write` is only needed for the `--allow-writes`
-   probe in unknown #4.
-2. **SonarCloud token** at `https://sonarcloud.io/account/security` — must be a *personal*
-   token; only those can read issues.
-3. Run it:
+**The credential came from the OS store, not the command line.** T-003 landed between this
+ticket being written and being run, so `scripts/live-inventory.mjs` now falls back to
+`readAdoCredential()` / `readSonarCredential()` when the env vars are absent. That is not
+just convenience: the documented `$env:ADO_PAT='…'` invocation puts a PAT in shell history
+and in the process table, which is a worse home for it than the Credential Manager. The
+env-var path still works, and the store import is dynamic and guarded so a machine that
+can't load the native addon degrades to it.
 
-   ```powershell
-   $env:ADO_ORG='<org>'; $env:ADO_PAT='<pat>'; $env:SONAR_TOKEN='<token>'
-   node scripts/live-inventory.mjs
-   ```
+**The script's raw responses were sound; three of its verdicts were not.** Worth recording
+because the failure mode generalises — an automated verdict is a hypothesis, and this one
+was checked against its own evidence rather than read off the top line.
 
-   Optional: `ADO_PR_ID=<id>` to point unknowns 3–5 at a specific Sonar-analysed PR
-   (otherwise it auto-picks the first active PR carrying a Sonar status), `SONAR_ORG=<key>`
-   to skip organization discovery.
+*Unknown 6 was the dangerous one.* The script announced "capped at 991 returned items" and
+advised paging until `count < $top`. Both wrong: `$skip=1000` returned **another 985**, so
+991 was neither a ceiling nor a total, and the shortfall repeats at every size (500→497,
+100→100 but `$skip=100`→98). The endpoint filters *after* applying `$top`, so **a short
+page is not the last page** — the precise assumption the generated advice enshrined, and
+one that would have silently truncated the inbox at 497 of ~2,000 PRs. `$top` does clamp
+at 1000; 2000 and 5000 return the identical 991 without an error.
 
-4. **Unknown #4 needs one deliberate mutation.** The default run only probes route
-   *existence* — whether `.../comments/{id}/likes` answers 404 (missing) or 401/405
-   (exists). Proving it's *writable* means actually liking a real comment. Re-run with
-   `--allow-writes` on a PR whose comment you don't mind liking and unliking; the script
-   PUTs then DELETEs the same like.
+*Unknown 4 measured note 4 by accident.* The anonymous route-existence probe omitted
+`X-TFS-FedAuthRedirect: Suppress`, so it captured a 302 to the sign-in page instead of the
+401-vs-404 the discriminator is built on. The verdict happened to be right for the wrong
+reason. Re-probed with the header — and with an invented sibling path as a control — it is
+clean: 401 anonymous, 200 authenticated, 404 for the fake route.
 
-**Baseline already captured:** [`docs/research/sonar-rules-show-unauthenticated.json`](../research/sonar-rules-show-unauthenticated.json)
-is the *unauthenticated* `rules/show` for `java:S1541` — 1101 bytes, metadata only, no
-`htmlDesc` / `mdDesc` / `descriptionSections`, and a `requiredEntitlements: []` field.
-Unknown #2 is settled by whether a token changes that.
+*Unknown 2 blamed the service for a typo.* "Batched `rules/search` returned descriptions:
+false" was the singular `rule_key`; the parameter is **`rule_keys`**. SonarCloud doesn't
+reject the wrong name, it returns `total: 0` — so a parameter mistake is indistinguishable
+from "those rules don't exist" unless you check. With `rule_keys`, all three come back with
+descriptions and the one-request-per-PR warming plan survives.
 
-**On rate-limit pricing:** ADO does not emit `X-RateLimit-*` on every response — the
-headers appear as you approach the limit. If the run reports no headers, that is a
-"couldn't measure", not a "cost is zero", and T-004's concurrency default stays a guess
-until it's measured under real fan-out.
+All three are fixed in the script, along with pinning `api-version` on every ADO call —
+including `connectionData`, which needs `7.1-preview.1`.
+
+**Not verified: that likes are writable.** Proving it means PUTting a like onto a real
+colleague's comment on a real PR and deleting it again, which may notify them. That is not
+mine to authorise, so `--allow-writes` was not used. Until someone runs it, the map says
+likes are read-only, which is the safe direction: the UI renders `usersLiked` and offers no
+toggle. T-007 can revisit.
+
+**Deliberately not done.** No re-run under load to force `X-RateLimit-*` out of ADO —
+generating enough traffic to approach a shared team limit is not a thing to do casually,
+and the honest answer ("unmeasured") is more useful to T-004 than a number pulled from a
+run that annoyed the org. No PR-detail or diff endpoint inventory; those belong to the
+phases that use them.
+
+**Surfaced for T-004:** the paging loop is now specified by measurement, not idiom — page
+on `$skip`, advance by the *requested* `$top`, terminate only on an **empty** page, and
+dedupe by `pullRequestId` because whether `$skip` applies before or after the server's
+filter is unresolved. And 164 active PRs across the org is the real inbox size to design
+the fan-out against.
+
+### Re-running it
+
+`node scripts/live-inventory.mjs` — credentials come from the store written by T-003, or
+from `ADO_ORG` / `ADO_PAT` / `SONAR_TOKEN` if all three are set. `ADO_PR_ID=<id>` pins
+unknowns 3–5 to a specific Sonar-analysed PR instead of auto-picking; `SONAR_ORG=<key>`
+skips organization discovery. It rewrites `docs/research/live-inventory.md` — the
+hand-written corrections at the top of that file do not survive a re-run.
+
+The PAT needs **Code (read & write)**, **Build (read & execute)** and **Identity (read)**;
+`vso.code_write` matters only for `--allow-writes`, which is the deliberate mutation
+described above and is off by default. The Sonar token must be a *personal* one.
 
 ---
 
@@ -118,8 +157,8 @@ the Nitro production build.
 
 | Criterion | Evidence |
 |---|---|
-| `pnpm dev` bound to `127.0.0.1` | `netstat` → `TCP 127.0.0.1:3000 LISTENING`, not `0.0.0.0` |
-| `pnpm build && pnpm start` serves the same shell | Nitro node-server preset, `Listening on: http://127.0.0.1:3000/`, `GET /` → 200 |
+| `pnpm dev` bound to `127.0.0.1` | `netstat` → `TCP 127.0.0.1:7331 LISTENING`, not `0.0.0.0` |
+| `pnpm build && pnpm start` serves the same shell | Nitro node-server preset, `Listening on: http://127.0.0.1:7331/`, `GET /` → 200 |
 | one shadcn component renders | the aria `Button` paints with `data-rac` / `data-react-aria-pressable` |
 | a server function returns a value | page shows `node v24.18.0, pid 24928` — the pid *is* the server process |
 | `pnpm test` / `pnpm typecheck` pass | 1/1 passed; `tsr generate && tsc --noEmit` exits 0 |
@@ -153,14 +192,14 @@ plugins have no business loading under jsdom.
 
 **Surfaced, now ticketed:** Start already rejects server-function calls whose `Origin`
 isn't the dev origin (403 with no `Origin`, 403 with a foreign one, 200 from
-`http://127.0.0.1:3000`). That closes one third of the map's localhost-hardening note and
+`http://127.0.0.1:7331`). That closes one third of the map's localhost-hardening note and
 makes the remaining two thirds specifiable — see T-010.
 
 ---
 
 ## T-003 — Secrets and onboarding
 
-**Type:** task (AFK) · **Status:** open · **Blocked by:** T-002, T-010
+**Type:** task (AFK) · **Status:** resolved · **Blocked by:** T-002, T-010
 
 An onboarding route that captures the ADO org + PAT and the SonarCloud token, stores
 them via `@napi-rs/keyring`, and tests each connection before accepting it. Tokens are
@@ -171,11 +210,128 @@ and it's still authenticated. A wrong PAT produces a clear "authentication faile
 **not** a redirect or an opaque network error (note 4). No token value ever appears in
 a client bundle, a network response body, or a log line.
 
+### Resolution
+
+Four modules, split by what each is allowed to see.
+[`src/server/credentials.ts`](../../src/server/credentials.ts) is the only one that can
+read a token back out of the OS; [`connection-test.ts`](../../src/server/connection-test.ts)
+is the only one that spends a token on a network call;
+[`credentials-fn.ts`](../../src/server/credentials-fn.ts) is the boundary the client can
+reach, and returns nothing but booleans, an org name, and messages we wrote ourselves;
+[`src/routes/onboarding.tsx`](../../src/routes/onboarding.tsx) is the form.
+
+| Criterion | Evidence |
+|---|---|
+| enter once, survives restart | a credential written by one process is reported as configured by a **freshly launched server** — `/onboarding` renders "Azure DevOps · Contoso", `/` renders "Connections: Azure DevOps (Contoso), SonarCloud"; in both `pnpm dev` and `pnpm start`, plus a unit test that re-imports the module after `vi.resetModules()` |
+| wrong PAT ⇒ "authentication failed" | real browser, real server, real `dev.azure.com`: a 52-char junk PAT produced the destructive alert **"Authentication failed — Azure DevOps rejected the token…"**, not a redirect and not "fetch failed" |
+| never in the client bundle | `.output/public` (9 files) contains no match for `napi-rs`, `keyring`, `getPassword`, `connectionData`, `X-TFS-FedAuthRedirect`, `dev.azure.com` or `sonarcloud.io`; the server bundle keeps `import { Entry } from "@napi-rs/keyring"` |
+| never in a response body | CDP captured every response of the failing-save run — 12 in production, 180 in dev — and the PAT appears in none. The `/_serverFn/*` bodies carry only `configured`/`org` and `ok`/`reason`/`message` |
+| never in a log line | nothing in these modules logs; `unreachable()` returns fixed text and never `cause.message` |
+
+**One entry per kind, whole record as JSON in the password field.** The obvious
+alternative — username = the ADO org, password = the PAT — can be written but never
+read: `Entry` needs *both* halves to address an entry, so we would have to already know
+the org in order to look up the credential that tells us the org.
+
+**Test before accepting.** `saveAdoCredential` writes only when `testAdoConnection`
+returns `ok`, so a credential that has never worked cannot displace one that does —
+retyping a PAT with a typo leaves the app exactly as authenticated as it was. Confirmed
+live in both directions: from empty, the junk-PAT rejection left the status at "Not
+configured"; from a stored credential, it left "Contoso" standing.
+
+**Auth failure is decided by the body, not the status.** Note 4 is only half the trap.
+With `X-TFS-FedAuthRedirect: Suppress` sent and `redirect: 'manual'` set — following one
+would forward the `Authorization` header to whatever sign-in host ADO nominates — a 3xx
+is reported as an auth failure whose message says "sign-in". But ADO will also answer a
+browser-shaped request with the sign-in page itself, **status 200 and all**, so a 200
+whose body has no `authenticatedUser.id` is rejected too. 404 is `not-found` and names
+the org, because a typo'd organization and a dead token are different repairs.
+SonarCloud has the mirror-image problem: `api/authentication/validate` answers 200 either
+way with the verdict in the body, so `valid !== true` is an auth failure.
+
+**Two bugs that only a real PAT could reach.** The first live attempt with a valid token
+answered `400`, and the diagnosis found two defects stacked on each other.
+
+*`connectionData` is a preview-only resource.* `api-version=7.1` earns
+`400 VssInvalidPreviewVersionException` — "the -preview flag must be supplied"; the
+working value is `7.1-preview.1`. What made this invisible is the ordering: **ADO
+validates the credential before the api-version**, so every wrong-token test 401s and
+never reaches the version check. A whole suite of failure-branch tests can pass against a
+URL that no authenticated request can use. Anonymous probing is what separated the two —
+the same URL with no credential at all returns the 400 directly.
+
+*A public organization authenticates nobody and still answers 200.* `Profisee` serves
+`connectionData` anonymously, and the body is not malformed — it is a real GUID
+(`aaaaaaaa-…`), `isActive: true`, `providerDisplayName: "Anonymous"`. The success check
+was `typeof user.id === 'string'`, which that satisfies, so fixing the version alone would
+have made an unsent or ignored token report **"Connected as Anonymous"** and store itself:
+test-before-accept defeated by a response that passes every shape check. Identities in the
+`System:` descriptor namespace (and the well-known anonymous GUID) are now rejected. The
+lesson generalises past this ticket — on a public org, *no* ADO endpoint's 200 is evidence
+that a credential was accepted.
+
+Both bugs cost a round trip through the user because `unexpected()` threw the service's
+own explanation away and said "answered 400, which we don't know how to read". It now
+repeats the `message` from the error body, dropped whole if it contains the credential so
+the no-token-in-a-response-body guarantee stays mechanical rather than a bet on what a
+server might echo.
+
+**A present-but-unusable entry reads as "not configured", never throws.** Corrupt JSON,
+JSON of the wrong shape, a half-written record, a blank PAT — all return `null`. Throwing
+would turn a mangled credential entry into an app that cannot boot and gives you no
+screen from which to fix it. The onboarding route can always overwrite; it can't rescue
+a crash loop.
+
+**The credential tests run against the real Windows credential store**, under
+`ado-web-test-<pid>` via `ADO_WEB_KEYRING_SERVICE`, with cleanup in `afterEach`. A mock
+would have proved the JSON encoding and nothing about the thing the ticket is about.
+
+**`@napi-rs/keyring` had to be externalised — in three places.** `pnpm build` failed with
+`UNLOADABLE_DEPENDENCY … stream did not contain valid UTF-8`: the bundler followed
+`require('@napi-rs/keyring-win32-x64-msvc')` and tried to read a `.node` binary as
+source. A native addon cannot be bundled at all, so `vite.config.ts` leaves the import
+standing and lets Node resolve it at runtime — safe precisely because the server half
+never ships anywhere; `.output/` runs from this checkout, next to the `node_modules`
+holding the binary. **Three separate passes reach for the package and each needs its own
+opt-out**: `optimizeDeps.exclude` (the dev prebundler), `resolve.external` (dev SSR
+resolution) and `build.rollupOptions.external` (the production build). Fixing only the
+last one made `pnpm build` and `pnpm start` pass while `pnpm dev` still died in
+dependency optimization — a mode-specific failure that a build-only check reads straight
+past. Both modes are now driven through a real browser, not just started. This is the
+second instance of the cost T-005 priced in when it chose `node:sqlite`.
+
+**Deliberately not done.** No encryption on top of the OS store — the Windows Credential
+Manager is already scoped to the logged-in user, and a second key would have to live
+somewhere this app can read unattended, i.e. nowhere better. No PAT-scope introspection:
+`connectionData` proves the token authenticates, not that it carries Code (read); the
+message names the scopes so a half-scoped token fails legibly at the call that needs it.
+No expiry countdown for ADO (the API doesn't return one); SonarCloud's
+`SonarQube-Authentication-Token-Expiration` header *is* surfaced, so a dying token
+doesn't read as an outage. No "no credentials yet" redirect from the inbox — T-006 owns
+the empty state.
+
+**Still not verified: the ADO success path against a live token.** SonarCloud's *is*
+verified — a real personal token returned "Connected" and stored. ADO's cannot be, from
+here: it means typing a PAT that belongs to the user and must not reach this transcript.
+The first attempt is what surfaced the two bugs above; the retry is still owed. Open
+`http://127.0.0.1:7331/onboarding` and enter it there; "Connected as \<name\>" is the
+expected result, after which the org appears on the home page and survives a restart.
+Anything else — including "Connected as Anonymous", which is now impossible by
+construction — means this section is wrong again.
+
+**Surfaced for T-004:** `adoAuthHeaders(pat)` is exported from `connection-test.ts` and
+already encodes `Basic base64(":" + pat)` plus the `Suppress` header. T-004's first
+bullet is that pair — import it rather than re-deriving note 4, and keep the one
+regression test that pins the Basic encoding. Two more inheritances from the bugs above:
+check every endpoint's api-version against a *preview* suffix before assuming the plain
+number works, and never treat a 200 as proof of authentication on a public org — assert
+the identity is not `System:`-descriptored, exactly as `testAdoConnection` does.
+
 ---
 
 ## T-004 — ADO HTTP client
 
-**Type:** task (AFK) · **Status:** open · **Blocked by:** T-001, T-002, T-003
+**Type:** task (AFK) · **Status:** resolved · **Blocked by:** T-001, T-002, T-003
 
 The single server-side chokepoint for every ADO call.
 
@@ -194,6 +350,57 @@ The single server-side chokepoint for every ADO call.
 
 **Deliberately not `azure-devops-node-api`** — it doesn't surface response headers,
 which makes the two bullets above impossible.
+
+### Resolution
+
+[`src/server/ado-client.ts`](../../src/server/ado-client.ts) — `createAdoClient(credential)`
+returning `get` / `fanOut` / `rateLimit`.
+
+| Criterion | Where |
+|---|---|
+| Basic + `Suppress` on every request | `send` calls `adoAuthHeaders` from T-003; `redirect: 'manual'` is not a caller's choice |
+| 200 carrying `Retry-After` treated as throttling | `absorb` → the gate. **Waits, does not re-request — see below** |
+| `X-RateLimit-*` tracked and exposed | `rateLimit()`, plus `X-RateLimit-Delay`, which is the header ADO actually documents |
+| Non-GUID identity filter fails loud | `assertIdentity` throws a `TypeError` in `buildUrl`, before any request exists |
+| Configurable concurrency cap | `DEFAULT_CONCURRENCY = 4`, overridable per client |
+| Tests for both | `ado-client.test.ts`, 14 tests |
+
+**The 200-with-`Retry-After` bullet is implemented as a gate, not a retry, and that is a
+deliberate departure from this ticket's wording.** Note 2's own quote is Microsoft saying
+"the response still returns HTTP 200, so retry logic isn't required" — the delayed
+response is complete and correct. Re-requesting it would discard good data and add load
+to a service that has just asked us to slow down. What the note is actually about is the
+*next* call: a client that only branches on 429 keeps firing into a throttle and looks
+broken. So any `Retry-After`, on any status, closes a gate that every subsequent request
+waits behind, and 429/503 retry *through* that same gate. One mechanism, both behaviours,
+and the observable outcome the ticket wanted — the client slows down and the UI can say
+so. The test asserts the 200 is **not** re-requested and that the following call is
+delayed by the advertised interval.
+
+**The concurrency cap is a guess and is commented as one.** T-001 was meant to measure it
+and couldn't: no `X-RateLimit-*` header appeared on any call, in that run or in this
+ticket's live smoke test. 4 is low on purpose — the gate absorbs the cost of being too
+conservative, and there is no way to be conservative about being too aggressive. The
+banner will show when there's headroom.
+
+**Verified against the live org, not only against stubs.** T-003's lesson was that a
+bad-token test never reaches api-version validation, so a whole green suite can sit on a
+URL no authenticated request can use. A throwaway script drove the real module against
+`Profisee`: identity resolved, a 5-row page came back, `searchCriteria.creatorId` with a
+real GUID narrowed 164 active PRs to 4, the guard threw on `paul@example.com` without
+sending, a bad route surfaced as `AdoError` 404, and `fanOut` ran 8 concurrent calls.
+That run also settled a smaller worry — `URLSearchParams` percent-encodes `$`, and ADO
+decodes `%24top=3` exactly like `$top=3` (both 200, both 3 rows). No encoding hack.
+
+**Deliberately not done.** No paging helper — T-006 owns the PR list, and its ticket now
+carries the measured rule rather than the `count < $top` idiom T-001 disproved. No
+non-JSON `get`; the diff phases can add one when they have a body to shape it. No POST or
+PATCH — nothing writes yet, and the first writer should pick the idempotency story. No
+request-level cache: T-005's `pr_cache` is keyed on a commit id the transport can't see.
+
+**Watch:** `AdoError` carries ADO's own explanation, run through T-003's `serviceDetail`,
+which drops the text whole if it contains the PAT. That redaction is now shared by two
+call sites and must stay the only path from a response body to a message.
 
 ---
 
@@ -285,8 +492,11 @@ Routing depends on T-001 #1: one org-wide call if it returns cross-project resul
 otherwise org-level `repositories` → per-repo PRs, which still beats walking projects.
 
 **Success:** the list matches what the ADO web UI shows for the same account, including
-at least one team-assigned PR. Paging works past a single page (page until
-`count < $top`; there is no continuation token). "Mine" is genuinely only mine — prove
+at least one team-assigned PR. Paging works past a single page — page on `$skip`,
+advancing by the *requested* `$top`, and stop only on an **empty** page. (T-001 measured
+this: `$top` clamps at 1000 and the service filters *after* applying it, so a short page
+is **not** the last page. There is no continuation token. Dedupe by `pullRequestId`.)
+"Mine" is genuinely only mine — prove
 the GUID guard by pointing a test at a non-GUID filter.
 
 ---
@@ -493,7 +703,7 @@ with a secret.
 
 **`Host` is read from the raw header, never from `request.url`.** srvx's node adapter falls
 back to the socket's local address when `Host` is absent, so a request with no `Host` at
-all arrives with a request URL of `http://127.0.0.1:3000/…` and sails through any
+all arrives with a request URL of `http://127.0.0.1:7331/…` and sails through any
 URL-based check. `rejects a request with no Host header` asserts
 `request.headers.get('host') === null` first, so it cannot pass vacuously.
 

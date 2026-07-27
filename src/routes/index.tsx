@@ -1,7 +1,8 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { Link, createFileRoute } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
 import { useQuery } from '@tanstack/react-query'
 
+import { credentialStatus } from '@/server/credentials-fn'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 
@@ -20,6 +21,15 @@ function Home() {
     queryKey: ['server-info'],
     queryFn: () => getServerInfo(),
   })
+  const credentials = useQuery({
+    queryKey: ['credential-status'],
+    queryFn: () => credentialStatus(),
+  })
+
+  const connected = [
+    credentials.data?.ado.configured ? `Azure DevOps (${credentials.data.ado.org})` : null,
+    credentials.data?.sonar.configured ? 'SonarCloud' : null,
+  ].filter(Boolean)
 
   return (
     <main className="mx-auto flex max-w-xl flex-col items-start gap-4 p-8">
@@ -38,6 +48,19 @@ function Home() {
               ? `failed: ${server.error.message}`
               : `node ${server.data.node}, pid ${server.data.pid}`}
         </code>
+      </p>
+
+      <p className="text-sm">
+        Connections:{' '}
+        {credentials.isPending
+          ? 'checking…'
+          : connected.length > 0
+            ? connected.join(', ')
+            : 'none yet'}
+        {' — '}
+        <Link to="/onboarding" className="underline underline-offset-4">
+          manage
+        </Link>
       </p>
 
       <Button onPress={() => server.refetch()} isDisabled={server.isFetching}>

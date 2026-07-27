@@ -172,7 +172,20 @@ rewrite. Evidence in [`docs/research/`](./research/).
   `−5` waiting for author · `−10` rejected. **`isContainer` + `votedFor[]`** are what
   surface PRs assigned to a group you belong to.
 - `threads` **ignores `$top`** `[LIVE]` and has no pagination — you always get all.
+- **Org-wide `/{org}/_apis/git/pullrequests` is genuinely cross-project** `[LIVE]` — 164
+  active PRs spanning two projects, matching per-project enumeration over all six exactly.
+  **There is no per-project fan-out**; one call covers the org.
+- **The PR list clamps `$top` to 1000 and returns fewer rows than asked for even when more
+  exist** `[LIVE]`. `$top=2000` and `$top=5000` both silently return the same 991 as
+  `$top=1000`; `$top=500` returned 497; `$top=100` returned 100 but `$skip=100` returned
+  98. So **a short page is not the last page** — the service appears to filter after
+  applying `$top`. Page on `$skip`, advance by the *requested* `$top`, stop only on an
+  **empty** page, and dedupe by `pullRequestId`: whether `$skip` is applied before or
+  after that filter is unresolved, so overlap is possible.
 - `GET _apis/git/pullrequests` truncates `description` to 400 chars.
+- **Comment likes are a real route** `[LIVE]`: `.../threads/{t}/comments/{c}/likes`
+  answers 200 authenticated, 401 anonymously, against 404 for an invented sibling path.
+  Reading is proven; *writing* is not — see the unknowns below.
 - `changeType` is a `[Flags]` enum — parse as a comma-separated *set* (`"edit, rename"`).
 - Requeuing the **policy evaluation** is the documented way to re-run a PR build; it
   preserves the policy linkage. `stageRefName` is the YAML stage *id*, not the display
@@ -229,6 +242,15 @@ line text — useful only to make our hunk boundaries match theirs. It's preview
 - The **MQR / Clean Code taxonomy is authoritative** (`impacts[]`,
   `cleanCodeAttribute`, `issueStatus`). Legacy `type`/`severity` are unreliable.
 - Param is `componentKeys`, not `components`, on Cloud.
+- **Rule descriptions are served to any authenticated token** `[LIVE]` — `rules/show`
+  returned `htmlDesc`, `mdDesc` and `descriptionSections` for all three probe rules
+  (3.0–12.8 KB, against 1101 metadata-only bytes unauthenticated) with an empty
+  `requiredEntitlements`. Not plan-gated: **render rule detail in-app**, and drop the
+  `rules.sonarsource.com/<lang>/RSPEC-<n>/` fallback.
+- **Batch rule lookups with `rule_keys`, plural** `[LIVE]`. `rule_key=a,b,c` is not an
+  error — it silently returns `total: 0`, so the wrong parameter reads as "no such rules"
+  rather than as a mistake. `rule_keys=a,b,c` with `f=name,htmlDesc` returns all three
+  with descriptions: one request warms every rule in a PR.
 - `api/qualitygates` was deprecated 2025-09-16 with no v2 replacement — prefer
   `measures/component` for the numbers we actually display.
 
@@ -245,7 +267,7 @@ line text — useful only to make our hunk boundaries match theirs. It's preview
   keychain, not this layer, is what keeps a secret from its owner's processes.
 - Read `Host` from the **raw header**, never from `request.url`: srvx falls back to the
   socket's local address when `Host` is absent, so a header-less request presents a
-  perfectly innocent `http://127.0.0.1:3000/…` URL.
+  perfectly innocent `http://127.0.0.1:7331/…` URL.
 - `simple-git` must be `>=3.36.0` (three 2026 option-injection RCEs) and request data
   must never reach its options array.
 - `@napi-rs/keyring`, never `keytar` — archived and deprecated.
@@ -257,10 +279,25 @@ line text — useful only to make our hunk boundaries match theirs. It's preview
 One line per resolved ticket — the gist, plus a link to the ticket that holds the
 detail. Nothing is restated here; this is an index, not a store.
 
+- [T-001 — Live API inventory spike](./tickets/round-1.md#t-001--live-api-inventory-spike) —
+  all six unknowns answered against the live org. Two deleted planned work (no per-project
+  PR fan-out, no rule-description scrape); one rewrote the paging loop. Three of the
+  script's own verdicts contradicted its own raw data and were overridden.
 - [T-002 — Scaffold](./tickets/round-1.md#t-002--scaffold) — the shape above is real and
   running: Start with SSR off, shadcn locked to the aria base, loopback-bound in dev
   *and* in the Nitro build, a server function answering the client, tests and typecheck
   green.
+- [T-003 — Credential capture](./tickets/round-1.md#t-003--credential-capture-and-storage) —
+  onboarding that tests each connection before storing it, tokens readable only inside
+  server functions. Two bugs only a real PAT could reach: `connectionData` needs
+  `7.1-preview.1`, and a *public* org answers it anonymously with a well-formed 200, so
+  the identity has to be checked for a `System:` descriptor before it counts as auth.
+- [T-004 — ADO HTTP client](./tickets/round-1.md#t-004--ado-http-client) — one chokepoint
+  in `src/server/ado-client.ts`: auth headers and `redirect: 'manual'` by construction, a
+  throttle gate that reads note 2 the way Microsoft wrote it (a delayed **200** is good
+  data — slow the *next* call, don't re-request), rate-limit headers surfaced for the
+  banner, a GUID guard that throws before the request leaves, and a conservative,
+  explicitly-guessed concurrency cap.
 - [T-005 — SQLite](./tickets/round-1.md#t-005--sqlite) — `node:sqlite` (no native addon,
   proven inside the Nitro build), a `schema_migrations` table applied transactionally at
   first use, and one round-1 table: a PR cache whose staleness check lives inside the
@@ -274,9 +311,6 @@ detail. Nothing is restated here; this is an index, not a store.
   validation against DNS rebinding, a per-launch token on every server-function call,
   and Start's origin check re-declared because declaring a start instance would
   otherwise have removed it. The tokenless bootstrap is the stated, unclosable limit.
-
-[T-001 — Live API inventory spike](./tickets/round-1.md#t-001--live-api-inventory-spike)
-is claimed and waiting on a real PAT.
 
 ---
 
@@ -309,18 +343,27 @@ Creating PRs · editing title/description · work-item editing · batched
 notifications · running while the app is closed · multi-user or hosted deployment ·
 bypassing branch policies.
 
-### Unknowns that need a real credential
+### Unknowns that needed a real credential — answered
 
-These are the first ticket, not assumptions. Two of them can change the architecture.
+Settled by T-001 against the live `Profisee` org. Raw responses:
+[`docs/research/live-inventory.md`](research/live-inventory.md).
 
-1. **Does org-wide `/{org}/_apis/git/pullrequests` return cross-project results?**
-   The route exists `[LIVE]` (401, not 404) but the docs don't admit it. If it works,
-   the entire per-project fan-out disappears.
-2. **Does SonarCloud serve rule descriptions to an authenticated user,** or are they
-   plan-gated? Load-bearing for the in-app Sonar detail view.
-3. One live `statuses` response, to confirm the Sonar `genre` / `name` split.
-4. **Does ADO expose a comment-*likes* write endpoint?** `usersLiked` is returned, but
-   two research passes disagreed on whether a write endpoint is documented. If not,
-   likes are read-only and that's fine — but the ticket needs to know.
-5. Observed Sonar line drift on a PR pushed to after analysis.
-6. The undocumented max `$top` on the PR list (400–500 observed).
+1. **Org-wide cross-project PR listing — YES.** The per-project fan-out is deleted.
+2. **SonarCloud rule descriptions to an authenticated user — YES.** Rule detail renders
+   in-app; no scraping fallback.
+3. **Sonar `statuses` `genre` / `name` — confirmed:** genre `SonarCloud`, name
+   `quality gate`.
+4. **Comment likes: the route exists and reads** (200 authenticated, 401 anonymous, 404
+   for an invented path). **Writability is still unproven** — the only proof is a real
+   PUT against a real person's comment, which nobody has authorised. Until then treat
+   likes as read-only: `usersLiked` renders, the UI offers no toggle.
+5. **Line drift — not reproduced,** on a PR whose analysis post-dated its last push by
+   eight minutes. That is one negative sample, not a guarantee. Note 6 stands unchanged:
+   anchor defensively.
+6. **`$top` clamps at 1000, and short pages are not last pages.** See the paging rule in
+   *Structural facts* — this one bit the spike's own conclusions before it was measured.
+
+**Still unmeasured: the rate-limit cost of the inbox fan-out.** Not one `X-RateLimit-*`
+header came back across ~30 calls — ADO emits them only near the limit, so this is a
+*couldn't measure*, not a *costs nothing*. T-004's concurrency cap is therefore still a
+guess and must be labelled one, with the 200-TSTU/5-minute budget as the only anchor.

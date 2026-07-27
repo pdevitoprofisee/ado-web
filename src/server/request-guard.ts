@@ -53,12 +53,12 @@ export function currentLaunchToken(): string {
  * Read from the raw header, never from `new URL(request.url).host`: srvx's node
  * adapter falls back to the socket's local address when `Host` is absent, so a
  * request with no `Host` at all arrives with a request URL of
- * `http://127.0.0.1:3000/…` and sails through a URL-based check.
+ * `http://127.0.0.1:7331/…` and sails through a URL-based check.
  */
 function isLoopbackHost(host: string | null): boolean {
   if (host === null) return false
 
-  // `[::1]:3000` brackets the address; `127.0.0.1:3000` does not.
+  // `[::1]:7331` brackets the address; `127.0.0.1:7331` does not.
   const end = host.startsWith('[') ? host.indexOf(']') + 1 : host.indexOf(':')
   const hostname = end <= 0 ? host : host.slice(0, end)
 

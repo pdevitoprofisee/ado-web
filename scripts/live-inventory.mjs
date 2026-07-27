@@ -6,20 +6,61 @@
 //
 //   ADO_ORG=myorg ADO_PAT=... SONAR_TOKEN=... node scripts/live-inventory.mjs
 //
+// …or, once T-003's onboarding page has been used, just:
+//
+//   node scripts/live-inventory.mjs
+//
 // Optional: ADO_PR_ID (skip auto-selection), SONAR_ORG (skip discovery),
 //           --allow-writes (permit the two mutating probes in §4).
 
 import { writeFile, mkdir } from 'node:fs/promises'
 
-const ORG = process.env.ADO_ORG
-const PAT = process.env.ADO_PAT
-const SONAR_TOKEN = process.env.SONAR_TOKEN
 const ALLOW_WRITES = process.argv.includes('--allow-writes')
 
+/**
+ * Environment first, then the OS credential store T-003 writes to.
+ *
+ * The store is the better source and not only for convenience: the documented
+ * env-var invocation puts a PAT in a shell history and in the process table,
+ * and that is a worse place for it than the Credential Manager. The import is
+ * dynamic and guarded so the env-var path keeps working on a machine where the
+ * native addon can't load.
+ */
+async function credentials() {
+  const fromEnv = {
+    org: process.env.ADO_ORG,
+    pat: process.env.ADO_PAT,
+    sonar: process.env.SONAR_TOKEN,
+  }
+  if (fromEnv.org && fromEnv.pat && fromEnv.sonar) return fromEnv
+
+  try {
+    const store = await import('../src/server/credentials.ts')
+    const ado = store.readAdoCredential()
+    const sonar = store.readSonarCredential()
+
+    return {
+      org: fromEnv.org ?? ado?.org,
+      pat: fromEnv.pat ?? ado?.pat,
+      sonar: fromEnv.sonar ?? sonar?.token,
+      source: 'credential store',
+    }
+  } catch (err) {
+    console.error(`(credential store unreadable: ${err?.message ?? err})`)
+
+    return fromEnv
+  }
+}
+
+const { org: ORG, pat: PAT, sonar: SONAR_TOKEN, source } = await credentials()
+
 if (!ORG || !PAT) {
-  console.error('ADO_ORG and ADO_PAT are required.')
+  console.error(
+    'No ADO credential. Either set ADO_ORG and ADO_PAT, or store one at /onboarding.',
+  )
   process.exit(1)
 }
+if (source) console.log(`Using credentials from the ${source}.`)
 
 const ADO = `https://dev.azure.com/${ORG}`
 const SONAR = 'https://sonarcloud.io'
@@ -44,10 +85,20 @@ const RATE_HEADERS = [
 
 /** Every ADO/Sonar call goes through here so nothing escapes the rate-limit accounting. */
 async function call(url, { auth = 'ado', method = 'GET', body, headers = {} } = {}) {
+  // Pin the api-version on every ADO call. Omitting it takes whatever default
+  // the service picks, and T-003 learned the hard way that a version mistake is
+  // invisible until a request actually authenticates — ADO checks the
+  // credential first and 401s before it ever looks at the version.
+  if (url.startsWith(ADO) && !url.includes('api-version=')) {
+    url += `${url.includes('?') ? '&' : '?'}api-version=7.1`
+  }
   const h = { Accept: 'application/json', ...headers }
+  // Suppress goes on *every* ADO call including the unauthenticated ones: note 4
+  // applies hardest there. Without it the anonymous route-existence probe in §4
+  // measures a 302 to the sign-in page instead of the 401-vs-404 it is asking about.
+  if (url.startsWith(ADO)) h['X-TFS-FedAuthRedirect'] = 'Suppress'
   if (auth === 'ado') {
     h.Authorization = `Basic ${Buffer.from(`:${PAT}`).toString('base64')}`
-    h['X-TFS-FedAuthRedirect'] = 'Suppress'
   } else if (auth === 'sonar') {
     h.Authorization = `Bearer ${SONAR_TOKEN}`
   }
@@ -117,8 +168,16 @@ async function main() {
 
   // --- identity -----------------------------------------------------------
   log('§0 identity')
-  const conn = await call(`${ADO}/_apis/connectionData`)
+  // `-preview.1` because connectionData is a preview-only resource; plain 7.1
+  // is a 400 (T-003 resolution).
+  const conn = await call(`${ADO}/_apis/connectionData?api-version=7.1-preview.1`)
   const myId = conn.json?.authenticatedUser?.id
+  // A public organization answers this anonymously with a well-formed body, so
+  // an ignored PAT would otherwise sail through and the whole run would be an
+  // inventory of what an anonymous visitor can see.
+  const anonymous =
+    myId === 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' ||
+    String(conn.json?.authenticatedUser?.descriptor ?? '').startsWith('System:')
   say(
     '## 0 — Identity',
     '',
@@ -135,8 +194,12 @@ async function main() {
       1200,
     ),
   )
-  if (!myId) {
-    say('> **Stop.** Without an identity GUID the rest of the run is meaningless — check the PAT.')
+  if (!myId || anonymous) {
+    say(
+      anonymous
+        ? '> **Stop.** ADO answered as the *anonymous* identity — this organization allows public access, so the run would inventory what a stranger can see, not what the PAT can. Check the token.'
+        : '> **Stop.** Without an identity GUID the rest of the run is meaningless — check the PAT.',
+    )
     process.exitCode = 1
     return
   }
@@ -199,26 +262,43 @@ async function main() {
     )
     topProbes.push({ top, status: r.status, count: r.json?.value?.length ?? 0, note: r.json?.message ?? '' })
   }
-  const saturated = topProbes.filter((p) => p.status === 200 && p.count > 0)
-  const ceiling = saturated.length ? Math.max(...saturated.map((p) => p.count)) : 0
-  const everSaturated = topProbes.some((p) => p.count === p.top)
+  const ceiling = Math.max(0, ...topProbes.filter((p) => p.status === 200).map((p) => p.count))
+
+  // A count below the requested `$top` is NOT evidence of the end of the list —
+  // this endpoint filters after applying `$top`. The only way to tell a ceiling
+  // from a total is to skip past it and see whether more arrives.
+  const beyond = await call(
+    `${ADO}/_apis/git/pullrequests?searchCriteria.status=all&$top=1000&$skip=1000`,
+  )
+  const moreExists = (beyond.json?.value?.length ?? 0) > 0
+  const short = topProbes.filter((p) => p.status === 200 && p.count < p.top)
 
   verdict(
     6,
     'What is the undocumented max `$top` on the PR list?',
     topProbes.every((p) => p.status !== 200)
       ? 'FAILED — no probe returned 200'
-      : everSaturated
-        ? `capped at ${ceiling} returned items`
-        : `INCONCLUSIVE — the org only has ${ceiling} PRs, fewer than any requested \`$top\``,
+      : moreExists
+        ? `\`$top\` clamps at 1000 (${ceiling} rows returned), and a short page is NOT the last page`
+        : `INCONCLUSIVE — the org holds only ${ceiling} PRs, fewer than the clamp`,
     [
       '| requested `$top` | status | returned |',
       '|---|---|---|',
       ...topProbes.map((p) => `| ${p.top} | ${p.status} | ${p.count} ${p.note ? `— ${redact(p.note)}` : ''} |`),
+      `| 1000 (\`$skip=1000\`) | ${beyond.status} | ${beyond.json?.value?.length ?? 0} |`,
       '',
-      everSaturated
-        ? 'A returned count equal to the requested `$top` at one size and lower at the next proves the ceiling.'
-        : 'No probe saturated, so this org cannot prove the ceiling. Page until `count < $top` regardless — that logic is correct either way.',
+      moreExists
+        ? [
+            `Requests above 1000 return the same ${ceiling} rows, so **1000 is the clamp**.`,
+            short.length
+              ? `But ${short.map((p) => `\`$top=${p.top}\`→${p.count}`).join(', ')} came back *short while more existed* — \`$skip=1000\` still yielded ${beyond.json?.value?.length} more. The service filters after applying \`$top\`.`
+              : '',
+            '',
+            '**Page until a page comes back empty — never until it comes back short.**',
+            'Advance `$skip` by the *requested* `$top` and dedupe by `pullRequestId`:',
+            'whether `$skip` is applied before or after the filter is unresolved.',
+          ].join('\n')
+        : 'This org is too small to prove a ceiling. Page until an *empty* page regardless — a short page is not a reliable terminator on this endpoint.',
     ].join('\n'),
   )
 
@@ -500,7 +580,9 @@ async function main() {
       }
 
       const search = await call(
-        `${SONAR}/api/rules/search?rule_key=${encodeURIComponent(ruleKeys.join(','))}${sonarOrg ? `&organization=${encodeURIComponent(sonarOrg)}` : ''}&f=name,htmlDesc,descriptionSections&ps=10`,
+        // `rule_keys`, plural. The singular form does not error — it returns
+        // `total: 0`, so the wrong name reads as "no such rules".
+        `${SONAR}/api/rules/search?rule_keys=${encodeURIComponent(ruleKeys.join(','))}${sonarOrg ? `&organization=${encodeURIComponent(sonarOrg)}` : ''}&f=name,htmlDesc,descriptionSections&ps=10`,
         { auth: 'sonar' },
       )
       const searchHasDesc = (search.json?.rules ?? []).some(
