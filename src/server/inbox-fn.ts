@@ -20,8 +20,12 @@ export interface InboxResult {
  * and a 500 from ADO is "try again". Only the first two are worth a distinct UI,
  * so the split here is `connected` plus a message we wrote ourselves.
  */
-export const inboxQuery = createServerFn({ method: 'GET' }).handler(
-  async (): Promise<InboxResult> => {
+export const inboxQuery = createServerFn({ method: 'GET' })
+  // `fresh` is what the Refresh button sends. A poll reuses the memoised
+  // identity and teams; pressing Refresh means "I think this is wrong", and the
+  // memo is one of the things that could be wrong.
+  .validator((data: unknown) => ({ fresh: (data as { fresh?: unknown } | null)?.fresh === true }))
+  .handler(async ({ data }): Promise<InboxResult> => {
     let client
     try {
       client = adoClient()
@@ -33,7 +37,12 @@ export const inboxQuery = createServerFn({ method: 'GET' }).handler(
     }
 
     try {
-      return { inbox: await loadInbox(client), error: null, connected: true, rateLimit: client.rateLimit() }
+      return {
+        inbox: await loadInbox(client, data.fresh),
+        error: null,
+        connected: true,
+        rateLimit: client.rateLimit(),
+      }
     } catch (error) {
       return {
         inbox: null,
@@ -42,5 +51,4 @@ export const inboxQuery = createServerFn({ method: 'GET' }).handler(
         rateLimit: client.rateLimit(),
       }
     }
-  },
-)
+  })

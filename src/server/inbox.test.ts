@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { listActivePullRequests, loadInbox, partition } from './inbox'
 
@@ -58,6 +58,8 @@ function fakeClient(replies: Record<string, Reply>) {
       resetAt: null,
       throttledUntil: null,
       throttled: false,
+      calls: calls.length,
+      cost: 0,
     }),
   }
 
@@ -390,5 +392,94 @@ describe('loadInbox', () => {
     expect(inbox.assignedToMe).toEqual([])
     // An empty closure short-circuits; there is nothing to resolve.
     expect(calls.filter((c) => c.params.descriptors)).toEqual([])
+  })
+})
+
+/**
+ * What a poll costs, which is the whole of T-008. The numbers here are the live
+ * ones: a cold `loadInbox` is 6 calls and 4 of them re-derive an identity that
+ * does not change between two polls two minutes apart.
+ */
+describe('the identity memo', () => {
+  const polling = () =>
+    fakeClient({
+      '_apis/connectionData': CONNECTED,
+      '_apis/identities': membership(TEAM),
+      '_apis/teams': { value: [{ id: TEAM, name: 'DevOps Team', projectName: 'SaaS' }] },
+      // A function rather than an array: paging has to answer the same way on
+      // every poll, not run off the end of a fixture list.
+      '_apis/git/pullrequests': (params: Record<string, QueryValue>) =>
+        params.$skip === 0 ? page(pr(1)) : page(),
+    })
+
+  it('takes a second poll from six calls to two', async () => {
+    const { client, calls } = polling()
+
+    await loadInbox(client)
+    expect(calls).toHaveLength(6)
+
+    await loadInbox(client)
+
+    // Only the PR list and its empty terminator: the two calls that carry news.
+    expect(calls.slice(6).map((c) => c.path)).toEqual([
+      '_apis/git/pullrequests',
+      '_apis/git/pullrequests',
+    ])
+  })
+
+  it('still answers with the identity it did not re-fetch', async () => {
+    const { client } = polling()
+
+    await loadInbox(client)
+    const second = await loadInbox(client)
+
+    expect(second.identity).toEqual(IDENTITY)
+    expect(second.teams).toEqual([{ id: TEAM, name: 'SaaS \\ DevOps Team' }])
+  })
+
+  it('re-derives everything when Refresh asks for it', async () => {
+    const { client, calls } = polling()
+
+    await loadInbox(client)
+    await loadInbox(client, true)
+
+    expect(calls).toHaveLength(12)
+  })
+
+  it('does not remember a failure', async () => {
+    // A cached rejection would be permanent, and this fails on a network blip
+    // far more often than on a bad token.
+    let broken = true
+    const { client } = fakeClient({
+      '_apis/connectionData': () => {
+        if (broken) throw new Error('ECONNRESET')
+
+        return CONNECTED
+      },
+      '_apis/identities': membership(TEAM),
+      '_apis/teams': { value: [{ id: TEAM, name: 'DevOps Team', projectName: 'SaaS' }] },
+      '_apis/git/pullrequests': (params: Record<string, QueryValue>) =>
+        params.$skip === 0 ? page(pr(1)) : page(),
+    })
+
+    await expect(loadInbox(client)).rejects.toThrow(/ECONNRESET/)
+    broken = false
+
+    expect((await loadInbox(client)).identity).toEqual(IDENTITY)
+  })
+
+  it('lets a membership change through after the TTL', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, calls } = polling()
+
+      await loadInbox(client)
+      vi.advanceTimersByTime(31 * 60_000)
+      await loadInbox(client)
+
+      expect(calls).toHaveLength(12)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

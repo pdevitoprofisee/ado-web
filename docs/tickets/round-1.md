@@ -16,7 +16,7 @@ concurrent session skips it.
 
 | Phase | What lands | Status |
 |---|---|---|
-| **1** | Live API inventory · scaffold · hardening · secrets · ADO client · SQLite · inbox spine · command registry | **this round** |
+| **1** | Live API inventory · scaffold · hardening · secrets · ADO client · SQLite · inbox spine · command registry | **complete** — all ten tickets resolved |
 | 2 | PR detail shell: header, conflicts, policy checklist, votes, commits, file list | next |
 | 3 | The diff: blob fetch, local diff, virtualized rows, Shiki workers, viewed flags, side-by-side | next |
 | 4 | Comments: inline threads, collapse-when-done, composer, mentions, likes, status setters | after 3 |
@@ -725,13 +725,97 @@ no sorting by badge. Nothing writes.
 
 ## T-008 — Refresh cadence
 
-**Type:** task (AFK) · **Status:** open · **Blocked by:** T-007
+**Type:** task (AFK) · **Status:** resolved · **Blocked by:** T-007
 
 Tiered polling: ~30 s for an open PR, ~2 min for the inbox, backing off when the window
 is unfocused, resuming on focus.
 
 **Success:** an inbox left open overnight has not exhausted the rate budget — verify
 against the `X-RateLimit` accounting from T-004, not by feel.
+
+### Resolution
+
+[`src/lib/cadence.ts`](../../src/lib/cadence.ts) holds the tiers and the one hook that
+picks between them. The change that actually decided the ticket, though, is in
+[`src/server/inbox.ts`](../../src/server/inbox.ts): a per-client memo of identity and
+teams, because the interval was never the expensive part.
+
+| Criterion | Evidence |
+|---|---|
+| ~2 min for the inbox, ~30 s for an open PR | `CADENCE.inbox = 120_000`, `CADENCE.pullRequest = 30_000`; the inbox query passes `useCadence(CADENCE.inbox)` straight to `refetchInterval` |
+| backs off when unfocused, resumes on focus | hidden tab → `false`, i.e. **no polling at all**; visible-but-untouched for 5 min → `CADENCE.idle` (15 min); any `pointerdown`/`keydown`/`focus` restores the tier. Six unit tests over fake timers and a stubbed `document.visibilityState` |
+| overnight, against real accounting | live, one client, four consecutive loads: **6 calls / 1452 ms**, **2 / 252 ms**, **2 / 280 ms**, then `fresh` **6 / 414 ms**. At 2 calls per poll and one poll per 2 min, an 8-hour night is **480 calls ≈ 0.26 TSTU** — against a 200-TSTU *per five minutes* budget, that is **0.0014 % of one window** |
+| the budget is measured, not felt | `RateLimit` now carries `calls` and `cost`, incremented in `absorb()` on every response; the inbox footer renders the running call count, with the billed TSTU floor in its tooltip |
+| an explicit refresh bypasses both caches | Refresh sends `fresh: true` to `loadInbox` (re-derives identity and teams) and bumps a generation that makes `hydrate` skip `readPrCache`. Unit-tested on both sides |
+| nothing leaks | rebuilt after the bypass wiring: all **9** files under `.output/public`, read as bytes and decoded three ways, contain none of `napi-rs`, `keyring`, `node:sqlite`, `DatabaseSync`, `X-TFS-FedAuthRedirect`, `X-RateLimit`, `dev.azure.com`, `vssps.dev.azure.com`, `_apis/connectionData`, `_apis/identities`, `queryMembership`, `createAdoClient`, `adoAuthHeaders`, `better-sqlite3`, `pr_cache`, `readPrCache` — while all three must-hit control needles were found, so the scan reached the right files |
+| tests | **172 passing across 15 files**, up from 159 |
+
+**The success criterion as written is not satisfiable, and finding that out was the
+ticket.** It says to verify against the `X-RateLimit` accounting from T-004. That
+accounting reads four headers — `X-RateLimit-Remaining`, `-Limit`, `-Delay`, `-Reset` —
+and a header dump across every endpoint this app calls shows Azure DevOps sends **none of
+them**, ever. `rateLimit()` had been returning all-nulls since T-004 and always would.
+What ADO does send is `x-ratelimit-cost`, on `_apis/connectionData` and on nothing else:
+0.00049–0.00055 TSTU per call. So the ticket's own instrument does not exist, and the
+substitute is our own counter plus that per-call cost as a floor. The measured night
+comes to a quarter of one TSTU against a 200-TSTU window — roughly a 70,000× margin. The
+honest conclusion is that **cadence was never the constraint**, and no interval this
+ticket could have picked would have made it one.
+
+**Measuring first turned the ticket into a different ticket.** Three consecutive polls,
+instrumented: one `loadInbox` was **6** calls, and **4** of them re-derived an answer that
+cannot change between two polls two minutes apart — `connectionData`, `teams`, and two
+`identities` lookups. Only the two `pullrequests` pages carry news. Memoising the identity
+half takes a poll from 6 calls to 2 and, incidentally, from ~1450 ms to ~265 ms, because
+the warm poll no longer has the `connectionData` → `identities` chain to serialise behind.
+That is a 67 % cut, and it is larger than the difference between every interval on the
+table. Tuning the number without doing this would have been optimising the wrong term.
+
+The memo is a `WeakMap` keyed on the client object rather than a module-level variable, so
+a re-entered PAT or a switched org gets a new client and therefore a new entry instead of
+the previous account's identity. A rejected lookup is evicted rather than cached — this
+call fails on a network blip far more often than on a bad token, and a cached rejection
+would be permanent.
+
+**"Unfocused" and "hidden" are not the same thing, and only one of them is what happens
+overnight.** TanStack Query's focus manager keys on `visibilitychange`; so would any
+obvious implementation here. But a browser window sitting behind another window, or on a
+second monitor, reports `visibilityState: 'visible'` all night — it is unfocused and
+un-hidden, and a visibility-only rule would keep it polling every two minutes until
+morning. Hence the third tier: visible, but no pointer or key event for five minutes,
+polls at 15 minutes rather than 2. Slow rather than stopped, because the window is on
+screen and a wrong number someone can read is still a wrong number. A genuinely hidden tab
+stops entirely — there is nobody to show anything to, and the query refetches on focus
+anyway, so the common shape of "left open overnight" costs **zero**.
+
+**Refresh now means "I think this is wrong", and it is aimed at both caches.** T-007 left
+this decision here on purpose. Its cache is keyed by `commitId`, which is exactly right
+for a push and blind to everything else: a thread opened or resolved *without* a push does
+not move the commit, so the unresolved count stays stale for the life of the page and no
+poll can ever correct it. That is the number someone presses Refresh about. So Refresh
+bumps a generation that flows through `useHydration` → `hydrateQuery` → `hydrate`, which
+skips the cache read for that one run and writes the fresh answer back for the next poll.
+Polls stay cache-first; only the button pays.
+
+**Deliberately not done.** `CADENCE.pullRequest` is declared and nothing subscribes to it,
+because round 1 has no open-PR surface to subscribe — the same shape as T-009 registering
+`[`/`]` before the files phase exists. No exponential backoff and no adaptive interval:
+with a 70,000× margin there is nothing to adapt to, and the throttle gate in T-004 already
+covers the case where ADO decides otherwise. No `mousemove` or `scroll` in the activity
+set — `pointerdown` and `keydown` are enough to notice a person and do not fire hundreds
+of times a second.
+
+**Watch: a team-membership change stays invisible for up to 30 minutes.** That is
+`WHO_TTL_MS`, and it is the price of the 6→2 cut. It is bounded, it only affects which
+*section* a PR lands in rather than whether it is seen at all, and Refresh clears it
+immediately — so it is never something anyone has to wait out.
+
+**Not verified: an actual overnight run.** The 480-call figure is arithmetic over a
+measured per-poll cost, not eight hours of observation, and the machine sleeping or the
+laptop lid closing would only make it smaller. Also unverified: that the idle tier fires
+correctly in a real browser left alone — it is unit-tested against fake timers and a
+stubbed `visibilityState`, which is not the same as a window sitting untouched on a second
+monitor.
 
 ---
 

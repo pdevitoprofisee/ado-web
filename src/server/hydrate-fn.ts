@@ -71,7 +71,12 @@ export const hydrateQuery = createServerFn({ method: 'POST' })
       throw new Error(`Too many pull requests in one request (max ${MAX_TARGETS}).`)
     }
 
-    return { targets: targets.map(target) }
+    return {
+      targets: targets.map(target),
+      // Refresh, not a poll. The commit-keyed cache cannot see a comment posted
+      // without a push, so this is the only way that count ever corrects.
+      fresh: (data as { fresh?: unknown } | null)?.fresh === true,
+    }
   })
   .handler(async ({ data }): Promise<readonly HydrationResult[]> => {
     // Silent on a missing credential rather than an error per row: the inbox
@@ -89,5 +94,5 @@ export const hydrateQuery = createServerFn({ method: 'POST' })
     let identity: Promise<string> | undefined
     const me = () => (identity ??= resolveIdentity(client).then((who) => who.id.toLowerCase()))
 
-    return client.fanOut(data.targets, (one) => hydrate(client, one, me))
+    return client.fanOut(data.targets, (one) => hydrate(client, one, me, undefined, data.fresh))
   })

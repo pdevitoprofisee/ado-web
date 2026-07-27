@@ -222,14 +222,20 @@ export function approvalWasReset(
  * The cache is read through `readPrCache`, which compares the commit inside the
  * read — so a PR nobody has pushed to costs zero calls here, and a PR that moved
  * cannot serve a stale row even if this function forgot to check.
+ *
+ * `fresh` is the one way past it, and it exists because the commit key has a
+ * blind spot T-007 surfaced deliberately: a thread opened or resolved *without*
+ * a push does not change `commitId`, so the count stays stale for the life of
+ * the page. That is the wrong number someone presses Refresh about (T-008).
  */
 export async function hydrate(
   client: AdoClient,
   target: HydrationTarget,
   me: () => Promise<string>,
   db?: DatabaseSync,
+  fresh = false,
 ): Promise<HydrationResult> {
-  const cached = readPrCache<Hydration>(target.id, target.commitId, db)
+  const cached = fresh ? undefined : readPrCache<Hydration>(target.id, target.commitId, db)
   if (cached !== undefined) return { id: target.id, ok: true, data: cached }
 
   const base = `${target.projectId}/_apis/git/repositories/${target.repositoryId}/pullRequests/${target.id}`

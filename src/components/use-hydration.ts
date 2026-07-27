@@ -72,9 +72,15 @@ export interface Hydrating {
   registerList: (element: HTMLUListElement | null) => (() => void) | undefined
 }
 
-export function useHydration(rows: readonly PullRequestRow[]): Hydrating {
+/**
+ * `generation` is how Refresh reaches this hook. Bumping it re-runs hydration
+ * for rows whose `commitId` has not moved — the one case the cache cannot
+ * detect and a poll therefore cannot fix (T-008).
+ */
+export function useHydration(rows: readonly PullRequestRow[], generation = 0): Hydrating {
   const [results, setResults] = useState<ReadonlyMap<string, HydrationResult>>(() => new Map())
   const lists = useRef(new Set<HTMLElement>())
+  const hydrated = useRef(generation)
 
   const registerList = useCallback((element: HTMLUListElement | null) => {
     if (element === null) return undefined
@@ -97,6 +103,10 @@ export function useHydration(rows: readonly PullRequestRow[]): Hydrating {
 
     let cancelled = false
     let cancelIdle = () => {}
+    // True only for the run a Refresh caused, so a subsequent poll that changes
+    // the fingerprint goes back to being cache-first.
+    const fresh = generation !== hydrated.current
+    hydrated.current = generation
 
     const target = (row: PullRequestRow): HydrationTarget => ({
       id: row.id,
@@ -112,7 +122,7 @@ export function useHydration(rows: readonly PullRequestRow[]): Hydrating {
         // A transport failure is turned into per-row failures rather than being
         // swallowed: the ticket's rule is that a row whose data did not arrive
         // says so, and a row stuck plain forever says nothing.
-        const answers = await hydrateQuery({ data: { targets: slice.map(target) } }).catch(
+        const answers = await hydrateQuery({ data: { targets: slice.map(target), fresh } }).catch(
           (error: unknown): HydrationResult[] =>
             slice.map((row) => ({ id: row.id, ok: false, error: message(error) })),
         )
@@ -146,7 +156,7 @@ export function useHydration(rows: readonly PullRequestRow[]): Hydrating {
     }
     // `rows` is read through `fingerprint`, which is what actually changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fingerprint])
+  }, [fingerprint, generation])
 
   return {
     hydrationOf: (row) => results.get(keyOf(row)),

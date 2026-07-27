@@ -1,8 +1,9 @@
-import { useMemo } from 'react'
+import { useMemo, useReducer, useRef } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 
 import { inboxQuery } from '@/server/inbox-fn'
+import { CADENCE, useCadence } from '@/lib/cadence'
 import { PullRequestSection } from '@/components/pr-list'
 import { useHydration } from '@/components/use-hydration'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -12,7 +13,26 @@ import { Kbd } from '@/components/ui/kbd'
 export const Route = createFileRoute('/')({ component: Home })
 
 function Home() {
-  const query = useQuery({ queryKey: ['inbox'], queryFn: () => inboxQuery() })
+  const refetchInterval = useCadence(CADENCE.inbox)
+  // Set by Refresh and consumed by the next run, so the button and the poll can
+  // share one query key while meaning different things by it.
+  const forceFresh = useRef(false)
+  // The same intent, aimed at the other cache: hydration is keyed by commit and
+  // a poll never re-asks for a row that has not been pushed to.
+  const [generation, refreshed] = useReducer((n: number) => n + 1, 0)
+  const query = useQuery({
+    queryKey: ['inbox'],
+    queryFn: () => {
+      const fresh = forceFresh.current
+      forceFresh.current = false
+
+      return inboxQuery({ data: { fresh } })
+    },
+    refetchInterval,
+    // The poll is the freshness mechanism; without this, every remount would
+    // refetch on top of it.
+    staleTime: CADENCE.inbox,
+  })
   const result = query.data
   const inbox = result?.inbox ?? null
 
@@ -21,6 +41,7 @@ function Home() {
   // bottom of "Assigned to me" is.
   const { hydrationOf, registerList } = useHydration(
     useMemo(() => [...(inbox?.assignedToMe ?? []), ...(inbox?.mine ?? [])], [inbox]),
+    generation,
   )
 
   return (
@@ -91,9 +112,22 @@ function Home() {
               · {inbox.scanned} active PRs scanned
               {inbox.hidden > 0 ? ` · ${inbox.hidden} hidden as over 3 years old` : ''}
             </span>
+            {/* The budget, in the only unit that is actually observable. ADO
+                sends no `X-RateLimit-Remaining` on any endpoint we call, so a
+                running call count is what "left open overnight" gets checked
+                against — see T-008. */}
+            {result?.rateLimit ? (
+              <span title={`≥ ${result.rateLimit.cost.toFixed(4)} TSTU billed`}>
+                {result.rateLimit.calls} ADO calls this session
+              </span>
+            ) : null}
             <Button
               className="ml-auto"
-              onPress={() => query.refetch()}
+              onPress={() => {
+                forceFresh.current = true
+                refreshed()
+                void query.refetch()
+              }}
               isDisabled={query.isFetching}
             >
               {query.isFetching ? 'Refreshing…' : 'Refresh'}

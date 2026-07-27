@@ -347,15 +347,55 @@ export function partition(
 }
 
 /** Teams need the identity, so the pair chains; kept together so it can run alongside. */
-async function resolveWho(client: AdoClient): Promise<{ identity: Identity; teams: Team[] }> {
+interface Who {
+  readonly identity: Identity
+  readonly teams: Team[]
+}
+
+async function resolveWho(client: AdoClient): Promise<Who> {
   const identity = await resolveIdentity(client)
 
   return { identity, teams: await resolveMyTeams(client, identity) }
 }
 
-export async function loadInbox(client: AdoClient): Promise<Inbox> {
+/**
+ * Who you are, remembered between polls — the single biggest lever on what an
+ * inbox left open costs (T-008).
+ *
+ * Measured live: one `loadInbox` is **6** calls and **4** of them re-derive an
+ * answer that does not change — `connectionData`, two `identities` and `teams`.
+ * The PR list is the only part of a poll that has news in it. Memoising this
+ * takes a poll from 6 calls to 2, which is a larger saving than any interval
+ * this ticket could have chosen.
+ *
+ * Keyed on the client object, so a re-entered PAT or a switched org gets a new
+ * client (see `ado.ts`) and therefore a new entry rather than the old identity.
+ * The TTL is the bound on how long a genuine membership change stays invisible;
+ * an explicit refresh passes `fresh` and skips it entirely, so the staleness is
+ * never something you have to wait out.
+ */
+const WHO_TTL_MS = 30 * 60_000
+
+const remembered = new WeakMap<AdoClient, { at: number; who: Promise<Who> }>()
+
+function whoAmI(client: AdoClient, fresh: boolean): Promise<Who> {
+  const hit = remembered.get(client)
+  if (!fresh && hit !== undefined && Date.now() - hit.at < WHO_TTL_MS) return hit.who
+
+  const who = resolveWho(client)
+  // A cached rejection would be permanent, and the failure here is a network
+  // blip far more often than it is a bad token.
+  who.catch(() => {
+    if (remembered.get(client)?.who === who) remembered.delete(client)
+  })
+  remembered.set(client, { at: Date.now(), who })
+
+  return who
+}
+
+export async function loadInbox(client: AdoClient, fresh = false): Promise<Inbox> {
   const [{ identity, teams }, pullRequests] = await Promise.all([
-    resolveWho(client),
+    whoAmI(client, fresh),
     listActivePullRequests(client),
   ])
 

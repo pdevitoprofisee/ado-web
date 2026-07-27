@@ -71,6 +71,17 @@ export interface RateLimit {
   /** Epoch ms before which the client will not send. */
   readonly throttledUntil: number | null
   readonly throttled: boolean
+  /**
+   * Our own accounting, because ADO's is mostly not there (T-008).
+   *
+   * `calls` is every request this client has sent since the process started —
+   * the only number that is always available. `cost` is the sum of
+   * `X-RateLimit-Cost`, which *is* TSTU and *is* the budget's unit, but which
+   * live arrives on `connectionData` and nothing else; it is therefore a floor
+   * on what we have spent, never a total.
+   */
+  readonly calls: number
+  readonly cost: number
 }
 
 /** A response ADO refused. `detail` is ADO's own explanation, credential-redacted. */
@@ -168,6 +179,8 @@ export function createAdoClient(
     resetAt: null,
     throttledUntil: null,
     throttled: false,
+    calls: 0,
+    cost: 0,
   }
 
   /**
@@ -196,6 +209,8 @@ export function createAdoClient(
       resetAt: reset === null ? state.resetAt : reset * 1000,
       throttledUntil,
       throttled: throttledUntil !== null && throttledUntil > Date.now(),
+      calls: state.calls + 1,
+      cost: state.cost + (header(response, 'X-RateLimit-Cost') ?? 0),
     }
   }
 

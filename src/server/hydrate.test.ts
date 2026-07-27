@@ -73,6 +73,8 @@ function fakeClient(replies: Record<string, unknown>): AdoClient & { calls: Call
       resetAt: null,
       throttledUntil: null,
       throttled: false,
+      calls: calls.length,
+      cost: 0,
     }),
   }
 }
@@ -233,6 +235,27 @@ describe('hydrate', () => {
 
     expect(second.calls).toHaveLength(0)
     expect(again.ok && again.data.unresolved).toBe(1)
+  })
+
+  it('refetches on Refresh even though nothing was pushed', async () => {
+    // The commit key's blind spot: a thread opened or resolved without a push
+    // does not move `commitId`, so a poll can never correct the count (T-008).
+    const db = memory()
+    await hydrate(fakeClient(replies), TARGET, me, db)
+
+    const forced = fakeClient({
+      ...replies,
+      '/threads': { value: [thread(), thread()] },
+    })
+    const again = await hydrate(forced, TARGET, me, db, true)
+
+    expect(forced.calls).toHaveLength(3)
+    expect(again.ok && again.data.unresolved).toBe(2)
+    // And the refreshed answer replaces the stale one for the next poll.
+    const next = fakeClient(replies)
+    const polled = await hydrate(next, TARGET, me, db)
+    expect(next.calls).toHaveLength(0)
+    expect(polled.ok && polled.data.unresolved).toBe(2)
   })
 
   it('refetches once the PR is pushed to', async () => {
