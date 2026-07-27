@@ -20,6 +20,10 @@ stopping this from merging*. The measured payloads say that question is answerab
 four calls. The link out stays, demoted to a secondary affordance, because there will
 always be something only ADO can do.
 
+(**Four became five**, and six on the first pull request of a session or on a conflicted
+one — the working figures are in [T-012](#t-012--pr-detail-server-layer) and
+[T-013](#t-013--pr-detail-ui).)
+
 ---
 
 ## T-011 — PR detail endpoint inventory
@@ -212,7 +216,7 @@ sixth **only when `mergeStatus` is `conflicts`**.
 
 ## T-012 — PR detail server layer
 
-**Type:** feature · **Status:** open · **Blocked by:** T-011 (resolved)
+**Type:** feature · **Status:** resolved · **Blocked by:** T-011 (resolved)
 
 Assemble one pull request into [`PullRequestDetail`](../../src/server/pull-request.ts). The
 type contract is already committed; this ticket fills in the function behind it and the
@@ -252,11 +256,75 @@ server function that exposes it.
 rows on a poll; this page is one PR, opened deliberately, and the correct answer to "is it
 stale" on a page someone is actively reading is to have asked just now.
 
+### Resolution
+
+[`pull-request.ts`](../../src/server/pull-request.ts) fills in the contract;
+[`pull-request-fn.ts`](../../src/server/pull-request-fn.ts) exposes it. Verified live
+against `Profisee`, read-only, and by 29 fixture tests in
+[`pull-request.test.ts`](../../src/server/pull-request.test.ts).
+
+| Success criterion | Evidence |
+|---|---|
+| Five calls, six when conflicted | detail · evaluations · commits · iterations · changes, then `conflicts` only under `mergeStatus === 'conflicts'` |
+| Independent calls fan out | four thunks through `client.fanOut`; only `changes` awaits, because it needs an iteration id |
+| Conflicts from the `conflicts` endpoint | `MergeState.conflicts` carries path + type + resolved; live types `editEdit` (36), `deleteEdit` (4), `editDelete` (1) |
+| Explicit `$top`, no `nextTop` feedback | `FILE_LIMIT = 5000`; `nextTop` and `nextSkip` ignored |
+| One section fails, the page does not | `section()` returns `{data, error}`; only the detail call throws |
+| `changeType` parsed as flags | `changeFlags` splits; live `edit` 2578, `add` 588, `delete` 77, `edit, rename` 40, `rename` 5 |
+| Complete or `truncated` | `entries.length >= FILE_LIMIT` |
+| Policies stable under a duplicate name | `id` from `configuration.id`; `policyName` qualifies with a build's `displayName` or the scoped branch |
+| `blocking` means blocking *now* | `isBlocking && isEnabled !== false && !SATISFIED.has(status)` |
+| Shape validation | `GUID` regex on both ids, `Number.isSafeInteger(id) && id > 0` |
+| Three failures, three answers | `PullRequestDetailResult` carries `connected`, `notFound`, `error` separately |
+
+**The file list is not paged, and that is a measurement rather than an omission.** Three
+independent enumerations of the same 1096-file PR — one `$top=2000` call, a blind `$skip`
+walk in pages of 25, and a service-directed walk — returned identical path sets. So note 6's
+*a short page is not the last page* trap, which is real on `_apis/git/pullrequests`, does
+**not** reach `changes`: nothing filters entries inside a PR you can already read. The
+endpoint does not clamp either — `$top=100000` was accepted, and the 1096-file PR came back
+whole in one 288 KB response. What does bite is `nextTop`, which is `min($top, remaining)`
+and looks exactly like a page size; feeding it back walks the tail one file at a time.
+
+**`resolveViewer` is memoised on the client, without a TTL, on purpose.** Marking "that's
+you" in the reviewer list needs an identity, and that would have been a sixth call on every
+page. The inbox memoises the same answer behind a TTL because *team membership* can change
+under it; an account's own id cannot, so there is nothing here for a TTL to protect and the
+second PR you open still costs five. A rejection is evicted rather than cached, because this
+fails on a network blip far more often than on a bad token, and a cached rejection would be
+permanent. Keyed by `WeakMap` on the client, so a re-entered PAT or a switched org gets a
+fresh answer.
+
+**Two of the derivations exist because the intuitive version is wrong**, both recorded in
+T-011 and both now structural rather than commented: `Person` has no `vote` field, so the
+always-zero vote nested inside `votedFor` cannot be read by accident; and `mergeStatus`
+missing entirely yields `status: ''`, which is neutral — inventing the documented-but-never-
+observed `notSet` would be reporting an answer ADO did not give.
+
+**Deliberately not done:** SQLite caching, as scoped. Also no retry on a failed section — a
+section that failed says so and the page renders; the poll is the retry.
+
+**Watch:** `FILE_LIMIT` at 5000 against a measured maximum of 1096. If a PR ever trips
+`truncated`, the fix is paging on `$skip` with a fixed `$top`, not a bigger number.
+
+**Not verified:** `isFlagged` on a reviewer (never true live); `changeType` values beyond the
+five seen; whether `conflicts` pages at all — the largest live conflict list was 36 entries.
+
+**Surfaced for T-013:** `errors.conflicts` fails independently of `merge.conflicted`. The
+banner must still say *conflicted* when the path list could not be fetched.
+
+**Corrected during T-013, in this file.** Two of the derivations above were wrong against
+live data and are now fixed: `commentTruncated` is surfaced as `Commit.bodyOmitted` because
+it marks a dropped message *body*, not a clipped subject, and `policyDetail` reads
+`requiredReviewerIds` before `minimumApproverCount` because a real policy carries both. The
+criteria above still say `commentTruncated` — that was the name at the time, and the
+measurements that changed it are in [T-013](#t-013--pr-detail-ui).
+
 ---
 
 ## T-013 — PR detail UI
 
-**Type:** feature · **Status:** open · **Blocked by:** T-012
+**Type:** feature · **Status:** resolved · **Blocked by:** T-012 (resolved)
 
 The reading surface. Presentational only — it takes a `PullRequestDetail` and renders it.
 
@@ -294,11 +362,92 @@ need a call; work items need a second `_apis/wit/workitems` batch with its own 2
 `errorPolicy` trap to turn refs into anything a person can read. Neither is worth widening
 this round for, and neither has to be re-derived when its round comes.
 
+### Resolution
+
+[`pr-detail.tsx`](../../src/components/pr-detail.tsx) is the reading surface;
+[`pr.$projectId.$repositoryId.$prId.tsx`](../../src/routes/pr.$projectId.$repositoryId.$prId.tsx)
+is the route that fetches and hands it a `PullRequestDetail`. 27 tests in
+[`pr-detail.test.tsx`](../../src/components/pr-detail.test.tsx), plus a live render check
+described below.
+
+| Success criterion | Evidence |
+|---|---|
+| Header | title, `!id`, `project/repository`, author, `age()` reused from the inbox, `source → target` with `refs/heads/` stripped, `draft` chip |
+| Description in full | `whitespace-pre-wrap`, unparsed and untruncated; the live !24795 description rendered 583 characters against the inbox row's 400 |
+| Conflict stated loudly, as paths | `MergeBanner` keys on `merge.conflicted`, never on the status, and lists path + ADO's own conflict type; conflicted paths are also marked in the file list, matched on `item.path` |
+| …and three states, not two | T-012 surfaced that `errors.conflicts` fails independently: the banner still says *conflicted* and says the paths could not be read |
+| Untested merge not dressed up as a conflict | `UNTESTED = {queued, notSet}` gets one quiet sentence; an empty `status` gets nothing, because not saying is not the same as saying "not tested" |
+| Reviewers weighted for real data | `team` chip, `you` chip against `viewerId`, "on behalf of …" from `votedFor`, and `required` in full weight against a recessive `optional` — `isRequired` sits on 127 containers to 23 people live |
+| Checklist is the primary content | rendered above the description, grouped `Blocking · Passed · Not applicable · Optional`, first group to claim a policy wins |
+| Each row names the specific thing | `name — detail`; a row that still collides after its detail carries `#id`, because the probe found two "Minimum number of reviewers" on one PR |
+| Vote vocabulary spelled out | `voteWord` maps the five integers and falls through to `vote N` rather than inventing a word |
+| Commits | short sha linking out, subject, author, `age()` |
+| Files survive a long path | the directory truncates and the filename never does |
+| Empty ≠ failed | `Empty` and `Failed` are different components with different words, and a failed section drops its count rather than rendering `0` |
+
+**Two things the component said were corrected by live data, not by review.** Both had
+green tests over them, and both are worth writing down because the cause was the same in
+each case: a fixture narrower than what the service sends.
+
+- The commit chip said **truncated**. ADO's `commentTruncated` was true on 9 of 21 live
+  commits, at message lengths of 33–86 characters, so it is not a length limit. Compared
+  against the standalone commit resource, which returns the whole message: on 4 of 4 the
+  `comment` we were handed was **exactly the complete first line** and what had been dropped
+  was the body under the blank line. The subject is whole. The field is now
+  `Commit.bodyOmitted` and the chip reads **+ body** — the previous wording told the reader
+  that nearly half the subjects on this org were cut off, and none were.
+- Every required-reviewer row read **"1 approval, author counts"**. A live "Required
+  reviewers" policy carries both `requiredReviewerIds` *and* `minimumApproverCount` — 10 of
+  10 across 12 PRs — and `policyDetail` checked the count first, which is the less specific
+  of the two. Reordered; the same row now reads "1 required reviewer". The unit fixture had
+  carried only one of the two keys, which is exactly how a green suite sat on a visibly
+  wrong page.
+
+**The route fetches in a `useQuery`, deliberately not in a loader.**
+[`router.tsx`](../../src/router.tsx) sets `defaultPreload: 'intent'`, so a route loader would
+fire this page's five ADO calls on **hover** — running the cursor down the inbox would spend
+hundreds of calls on pull requests nobody opened. Fetching in the component sidesteps that by
+construction, and `router.tsx` was left untouched rather than made to special-case one route.
+
+**The URL is validated before it is spent.** `prId` can be typed, pasted, or stale, so the
+route checks `Number.isSafeInteger(id) && id > 0` itself and answers a bad one with a
+sentence. `enabled` on the query keeps a malformed URL from costing a round trip. The four
+outcomes the server function distinguishes — not connected, 404, ADO refused, the function
+itself threw — each get their own message, because "nothing here" and "your token cannot see
+this" send a person to different places.
+
+**Polling is worth more here than on the inbox**, because this is the page you leave open
+while a build finishes: `CADENCE.pullRequest` through `useCadence`, so a page left open
+overnight stops rather than asking until morning. `Esc` is bound to `nav.back` and means
+"return to the inbox" here, against "clear the selection" on the inbox — see T-014's note on
+the last-binding-wins stack.
+
+**Live verification.** The real `PullRequestDetailView` was rendered in jsdom against
+payloads fetched live from `Profisee` — !24790 (conflicted, 1 conflict path, 5 reviewers, 9
+files), !24795 (8 policies, 3 reviewers of which 2 are containers, 6 files), !24797 (9
+policies, 1 file). No throw on any of them, and both defects above were found this way. The
+route itself was checked only as far as the dev server answering **200** for
+`/pr/<guid>/<guid>/24795`; SSR is off for app routes, so that proves the router resolved the
+path, not that the page painted.
+
+**Call accounting, precisely.** T-012 says five calls, six when conflicted. Measured, the
+*first* PR of a session costs **six** either way: `resolveViewer` spends one identity call to
+find out whose row gets the `you` chip. It is memoised on a `WeakMap` keyed by client, so
+every PR after the first is back to five.
+
+**Deliberately not done:** a markdown renderer for the description. It is often markdown-ish,
+and a dependency this round did not agree to. No comment count, no labels, no work items — as
+scoped.
+
+**Not verified:** the file list's `truncated` line (no live PR came near `FILE_LIMIT`), the
+`resolved` chip on a conflict (never true live), and `broken` / `unknown` policy statuses,
+which have icons and words but no live sighting.
+
 ---
 
 ## T-014 — Open the detail page from the inbox
 
-**Type:** feature · **Status:** open · **Blocked by:** T-013
+**Type:** feature · **Status:** resolved · **Blocked by:** T-013 (resolved)
 
 Today an inbox row is an `<a href={row.url} target="_blank">` — clicking a pull request
 leaves the app. That was right when there was nowhere to go; it is not right now.
@@ -319,3 +468,56 @@ leaves the app. That was right when there was nowhere to go; it is not right now
   into.
 - Tests cover the row rendering as an internal link, the secondary ADO affordance still being
   present, and the keyboard bindings resolving through the registry.
+
+### Resolution
+
+[`pr-list.tsx`](../../src/components/pr-list.tsx) and [`index.tsx`](../../src/routes/index.tsx).
+21 tests in [`pr-list.test.tsx`](../../src/components/pr-list.test.tsx).
+
+| Success criterion | Evidence |
+|---|---|
+| Row navigates internally | `<Link to="/pr/$projectId/$repositoryId/$prId">` wraps the row body |
+| ADO still one gesture away | a second `<a target="_blank">` with an `ExternalLink` icon and an `sr-only` name |
+| `j` `k` `Enter` `Esc` through the registry | `useInboxSelection` binds `nav.next`/`nav.previous`/`nav.open`/`nav.back` via `useCommand` — **no edit to [`registry.ts`](../../src/commands/registry.ts)**, the four commands were already declared in T-009 and were dimmed only because nothing handled them |
+| Cold load | the route reads its three params and fetches in the component; nothing depends on having come from the inbox |
+
+**The selection is a pull request id, not an index.** The inbox polls every two minutes and
+the poll can reorder rows or drop them. An index survives that and quietly points at a
+different pull request; an id either still exists or the selection is gone. `move()` clamps
+at both ends rather than wrapping, `j` from nothing selects the first row and `k` the last.
+
+**Both sections are one list for the keyboard**, because `j` off the end of "Assigned to me"
+lands on the top of "Mine" — which neither section can know on its own. `index.tsx` already
+built that concatenation for hydration ("visible first" is a property of the page, not of a
+list); it is now a named `rows` that both consumers share.
+
+**Selection moves focus rather than painting a highlight.** That is what puts the row in
+front of a screen reader, and it scrolls the row into view for free. `scrollIntoView` is
+optional-chained because jsdom does not implement it and the selection is still correct
+without it.
+
+**A row without GUIDs keeps its old behaviour.** `addressable()` is a type guard: when ADO
+answers without `projectId`/`repositoryId` the row's own click opens ADO, because a route
+that cannot be built is worse than the tab that used to open.
+
+**On back-navigation, honestly.** The 160-row inbox query is *not* refetched:
+`staleTime: CADENCE.inbox` covers it and both `refetchOnMount` and `refetchOnWindowFocus`
+respect it, and `scrollRestoration: true` was already set in
+[`router.tsx`](../../src/router.tsx). But `useHydration` holds its results in component
+`useState`, so hydration does **not** survive the unmount — rows repaint plain and re-issue
+`hydrateQuery`. That costs **zero ADO calls**, because `hydrate()` reads `pr_cache` keyed by
+`id@commitId` whenever `fresh` is false: it is a repopulate, not a reload. The criterion said
+"intact", and this is a flicker, not intact. Fixing it properly means lifting that state out
+of the hook, which is a refactor this ticket was not scoped to do.
+
+**Deliberately not done:** prefetch on hover. `router.tsx` sets `defaultPreload: 'intent'`,
+which is why the detail route fetches in a `useQuery` inside its component and not in a
+loader — see T-013.
+
+**Watch:** the sheet dims a row when nothing has bound the command, so all four `nav` rows
+go solid on the inbox by being handled rather than by being edited. `nav.back` is now bound
+in two places that mean different things by it — clear the selection on the inbox, go back
+to the inbox on the detail page. The provider's last-binding-wins stack is what keeps that
+honest, and it is the first command that has needed it.
+
+---

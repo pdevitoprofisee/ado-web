@@ -17,7 +17,7 @@ concurrent session skips it.
 | Phase | What lands | Status |
 |---|---|---|
 | **1** | Live API inventory · scaffold · hardening · secrets · ADO client · SQLite · inbox spine · command registry | **complete** — all ten tickets resolved |
-| 2 | PR detail shell: header, conflicts, policy checklist, votes, commits, file list | **in progress** — [round 2](./round-2.md) |
+| **2** | PR detail shell: header, conflicts, policy checklist, votes, commits, file list | **complete** — all four tickets resolved, [round 2](./round-2.md) |
 | 3 | The diff: blob fetch, local diff, virtualized rows, Shiki workers, viewed flags, side-by-side | next |
 | 4 | Comments: inline threads, collapse-when-done, composer, mentions, likes, status setters | after 3 |
 | 5 | Checks: statuses, build timeline, failed step logs, failed tests, re-run actions | after 2 |

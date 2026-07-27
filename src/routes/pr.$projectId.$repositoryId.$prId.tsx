@@ -1,22 +1,132 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
+import { ArrowLeft } from 'lucide-react'
+
+import { pullRequestQuery } from '@/server/pull-request-fn'
+import { CADENCE, useCadence } from '@/lib/cadence'
+import { useCommand } from '@/commands/command-provider'
+import { PullRequestDetailView } from '@/components/pr-detail'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Kbd } from '@/components/ui/kbd'
 
 // One pull request. Addressed by GUIDs rather than by the `Project/_git/Repo`
 // names ADO puts in its own URLs, because those are what the inbox row already
 // carries and what the server function validates by shape — a GUID cannot hold
-// a traversal sequence, and three of these are interpolated into an ADO path.
+// a traversal sequence, and all three are interpolated into an ADO path.
 //
-// Stub: T-013 renders it, T-012 feeds it.
+// **The fetch is a `useQuery` in the component, deliberately not a route
+// loader.** `router.tsx` sets `defaultPreload: 'intent'`, so a loader here
+// would fire this page's five ADO calls on *hover*, and running a cursor down
+// the inbox would spend hundreds of calls on pull requests nobody opened.
 
 export const Route = createFileRoute('/pr/$projectId/$repositoryId/$prId')({
   component: PullRequestPage,
 })
 
 function PullRequestPage() {
-  const { prId } = Route.useParams()
+  const { projectId, repositoryId, prId } = Route.useParams()
+  const navigate = useNavigate()
+  // A poll here is worth more than on the inbox: this is the page you leave
+  // open while a build finishes. Same tiering, so a page left open overnight
+  // stops rather than asking until morning.
+  const refetchInterval = useCadence(CADENCE.pullRequest)
+
+  // The URL is the one input nobody validated — it can be typed, pasted, or
+  // stale. Checked here so a bad id is answered with a sentence instead of a
+  // server round trip that throws.
+  const id = Number(prId)
+  const addressable = Number.isSafeInteger(id) && id > 0
+
+  const query = useQuery({
+    queryKey: ['pull-request', projectId, repositoryId, id],
+    queryFn: () => pullRequestQuery({ data: { projectId, repositoryId, id } }),
+    enabled: addressable,
+    refetchInterval,
+    staleTime: CADENCE.pullRequest,
+  })
+
+  // Esc means "back to the list" here, which is the one place the registry's
+  // `nav.back` has somewhere to go. On the inbox it clears the selection.
+  useCommand('nav.back', () => void navigate({ to: '/' }))
+
+  const result = query.data
 
   return (
-    <main className="mx-auto flex max-w-4xl flex-col gap-5 p-8">
-      <h1 className="text-2xl font-semibold tracking-tight">!{prId}</h1>
+    <main className="mx-auto flex max-w-4xl flex-col items-start gap-5 p-8">
+      <header className="flex w-full items-baseline justify-between gap-4">
+        <Link
+          to="/"
+          className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 text-sm"
+        >
+          <ArrowLeft className="size-3.5" aria-hidden />
+          Inbox
+        </Link>
+        <p className="text-muted-foreground text-xs">
+          <Kbd>Esc</Kbd> to go back
+        </p>
+      </header>
+
+      {!addressable ? (
+        <Alert variant="destructive">
+          <AlertTitle>That is not a pull request number</AlertTitle>
+          <AlertDescription>
+            <code>{prId}</code> is not a number, so there is nothing to look up. Check the
+            link, or <Link to="/">go back to the inbox</Link>.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {query.isPending && addressable ? (
+        <p className="text-muted-foreground text-sm">Loading !{prId}…</p>
+      ) : null}
+
+      {result && !result.connected ? (
+        <Alert>
+          <AlertTitle>Not connected yet</AlertTitle>
+          <AlertDescription>
+            Add an Azure DevOps personal access token in{' '}
+            <Link to="/onboarding">connections</Link> and this page will fill in.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {result?.notFound ? (
+        <Alert variant="destructive">
+          <AlertTitle>No pull request !{prId} here</AlertTitle>
+          <AlertDescription>
+            Either the link is wrong or it is in a repository this token cannot read. A
+            deleted or moved pull request looks the same from here.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {result?.connected && result.error && !result.notFound ? (
+        <Alert variant="destructive">
+          <AlertTitle>Azure DevOps did not answer</AlertTitle>
+          <AlertDescription>{result.error}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {query.isError ? (
+        <Alert variant="destructive">
+          <AlertTitle>The server function failed</AlertTitle>
+          <AlertDescription>{query.error.message}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {result?.pullRequest ? (
+        <PullRequestDetailView pr={result.pullRequest} failed={result.failed} />
+      ) : null}
+
+      {/* The same budget line the inbox carries, for the same reason: this page
+          is five calls where the inbox is two, and it polls. */}
+      {result?.rateLimit ? (
+        <footer className="text-muted-foreground w-full text-xs">
+          <span title={`≥ ${result.rateLimit.cost.toFixed(4)} TSTU billed`}>
+            {result.rateLimit.calls} ADO calls this session
+          </span>
+        </footer>
+      ) : null}
     </main>
   )
 }
