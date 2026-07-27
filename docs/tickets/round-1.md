@@ -324,7 +324,7 @@ against the `X-RateLimit` accounting from T-004, not by feel.
 
 ## T-009 — Command registry and shortcut sheet
 
-**Type:** task (AFK) · **Status:** open · **Blocked by:** T-002
+**Type:** task (AFK) · **Status:** claimed · **Blocked by:** T-002
 
 One registry that owns every keyboard shortcut, plus the `?` sheet rendered *from* the
 registry so it can't drift.
@@ -343,7 +343,7 @@ that have to be unpicked.
 
 ## T-010 — Localhost hardening
 
-**Type:** task (AFK) · **Status:** open · **Blocked by:** T-002
+**Type:** task (AFK) · **Status:** claimed · **Blocked by:** T-002
 
 The map's security note in full, minus the third that T-002 already proved is handled.
 **Origin validation ships with Start** — a server-function call with no `Origin`, or a
