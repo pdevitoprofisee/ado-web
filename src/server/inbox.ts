@@ -30,6 +30,15 @@ const TEAMS_VERSION = '7.1-preview.3'
 /** `_apis/teams` pages like everything else; 43 teams live, so one page covers it. */
 const TEAM_PAGE_SIZE = 500
 
+/**
+ * Older than this and it is history, not a queue. Live, every PR in "Assigned
+ * to me" was from early 2022 — abandoned work reaching this account through a
+ * nested group, with the team's vote already recorded as rejected. Counted
+ * rather than dropped: `hidden` is rendered, because a row disappearing with no
+ * explanation is the same failure as the filter bugs this file keeps hitting.
+ */
+const MAX_AGE_MS = 3 * 365 * 24 * 3600e3
+
 interface ConnectionData {
   readonly authenticatedUser?: {
     readonly id?: string
@@ -112,6 +121,8 @@ export interface Inbox {
   readonly mine: readonly PullRequestRow[]
   /** Active PRs org-wide — the denominator the two sections were drawn from. */
   readonly scanned: number
+  /** Of those, how many were mine or my team's but too old to show. */
+  readonly hidden: number
 }
 
 /**
@@ -254,19 +265,33 @@ export function partition(
   identity: Identity,
   teams: readonly Team[],
   org: string,
-): { assignedToMe: PullRequestRow[]; mine: PullRequestRow[] } {
+  now: number = Date.now(),
+): { assignedToMe: PullRequestRow[]; mine: PullRequestRow[]; hidden: number } {
   const me = key(identity.id)
   const teamNames = new Map(teams.map((team) => [key(team.id) as string, team.name]))
   const assignedToMe: PullRequestRow[] = []
   const mine: PullRequestRow[] = []
+  let hidden = 0
+
+  /**
+   * A date ADO did not send is *kept*. "We could not tell how old this is" is
+   * not a reason to hide a review request, and the age column already renders
+   * blank for it.
+   */
+  const tooOld = (pr: AdoPullRequest): boolean => {
+    const at = Date.parse(pr.creationDate ?? '')
+
+    return !Number.isNaN(at) && now - at > MAX_AGE_MS
+  }
 
   for (const pr of pullRequests) {
     if (typeof pr.pullRequestId !== 'number') continue
 
     if (key(pr.createdBy?.id) === me) {
-      mine.push(toRow(pr, org, null))
       // A PR cannot be both. Authoring wins: your own PR appearing under
       // "Assigned to me" is a review request you cannot act on.
+      if (tooOld(pr)) hidden++
+      else mine.push(toRow(pr, org, null))
       continue
     }
 
@@ -278,10 +303,15 @@ export function partition(
       if (!reviewer.isContainer && id === me) direct = true
       else if (reviewer.isContainer && teamNames.has(id)) viaTeam ??= teamNames.get(id) as string
     }
-    if (direct || viaTeam !== null) assignedToMe.push(toRow(pr, org, direct ? null : viaTeam))
+    if (!direct && viaTeam === null) continue
+
+    // Counted only once it is established the PR was going to be shown, so
+    // `hidden` means "yours, and stale" rather than "old, somewhere in the org".
+    if (tooOld(pr)) hidden++
+    else assignedToMe.push(toRow(pr, org, direct ? null : viaTeam))
   }
 
-  return { assignedToMe: assignedToMe.sort(byNewest), mine: mine.sort(byNewest) }
+  return { assignedToMe: assignedToMe.sort(byNewest), mine: mine.sort(byNewest), hidden }
 }
 
 /** Teams need the identity, so the pair chains; kept together so it can run alongside. */

@@ -110,9 +110,10 @@ describe('paging', () => {
   })
 })
 
+const NOW = Date.parse('2026-07-27T00:00:00Z')
+
 describe('partition', () => {
-  const split = (prs: unknown[]) =>
-    partition(prs as never, IDENTITY, TEAMS, 'Contoso')
+  const split = (prs: unknown[]) => partition(prs as never, IDENTITY, TEAMS, 'Contoso', NOW)
 
   it('puts a PR reviewed by a team I belong to under Assigned to me', () => {
     const { assignedToMe, mine } = split([
@@ -194,6 +195,49 @@ describe('partition', () => {
     ])
 
     expect(mine.map((r) => r.id)).toEqual([9, 7, 5])
+  })
+
+  it('hides a PR over three years old and says how many it hid', () => {
+    const stale = { creationDate: '2022-03-01T00:00:00Z' }
+    const { assignedToMe, mine, hidden } = split([
+      pr(1, { reviewers: [{ id: TEAM, isContainer: true }], ...stale }),
+      pr(2, { createdBy: { id: ME }, ...stale }),
+      pr(3, { reviewers: [{ id: TEAM, isContainer: true }] }),
+    ])
+
+    expect(assignedToMe.map((r) => r.id)).toEqual([3])
+    expect(mine).toEqual([])
+    expect(hidden).toBe(2)
+  })
+
+  it('counts only PRs that were going to be shown', () => {
+    // A four-year-old PR belonging to nobody here is not "hidden", it was never
+    // in the inbox; counting it would make the footer meaningless.
+    const { hidden } = split([
+      pr(1, { reviewers: [{ id: COLLEAGUE }], creationDate: '2021-01-01T00:00:00Z' }),
+    ])
+
+    expect(hidden).toBe(0)
+  })
+
+  it('keeps a PR right up to the cutoff', () => {
+    const almost = new Date(NOW - 3 * 365 * 24 * 3600e3 + 60e3).toISOString()
+    const { assignedToMe, hidden } = split([
+      pr(1, { reviewers: [{ id: TEAM, isContainer: true }], creationDate: almost }),
+    ])
+
+    expect(assignedToMe.map((r) => r.id)).toEqual([1])
+    expect(hidden).toBe(0)
+  })
+
+  it('keeps a PR whose date ADO did not send', () => {
+    // "We cannot tell how old this is" is not a reason to hide a review request.
+    const { assignedToMe, hidden } = split([
+      pr(1, { reviewers: [{ id: TEAM, isContainer: true }], creationDate: undefined }),
+    ])
+
+    expect(assignedToMe.map((r) => r.id)).toEqual([1])
+    expect(hidden).toBe(0)
   })
 
   it('flattens a row to the fields the list renders', () => {

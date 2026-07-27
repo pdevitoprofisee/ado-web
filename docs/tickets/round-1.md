@@ -589,14 +589,24 @@ side by side. That is a browser check and it is the one criterion still owed. Th
 plausible, and internally consistent while resting on a filter that did not mean what the
 name said.
 
-**Surfaced for a later ticket: "Assigned to me" is technically correct and practically
-empty.** All four rows are from January–March **2022**, all authored by one person, all in
-`SaaS/PC.IAC.*`, and they reach this account only through a contractor group nested in a
-team it is not on. The container's vote on 3302 is `-10` (rejected). Meanwhile the account
-has **zero** direct reviewer assignments org-wide. So the honest reading is that there is
-nothing to review, and the section is showing four abandoned PRs rather than a queue. The
-levers, if that is unwanted, are an age cut-off or dropping indirect (nested-group)
-membership — both are product calls, not bugs, and neither is taken here.
+**Rows older than three years are hidden, and the count is rendered.** Once membership was
+honest, "Assigned to me" was technically correct and practically empty: all four rows from
+January–March **2022**, one author, all in `SaaS/PC.IAC.*`, reaching this account only
+through a contractor group nested in a team it is not on, with the container's vote on 3302
+already `-10` (rejected). The account has **zero** direct reviewer assignments org-wide, so
+the honest reading is that there is nothing to review.
+
+Paul's call was to cut them. The filter is in `partition`, and three details are
+deliberate. It runs *after* a PR is established as yours, so `hidden` means "yours, and
+stale" rather than "old, somewhere in the org" — otherwise the number is noise. A PR whose
+`creationDate` ADO did not send is **kept**, because "we cannot tell how old this is" is
+not a reason to drop a review request. And the count is in the footer rather than dropped
+silently: a row vanishing with no explanation is the same class of bug as the two filter
+traps above. Live: `scanned 164 · hidden 4`, **Assigned to me** now empty, **Mine**
+unchanged.
+
+Still not taken: dropping indirect (nested-group) membership, which would also empty the
+section but by a different rule.
 
 **Watch:** `X-RateLimit-*` still never appeared — a 4-call inbox is far too cheap to
 provoke it, so `DEFAULT_CONCURRENCY = 4` remains an unmeasured guess (T-004).

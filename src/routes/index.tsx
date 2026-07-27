@@ -76,6 +76,7 @@ function Home() {
                 ? inbox.teams.map((team) => team.name).join(', ')
                 : 'no teams'}{' '}
               · {inbox.scanned} active PRs scanned
+              {inbox.hidden > 0 ? ` · ${inbox.hidden} hidden as over 3 years old` : ''}
             </span>
             <Button
               className="ml-auto"
