@@ -1,3 +1,5 @@
+import { resolveIdentity } from './inbox'
+
 import type { AdoClient } from './ado-client'
 
 // Server-only. One pull request, assembled into the shape the detail page reads.
@@ -19,29 +21,59 @@ import type { AdoClient } from './ado-client'
 //     returned — but the list truncates `description` at 400 characters and the
 //     detail call returned 1710. Everything else on this page could have come
 //     from the inbox row.
+//   - **`mergeFailureMessage` does not exist.** Not null — absent, on 15 of 15
+//     conflicted active PRs, along with `mergeFailureType` and
+//     `lastMergeCommit`. Conflicts live on their own endpoint and are a *list
+//     of paths*, which is the more useful thing anyway: "what conflicts" beats
+//     "there are conflicts".
 
 /** The one endpoint in this file that is preview-only. */
 const POLICY_VERSION = '7.1-preview.1'
+
+/**
+ * One call, deliberately generous, and explicit because it has to be: **omit
+ * `$top` and the changes endpoint silently answers with 100**. It does not
+ * clamp — `$top=100000` is accepted, and the largest PR measured (1096 files)
+ * came back whole in one 288 KB response — so paging buys nothing here that a
+ * headroom this size does not already cover, and `truncated` covers the rest.
+ */
+const FILE_LIMIT = 5000
 
 export interface Person {
   readonly id: string
   readonly displayName: string
 }
 
+/** One file the merge cannot reconcile on its own. */
+export interface Conflict {
+  /** Matches `changeEntries[].item.path` exactly, so the two lists line up. */
+  readonly path: string
+  /** Live values: `editEdit` (36), `deleteEdit` (4), `editDelete` (1). */
+  readonly type: string
+  /** Already resolved in ADO's own conflict editor, and merely still listed. */
+  readonly resolved: boolean
+}
+
 /**
  * Conflict state, which the map asks to be "stated loudly".
  *
- * `status` is ADO's own vocabulary — `succeeded`, `conflicts`, `queued`,
- * `rejectedByPolicy`, `failure`, `notSet` — kept verbatim rather than folded
- * into a boolean, because "we have not tried to merge yet" and "we tried and it
- * failed" are different things to tell someone. `conflicted` is the one case
- * that changes what the reviewer should do.
+ * `status` is ADO's own vocabulary, kept verbatim rather than folded into a
+ * boolean, because "we have not tried to merge yet" and "we tried and it
+ * failed" are different things to tell someone. Only `succeeded` and
+ * `conflicts` were ever seen across 21133 PRs, and the field is **absent
+ * entirely** on abandoned ones — so an empty `status` means ADO did not say,
+ * which is neutral and must not be dressed up as a conflict.
+ *
+ * `conflicts` replaces what the contract first guessed was here. There is no
+ * `mergeFailureMessage`: measured, the key is absent on every conflicted PR.
+ * The list of paths is the better answer regardless — a reviewer wants to know
+ * *what* conflicts, not that something does.
  */
 export interface MergeState {
   readonly status: string
   readonly conflicted: boolean
-  /** ADO's `mergeFailureMessage`, when it sent one. */
-  readonly message: string | null
+  /** Empty unless `conflicted`; the endpoint is only asked then. */
+  readonly conflicts: readonly Conflict[]
 }
 
 /**
@@ -58,7 +90,12 @@ export interface Reviewer {
   /**
    * Present on a *person* who voted on behalf of a container: the containers
    * their vote was recorded against. This is the only way to attribute a team's
-   * vote to whoever actually cast it.
+   * vote to whoever actually cast it. Measured, it hangs off 117 of 197 people
+   * and 0 of 160 containers — the opposite of the intuitive reading.
+   *
+   * The `vote` nested inside each entry is **always 0** (verified on all 117)
+   * and is therefore not carried: a container's real vote is its own top-level
+   * row, and reading the nested one would report every team as undecided.
    */
   readonly votedFor: readonly Person[]
 }
@@ -102,8 +139,16 @@ export interface Policy {
 
 export interface Commit {
   readonly id: string
-  /** First line only. ADO sets `commentTruncated` when it clipped the rest. */
+  /** First line of the message, derived here. */
   readonly subject: string
+  /**
+   * ADO's `commentTruncated`, verbatim: the *message* was clipped before it
+   * reached us. It is not a statement about `subject` — a multi-line message is
+   * not truncated just because only its first line is shown — but it is the
+   * only signal that `subject` might itself be missing its ending, which is the
+   * case when the clipped text has no line break left in it.
+   */
+  readonly truncated: boolean
   readonly author: string
   readonly at: string
   readonly url: string
@@ -112,13 +157,18 @@ export interface Commit {
 /**
  * `changeType` is a `[Flags]` enum and arrives as a comma-separated string
  * (`"edit, rename"`), so it is parsed to a set rather than compared as a word.
+ * Live: `edit` 2578, `add` 588, `delete` 77, `edit, rename` 40, `rename` 5.
  */
 export interface ChangedFile {
   readonly path: string
   readonly changeType: readonly string[]
   /** Blob sha *after* the change — works directly as a blob id (map: the diff pipeline). */
   readonly objectId: string | null
-  /** Blob sha *before*. Absent on an add. */
+  /**
+   * Blob sha *before*. Absent on an add, and **equal to `objectId` on a pure
+   * rename**, which is the one case where a sha comparison says "unchanged" and
+   * is right about the bytes while being wrong about the file.
+   */
   readonly originalObjectId: string | null
 }
 
@@ -128,6 +178,24 @@ export interface FileList {
   readonly iterationId: number | null
   /** More files exist than were fetched. Rendered, never silently dropped. */
   readonly truncated: boolean
+}
+
+/**
+ * Which of the three optional sections could not be fetched, and why.
+ *
+ * A section that failed is not a section that is empty, and the page has to be
+ * able to say which: "no policies on this PR" and "we could not read the
+ * policies" look identical once a failure has been folded into an empty array,
+ * and only one of them means the checklist can be trusted. `null` is the good
+ * case. The header and the conflict state are absent from this list on purpose
+ * — they come from the detail call, which is the page's one hard dependency.
+ */
+export interface SectionErrors {
+  readonly policies: string | null
+  readonly commits: string | null
+  readonly files: string | null
+  /** The conflicting *paths*. Whether the PR conflicts at all is not in here. */
+  readonly conflicts: string | null
 }
 
 export interface PullRequestDetail {
@@ -153,6 +221,8 @@ export interface PullRequestDetail {
   readonly url: string
   /** Who is looking, so the UI can mark their own row. `null` if unresolved. */
   readonly viewerId: string | null
+  /** Per-section fetch failures. All `null` on a page that loaded whole. */
+  readonly errors: SectionErrors
 }
 
 /** Addresses one PR. GUIDs because they are interpolated into an ADO path. */
@@ -162,11 +232,470 @@ export interface PullRequestRef {
   readonly id: number
 }
 
+interface AdoIdentity {
+  readonly id?: string
+  readonly displayName?: string
+}
+
+interface AdoReviewer extends AdoIdentity {
+  readonly vote?: number
+  readonly isContainer?: boolean
+  readonly isRequired?: boolean
+  readonly votedFor?: readonly AdoIdentity[]
+}
+
+interface AdoDetail {
+  readonly pullRequestId?: number
+  readonly title?: string
+  readonly description?: string
+  readonly createdBy?: AdoIdentity
+  readonly creationDate?: string
+  readonly isDraft?: boolean
+  readonly status?: string
+  readonly sourceRefName?: string
+  readonly targetRefName?: string
+  /** Absent on every abandoned PR measured, so `undefined` is a real answer. */
+  readonly mergeStatus?: string
+  readonly reviewers?: readonly AdoReviewer[]
+  readonly repository?: {
+    readonly name?: string
+    readonly project?: { readonly name?: string }
+  }
+}
+
+interface AdoPolicySettings {
+  /** A build policy names its definition here; most other types send nothing. */
+  readonly displayName?: string
+  readonly buildDefinitionId?: number
+  readonly minimumApproverCount?: number
+  readonly creatorVoteCounts?: boolean
+  readonly requiredReviewerIds?: readonly string[]
+  readonly scope?: ReadonlyArray<{ readonly refName?: string | null }>
+}
+
+interface AdoPolicyContext {
+  readonly buildId?: number
+  readonly buildDefinitionName?: string
+  /** A build passed, but on an older commit. Phase 5 wants it; we keep it. */
+  readonly buildIsNotCurrent?: boolean
+}
+
+interface AdoEvaluation {
+  readonly status?: string
+  readonly context?: AdoPolicyContext | null
+  readonly configuration?: {
+    readonly id?: number | string
+    readonly isBlocking?: boolean
+    readonly isEnabled?: boolean
+    readonly type?: { readonly displayName?: string }
+    readonly settings?: AdoPolicySettings
+  }
+}
+
+interface AdoCommit {
+  readonly commitId?: string
+  readonly comment?: string
+  readonly commentTruncated?: boolean
+  readonly author?: { readonly name?: string; readonly date?: string }
+}
+
+/**
+ * The placement is a trap: `originalPath` sits on the *entry* while
+ * `originalObjectId` sits on the *item*, so the two halves of a rename are not
+ * next to each other. Only the sha is needed here; the entry-level path is left
+ * where it is until phase 3 wants it.
+ */
+interface AdoChangeEntry {
+  readonly changeType?: string
+  readonly item?: {
+    readonly path?: string
+    readonly objectId?: string
+    readonly originalObjectId?: string
+    readonly isFolder?: boolean
+  }
+}
+
+interface AdoConflict {
+  readonly conflictPath?: string
+  readonly conflictType?: string
+  /** `unresolved` | `partiallyResolved` | `resolved`, when ADO sends it at all. */
+  readonly resolutionStatus?: string
+}
+
+const branch = (ref: string | undefined): string => ref?.replace(/^refs\/heads\//, '') ?? ''
+
+const person = (identity: AdoIdentity | undefined): Person => ({
+  id: identity?.id ?? '',
+  displayName: identity?.displayName ?? 'unknown',
+})
+
+const plural = (count: number, noun: string): string =>
+  `${count} ${noun}${count === 1 ? '' : 's'}`
+
+/**
+ * `changeType` is a `[Flags]` enum on the wire: `"edit, rename"` is one entry,
+ * not two, and `changeType === 'edit'` stops matching the moment a file is both
+ * edited and moved. Splitting is the only reading that survives a rename.
+ */
+export function changeFlags(raw: string | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((flag) => flag.trim())
+    .filter((flag) => flag !== '')
+}
+
+/**
+ * The first line, and nothing else — no ellipsis, no marker. ADO's
+ * `commentTruncated` is carried beside it as a boolean instead, because a
+ * punctuation mark is not a signal: a commit subject can legitimately end in
+ * one, and the UI would have to guess.
+ */
+export const commitSubject = (comment: string | undefined): string =>
+  (comment ?? '').split('\n')[0].trim()
+
+/** Statuses that mean this row is not standing in the way of a merge. */
+const SATISFIED: ReadonlySet<string> = new Set(['approved', 'notApplicable'])
+
+const KNOWN_STATUS: ReadonlySet<string> = new Set([
+  'approved',
+  'rejected',
+  'queued',
+  'running',
+  'broken',
+  'notApplicable',
+])
+
+/**
+ * An unrecognised status becomes `unknown` rather than being passed through, so
+ * the UI never has to render a word nobody wrote a case for — and `unknown`
+ * counts as unsatisfied below, which errs toward showing a row as blocking.
+ */
+const policyStatus = (raw: string | undefined): PolicyStatus =>
+  KNOWN_STATUS.has(raw ?? '') ? (raw as PolicyStatus) : 'unknown'
+
+/**
+ * `type.displayName` collides — two "Minimum number of reviewers" policies sat
+ * on the sampled PR, differing only in scope. The id keeps the rows distinct
+ * for React; this keeps them distinct for the person reading them, using
+ * whatever the settings offer: a build policy names its definition, and the
+ * rest are told apart by the branch they are scoped to.
+ */
+function policyName(type: string, settings: AdoPolicySettings): string {
+  const named = settings.displayName?.trim()
+  const scoped = (settings.scope ?? [])
+    .map((scope) => branch(scope.refName ?? undefined))
+    .find((name) => name !== '')
+  const qualifier = named !== undefined && named !== '' ? named : scoped
+
+  return qualifier === undefined ? type : `${type} — ${qualifier}`
+}
+
+/**
+ * The specific thing the row is about, keyed off the shape of `settings` rather
+ * than off `displayName`: the name is display text and collides, the settings
+ * are data and do not.
+ */
+function policyDetail(
+  settings: AdoPolicySettings,
+  context: AdoPolicyContext | null | undefined,
+): string | null {
+  if (settings.buildDefinitionId !== undefined) {
+    return [
+      context?.buildDefinitionName ?? settings.displayName ?? `definition ${settings.buildDefinitionId}`,
+      context?.buildId === undefined ? null : `build ${context.buildId}`,
+      // The difference between "the build passed" and "a build passed, earlier".
+      context?.buildIsNotCurrent === true ? 'ran on an earlier commit' : null,
+    ]
+      .filter((part) => part !== null)
+      .join(' · ')
+  }
+  if (typeof settings.minimumApproverCount === 'number') {
+    const counts = settings.creatorVoteCounts === true ? ', author counts' : ''
+
+    return `${plural(settings.minimumApproverCount, 'approval')}${counts}`
+  }
+  if (settings.requiredReviewerIds !== undefined) {
+    return plural(settings.requiredReviewerIds.length, 'required reviewer')
+  }
+
+  return null
+}
+
+export function toPolicies(
+  evaluations: readonly AdoEvaluation[],
+  org: string,
+  projectId: string,
+): Policy[] {
+  return evaluations.map((evaluation, index) => {
+    const configuration = evaluation.configuration
+    const settings = configuration?.settings ?? {}
+    const status = policyStatus(evaluation.status)
+    const buildId = evaluation.context?.buildId
+
+    return {
+      id: String(configuration?.id ?? index),
+      name: policyName(configuration?.type?.displayName ?? 'Policy', settings),
+      status,
+      blocking:
+        configuration?.isBlocking === true &&
+        configuration.isEnabled !== false &&
+        !SATISFIED.has(status),
+      detail: policyDetail(settings, evaluation.context),
+      url:
+        buildId === undefined
+          ? null
+          : `https://dev.azure.com/${encodeURIComponent(org)}/${projectId}/_build/results?buildId=${buildId}`,
+    }
+  })
+}
+
+/**
+ * A section that failed and a section that is empty are different answers, so
+ * each optional section is run for its value *or* its message and never for a
+ * throw. Only the detail call is allowed to take the page down with it.
+ */
+interface Section<T> {
+  readonly data: T
+  readonly error: string | null
+}
+
+async function section<T>(load: () => Promise<T>, empty: T): Promise<Section<T>> {
+  try {
+    return { data: await load(), error: null }
+  } catch (error) {
+    return { data: empty, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+const NO_POLICIES: readonly Policy[] = []
+const NO_COMMITS: readonly Commit[] = []
+const NO_CONFLICTS: readonly Conflict[] = []
+const NO_FILES: FileList = { files: [], iterationId: null, truncated: false }
+const UNFETCHED: Section<readonly Conflict[]> = { data: NO_CONFLICTS, error: null }
+
+/**
+ * `client.fanOut` is homogeneous in its item type and this page's calls are
+ * not, so the thunks go in as one array and come back as a tuple in the same
+ * order. `Promise.all` would have typed itself and would also have gone around
+ * the concurrency cap and the throttle gate, which is the entire reason the
+ * client owns fan-out rather than each feature doing its own.
+ */
+async function fanOutTuple<T extends readonly unknown[]>(
+  client: AdoClient,
+  tasks: { readonly [K in keyof T]: () => Promise<T[K]> },
+): Promise<T> {
+  const done = await client.fanOut(
+    tasks as unknown as ReadonlyArray<() => Promise<unknown>>,
+    (run) => run(),
+  )
+
+  return done as unknown as T
+}
+
+/**
+ * The viewer's id, remembered for the life of the client.
+ *
+ * The page's five calls are already spoken for and this would be a sixth. The
+ * inbox memoises the same answer behind a TTL because *team membership* can
+ * change under it; an account's own id cannot, so there is nothing here for a
+ * TTL to protect against and the second PR you open costs five again. Keyed on
+ * the client, so a re-entered PAT or a switched org gets a new one (`ado.ts`).
+ */
+const viewers = new WeakMap<AdoClient, Promise<string>>()
+
+function resolveViewer(client: AdoClient): Promise<string | null> {
+  let who = viewers.get(client)
+
+  if (who === undefined) {
+    who = resolveIdentity(client).then((identity) => identity.id)
+    // A cached rejection would be permanent, and this fails on a network blip
+    // far more often than it does on a bad token.
+    who.catch(() => {
+      if (viewers.get(client) === who) viewers.delete(client)
+    })
+    viewers.set(client, who)
+  }
+
+  // Best effort on purpose: not knowing who is looking costs the "that's you"
+  // marker, not the page.
+  return who.catch(() => null)
+}
+
+async function loadPolicies(client: AdoClient, ref: PullRequestRef): Promise<readonly Policy[]> {
+  const evaluations = await client.get<{ value?: readonly AdoEvaluation[] }>(
+    `${ref.projectId}/_apis/policy/evaluations`,
+    {
+      artifactId: `vstfs:///CodeReview/CodeReviewId/${ref.projectId}/${ref.id}`,
+      'api-version': POLICY_VERSION,
+    },
+  )
+
+  return toPolicies(evaluations.value ?? [], client.org, ref.projectId)
+}
+
+async function loadCommits(
+  client: AdoClient,
+  ref: PullRequestRef,
+  base: string,
+): Promise<readonly Commit[]> {
+  const result = await client.get<{ value?: readonly AdoCommit[] }>(`${base}/commits`)
+
+  return (result.value ?? [])
+    .filter((commit): commit is AdoCommit & { commitId: string } => typeof commit.commitId === 'string')
+    .map((commit) => ({
+      id: commit.commitId,
+      subject: commitSubject(commit.comment),
+      truncated: commit.commentTruncated === true,
+      author: commit.author?.name ?? 'unknown',
+      at: commit.author?.date ?? '',
+      // ADO's own `url` on a commit is the REST resource, which is not
+      // somewhere to send a reader. The web route takes the same ids.
+      url: `https://dev.azure.com/${encodeURIComponent(client.org)}/${ref.projectId}/_git/${ref.repositoryId}/commit/${commit.commitId}`,
+    }))
+}
+
+/**
+ * The changed files, which cost two calls because the changes endpoint is
+ * iteration-scoped and there is no way to ask for "the latest" by name.
+ *
+ * Not paged, on measurement rather than on hope. Three independent enumerations
+ * of the same 1096-file PR — one `$top=2000` call, a blind `$skip` walk in
+ * pages of 25, and a service-directed walk — returned identical path sets, so
+ * the PR list's *short-page-is-not-the-last-page* trap (note 6) does not reach
+ * here: nothing filters entries inside a PR you can already read. What does
+ * bite is `nextTop`, which is `min($top, remaining)` and looks exactly like a
+ * page size; feeding it back walks the tail one file at a time. It is ignored,
+ * as is `nextSkip`.
+ */
+async function loadFiles(client: AdoClient, base: string): Promise<FileList> {
+  const iterations = await client.get<{ value?: ReadonlyArray<{ id?: number }> }>(
+    `${base}/iterations`,
+  )
+  const ids = (iterations.value ?? [])
+    .map((iteration) => iteration.id)
+    .filter((id): id is number => typeof id === 'number')
+
+  // No iterations is an answer, not a failure — and asking for `/iterations/0/
+  // changes` would be a 404 dressed up as one.
+  if (ids.length === 0) return NO_FILES
+
+  const iterationId = Math.max(...ids)
+  const result = await client.get<{ changeEntries?: readonly AdoChangeEntry[] }>(
+    `${base}/iterations/${iterationId}/changes`,
+    { $top: FILE_LIMIT },
+  )
+  const entries = result.changeEntries ?? []
+  const files: ChangedFile[] = []
+
+  for (const entry of entries) {
+    const path = entry.item?.path
+    // Never seen live (0 of 3288), but a folder entry has no blob to diff and
+    // would render as a file that changed by nothing.
+    if (path === undefined || entry.item?.isFolder === true) continue
+
+    files.push({
+      path,
+      changeType: changeFlags(entry.changeType),
+      objectId: entry.item?.objectId ?? null,
+      originalObjectId: entry.item?.originalObjectId ?? null,
+    })
+  }
+
+  return { files, iterationId, truncated: entries.length >= FILE_LIMIT }
+}
+
+/**
+ * The conflicting paths, asked for only when the PR says it has some. On a
+ * clean PR this endpoint answers 200 with `count: 0`, so the guard is not about
+ * avoiding an error — it is about keeping the common page at five calls.
+ */
+async function loadConflicts(client: AdoClient, base: string): Promise<readonly Conflict[]> {
+  const result = await client.get<{ value?: readonly AdoConflict[] }>(`${base}/conflicts`)
+
+  return (result.value ?? [])
+    .filter((conflict): conflict is AdoConflict & { conflictPath: string } =>
+      typeof conflict.conflictPath === 'string',
+    )
+    .map((conflict) => ({
+      path: conflict.conflictPath,
+      type: conflict.conflictType ?? 'unknown',
+      resolved: conflict.resolutionStatus === 'resolved',
+    }))
+}
+
+/**
+ * Five calls: the PR, its policy evaluations, its commits, its iterations and
+ * the changes on the latest of them. Four of those are independent and go out
+ * together; the changes wait only because they need an iteration id.
+ *
+ * A conflicted PR is a sixth, and it cannot be anything else: which endpoint to
+ * call is the answer the first call gives you.
+ */
 export async function loadPullRequest(
-  _client: AdoClient,
-  _ref: PullRequestRef,
+  client: AdoClient,
+  ref: PullRequestRef,
 ): Promise<PullRequestDetail> {
-  throw new Error('not implemented')
+  const base = `${ref.projectId}/_apis/git/repositories/${ref.repositoryId}/pullRequests/${ref.id}`
+
+  const [pr, viewerId, policies, commits, files] = await fanOutTuple(client, [
+    () => client.get<AdoDetail>(base),
+    () => resolveViewer(client),
+    () => section(() => loadPolicies(client, ref), NO_POLICIES),
+    () => section(() => loadCommits(client, ref, base), NO_COMMITS),
+    () => section(() => loadFiles(client, base), NO_FILES),
+  ])
+
+  if (typeof pr.pullRequestId !== 'number') {
+    throw new Error(`Azure DevOps answered without a pull request for !${ref.id}.`)
+  }
+
+  const conflicted = pr.mergeStatus === 'conflicts'
+  const conflicts = conflicted
+    ? await section(() => loadConflicts(client, base), NO_CONFLICTS)
+    : UNFETCHED
+  const project = pr.repository?.project?.name ?? ''
+  const repository = pr.repository?.name ?? ''
+
+  return {
+    id: pr.pullRequestId,
+    title: pr.title ?? '(untitled)',
+    description: pr.description ?? '',
+    author: person(pr.createdBy),
+    createdAt: pr.creationDate ?? '',
+    isDraft: pr.isDraft === true,
+    status: pr.status ?? 'active',
+    sourceBranch: branch(pr.sourceRefName),
+    targetBranch: branch(pr.targetRefName),
+    merge: {
+      // Empty rather than a stand-in: `notSet` is a documented value that never
+      // once occurred live, and inventing it here would be reporting an ADO
+      // answer we did not get.
+      status: pr.mergeStatus ?? '',
+      conflicted,
+      conflicts: conflicts.data,
+    },
+    reviewers: (pr.reviewers ?? []).map((reviewer) => ({
+      id: reviewer.id ?? '',
+      displayName: reviewer.displayName ?? 'unknown',
+      vote: reviewer.vote ?? 0,
+      isContainer: reviewer.isContainer === true,
+      isRequired: reviewer.isRequired === true,
+      votedFor: (reviewer.votedFor ?? []).map(person),
+    })),
+    policies: policies.data,
+    commits: commits.data,
+    files: files.data,
+    project,
+    repository,
+    url: `https://dev.azure.com/${encodeURIComponent(client.org)}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repository)}/pullrequest/${pr.pullRequestId}`,
+    viewerId,
+    errors: {
+      policies: policies.error,
+      commits: commits.error,
+      files: files.error,
+      conflicts: conflicts.error,
+    },
+  }
 }
 
 export { POLICY_VERSION }
