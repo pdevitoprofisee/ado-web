@@ -237,6 +237,15 @@ line text — useful only to make our hunk boundaries match theirs. It's preview
 - Bind to `127.0.0.1`, validate `Origin` and `Host`, and require a per-launch random
   token header. A localhost server that shells out to `git` is reachable by any page
   the user has open, and DNS rebinding defeats naive IP checks.
+- **The token cannot stop a local process that knows the protocol** (T-010). With SSR
+  off and a prerendered shell there is nowhere to inline a per-launch value, so the
+  token must be fetched at runtime by one request that cannot itself carry a token.
+  That bootstrap is `Host`- and `Origin`-checked, which makes it browser-only — but a
+  process running as this user can forge `Sec-Fetch-Site` and collect a token. The
+  keychain, not this layer, is what keeps a secret from its owner's processes.
+- Read `Host` from the **raw header**, never from `request.url`: srvx falls back to the
+  socket's local address when `Host` is absent, so a header-less request presents a
+  perfectly innocent `http://127.0.0.1:3000/…` URL.
 - `simple-git` must be `>=3.36.0` (three 2026 option-injection RCEs) and request data
   must never reach its options array.
 - `@napi-rs/keyring`, never `keytar` — archived and deprecated.
@@ -260,6 +269,11 @@ detail. Nothing is restated here; this is an index, not a store.
   one keydown listener for the app, keys declared in `src/commands/registry.ts` and claimed
   by surfaces with `useCommand`, the `?` sheet generated from that array and dimming what
   nothing is listening for, and a text-entry guard that knows React Aria's widgets.
+- [T-010 — Localhost hardening](./tickets/round-1.md#t-010--localhost-hardening) — one
+  request guard in `src/start.ts` that every handler sits behind: raw-header `Host`
+  validation against DNS rebinding, a per-launch token on every server-function call,
+  and Start's origin check re-declared because declaring a start instance would
+  otherwise have removed it. The tokenless bootstrap is the stated, unclosable limit.
 
 [T-001 — Live API inventory spike](./tickets/round-1.md#t-001--live-api-inventory-spike)
 is claimed and waiting on a real PAT.

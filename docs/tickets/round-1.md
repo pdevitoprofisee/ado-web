@@ -422,7 +422,7 @@ checks the target.
 
 ## T-010 — Localhost hardening
 
-**Type:** task (AFK) · **Status:** claimed · **Blocked by:** T-002
+**Type:** task (AFK) · **Status:** resolved · **Blocked by:** T-002
 
 The map's security note in full, minus the third that T-002 already proved is handled.
 **Origin validation ships with Start** — a server-function call with no `Origin`, or a
@@ -450,3 +450,76 @@ boot state does, at runtime.
 **Why before T-003:** T-003 is the first ticket to put a real PAT behind a server
 function. Hardening after that point means shipping a window where a rebinding page can
 drive the credential endpoints.
+
+### Resolution
+
+One guard, one place. [`src/start.ts`](../../src/start.ts) declares the chain every
+request runs before any handler; [`src/server/request-guard.ts`](../../src/server/request-guard.ts)
+is the rule, and [`src/lib/launch-token.ts`](../../src/lib/launch-token.ts) is the wire
+contract its client half shares.
+
+| Criterion | Evidence |
+|---|---|
+| foreign `Host` rejected | `rejects a rebound host whose Origin is genuinely its own` — a request that is *same-origin for the attacker* (`Sec-Fetch-Site: same-origin`, request URL `http://attacker.example/…`) still 403s. Confirmed against both running servers: `curl -H 'Host: attacker.example'` → **403** in dev and from `pnpm start` |
+| no token / stale token rejected | `rejects a server function call with no token` and `rejects a stale token from a previous launch` (right shape, right length, different boot) |
+| proven at the guard level, not by curling `/_serverFn/<id>` | the tests drive `startInstance.getOptions().requestMiddleware` — the *real* chain — the way `createStartHandler` does. The real-server probes use the bootstrap path, which has a stable URL and needs no scraped id |
+| works in dev **and** from `pnpm start` | headless Chrome over CDP against both: the page renders `node v24.18.0, pid 34852`, i.e. the server function completed through the new middleware |
+| token not in a log line or the prerendered shell | the only 64-hex string in `.output/public` is `bcc06e11…` in `routes-*.js`, which is the `createServerFn` **RPC id**, not a secret. `tokenInDom: false` in the live DOM; the guard logs nothing |
+| genuinely per-launch | two real launches handed out `bc66126c…` and `bc743a13…` |
+
+**The bootstrap is the honest limit, and it does not close.** SSR is off and the shell is
+prerendered at build time, so there is nowhere to inline a per-launch value — anything in
+that HTML is baked once, shipped identically to every launch, and sits on disk. The token
+must be fetched at runtime, which means exactly one request that cannot itself carry a
+token. `/__launch-token` is answered by the guard before the router is consulted, and what
+stands in front of it is the `Host` check plus a **widened** origin check. That makes it a
+browser-only, same-origin surface — verified: a tokenless, origin-less `curl` gets **403**,
+which is precisely the non-browser local process the token exists to stop.
+
+But a local process running as this user can *forge* `Sec-Fetch-Site: same-origin` and
+collect a token. **The token stops processes that don't know the protocol, not one written
+against this app.** Nothing at this layer can fix that; only the OS keychain that T-003 is
+about keeps a secret from a process running as its owner. Stated here rather than papered
+over.
+
+**The origin check has to be re-declared, or it silently disappears.** With no start
+instance, `createStartHandler` installs a default CSRF middleware; with one, it uses
+`requestMiddleware` verbatim. Adding `src/start.ts` for the `Host` guard would therefore
+have *removed* what T-002 established, leaving only a dev-time warning. `the chain is
+wired › still rejects a foreign origin — T-002 must not have been undone` is the regression
+test for exactly that. Its filter is also widened past Start's default
+(`handlerType === 'serverFn'`) to cover the bootstrap — the one page request that answers
+with a secret.
+
+**`Host` is read from the raw header, never from `request.url`.** srvx's node adapter falls
+back to the socket's local address when `Host` is absent, so a request with no `Host` at
+all arrives with a request URL of `http://127.0.0.1:3000/…` and sails through any
+URL-based check. `rejects a request with no Host header` asserts
+`request.headers.get('host') === null` first, so it cannot pass vacuously.
+
+**Hostname only, not the ticket's literal `127.0.0.1:<port>`.** The port in a `Host` header
+is client-supplied and grants nothing by itself — every rebinding case is decided by the
+hostname — while pinning it would break `pnpm build`, whose prerender step drives the app
+through a Vite preview server on a random port. `localhost:52341` is in
+`accepts every loopback spelling, on any port` for that reason, and the passing build is
+the proof it was needed.
+
+**Forwarded headers are refused, not parsed.** A loopback-bound single-user app is never
+legitimately behind a proxy. srvx only honours `X-Forwarded-Host` when `trustProxy` is on
+and it defaults off — but if that ever flipped, the header would rewrite `request.url`, and
+the origin check compares `Origin` against exactly that URL. Refusing them means the switch
+cannot quietly become a bypass.
+
+**Deliberately not done.** The token is not persisted — a token that outlives its launch is
+one that anything which read it once can still use. No rotation within a launch: the window
+is a single app run, and rotation would need a re-bootstrap path that is a second copy of
+the hole above. No rate limiting or lockout on the bootstrap; it hands out a value that a
+same-origin page is entitled to anyway. The guard returns a bare `Forbidden` and logs
+nothing — the only interesting thing it holds is the token.
+
+**Surfaced for T-003.** The chain is now the place a PAT-bearing server function sits
+behind, and T-003 needs no hardening work of its own. Two things it inherits: server
+functions reach the handler only with a current token, so any new endpoint is covered by
+construction rather than by remembering; and the guard is deliberately silent, so T-003's
+"no token value in a log line" requirement must be met by *its* own code — nothing here
+scrubs logs.
