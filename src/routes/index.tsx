@@ -1,8 +1,10 @@
+import { useMemo } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 
 import { inboxQuery } from '@/server/inbox-fn'
 import { PullRequestSection } from '@/components/pr-list'
+import { useHydration } from '@/components/use-hydration'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
@@ -13,6 +15,13 @@ function Home() {
   const query = useQuery({ queryKey: ['inbox'], queryFn: () => inboxQuery() })
   const result = query.data
   const inbox = result?.inbox ?? null
+
+  // One hook across both sections, because "visible first" is a property of the
+  // page, not of a list: the top of "Mine" is above the fold long before the
+  // bottom of "Assigned to me" is.
+  const { hydrationOf, registerList } = useHydration(
+    useMemo(() => [...(inbox?.assignedToMe ?? []), ...(inbox?.mine ?? [])], [inbox]),
+  )
 
   return (
     <main className="mx-auto flex max-w-4xl flex-col items-start gap-5 p-8">
@@ -59,11 +68,15 @@ function Home() {
             title="Assigned to me"
             rows={inbox.assignedToMe}
             empty="Nothing waiting on you."
+            hydration={hydrationOf}
+            listRef={registerList}
           />
           <PullRequestSection
             title="Mine"
             rows={inbox.mine}
             empty="You have no open pull requests."
+            hydration={hydrationOf}
+            listRef={registerList}
           />
 
           <footer className="text-muted-foreground flex w-full items-center gap-3 text-xs">

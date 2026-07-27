@@ -75,13 +75,16 @@ interface AdoPullRequest {
   readonly createdBy?: { readonly id?: string; readonly displayName?: string }
   readonly reviewers?: ReadonlyArray<AdoReviewer>
   readonly repository?: {
+    readonly id?: string
     readonly name?: string
-    readonly project?: { readonly name?: string }
+    readonly project?: { readonly id?: string; readonly name?: string }
   }
   readonly targetRefName?: string
   readonly creationDate?: string
   readonly isDraft?: boolean
   readonly lastMergeSourceCommit?: { readonly commitId?: string }
+  /** `succeeded` | `conflicts` | `queued` | `rejectedByPolicy` | `failure` | `notSet`. */
+  readonly mergeStatus?: string
 }
 
 interface PullRequestPage {
@@ -112,6 +115,21 @@ export interface PullRequestRow {
   readonly url: string
   /** Which team put this in front of me, `null` when I am a direct reviewer. */
   readonly viaTeam: string | null
+  /**
+   * The two GUIDs hydration needs to address this PR. Ids rather than names
+   * because ADO's own responses give ids here, and a GUID is the one path
+   * segment shape that cannot be anything else (see hydrate-fn.ts).
+   */
+  readonly projectId: string | null
+  readonly repositoryId: string | null
+  /**
+   * Conflict state, and the one piece of "rich" row data that is free: it is on
+   * the list entry already. The per-PR detail call adds only `_links` and
+   * `artifactId` over what we have, so hydration never makes it.
+   */
+  readonly conflicted: boolean
+  /** My standing vote: 10 approved, 5 with suggestions, -5 waiting, -10 rejected. */
+  readonly myVote: number
 }
 
 export interface Inbox {
@@ -238,7 +256,12 @@ export async function listActivePullRequests(client: AdoClient): Promise<AdoPull
   return [...seen.values()]
 }
 
-function toRow(pr: AdoPullRequest, org: string, viaTeam: string | null): PullRequestRow {
+function toRow(
+  pr: AdoPullRequest,
+  org: string,
+  viaTeam: string | null,
+  myVote: number,
+): PullRequestRow {
   const project = pr.repository?.project?.name ?? ''
   const repository = pr.repository?.name ?? ''
 
@@ -254,6 +277,10 @@ function toRow(pr: AdoPullRequest, org: string, viaTeam: string | null): PullReq
     commitId: pr.lastMergeSourceCommit?.commitId ?? null,
     url: `https://dev.azure.com/${encodeURIComponent(org)}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repository)}/pullrequest/${pr.pullRequestId}`,
     viaTeam,
+    projectId: pr.repository?.project?.id ?? null,
+    repositoryId: pr.repository?.id ?? null,
+    conflicted: pr.mergeStatus === 'conflicts',
+    myVote,
   }
 }
 
@@ -291,24 +318,29 @@ export function partition(
       // A PR cannot be both. Authoring wins: your own PR appearing under
       // "Assigned to me" is a review request you cannot act on.
       if (tooOld(pr)) hidden++
-      else mine.push(toRow(pr, org, null))
+      else mine.push(toRow(pr, org, null, 0))
       continue
     }
 
     let direct = false
     let viaTeam: string | null = null
+    let myVote = 0
     for (const reviewer of pr.reviewers ?? []) {
       const id = key(reviewer.id)
       if (id === null) continue
-      if (!reviewer.isContainer && id === me) direct = true
-      else if (reviewer.isContainer && teamNames.has(id)) viaTeam ??= teamNames.get(id) as string
+      if (!reviewer.isContainer && id === me) {
+        direct = true
+        myVote = reviewer.vote ?? 0
+      } else if (reviewer.isContainer && teamNames.has(id)) {
+        viaTeam ??= teamNames.get(id) as string
+      }
     }
     if (!direct && viaTeam === null) continue
 
     // Counted only once it is established the PR was going to be shown, so
     // `hidden` means "yours, and stale" rather than "old, somewhere in the org".
     if (tooOld(pr)) hidden++
-    else assignedToMe.push(toRow(pr, org, direct ? null : viaTeam))
+    else assignedToMe.push(toRow(pr, org, direct ? null : viaTeam, myVote))
   }
 
   return { assignedToMe: assignedToMe.sort(byNewest), mine: mine.sort(byNewest), hidden }

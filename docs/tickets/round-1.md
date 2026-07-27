@@ -621,7 +621,7 @@ data. Nothing writes.
 
 ## T-007 — Lazy row hydration
 
-**Type:** task (AFK) · **Status:** open · **Blocked by:** T-005, T-006
+**Type:** task (AFK) · **Status:** resolved · **Blocked by:** T-005, T-006
 
 Rich row data — check state, unresolved *human* comment count, conflict state,
 whether a push reset your approval — fetched per PR at 1+N (note: irreducible), for
@@ -635,6 +635,91 @@ with an inline error, never an empty inbox.
 **Note:** unresolved count is *human* threads only — Sonar threads must not inflate it.
 Sonar-thread detection (map: Sonar notes) is needed here, one phase earlier than the
 Sonar feature itself.
+
+### Resolution
+
+[`src/server/hydrate.ts`](../../src/server/hydrate.ts) is the derivation layer — three
+pure functions over ADO's payloads plus a cache-first `hydrate()`.
+[`hydrate-fn.ts`](../../src/server/hydrate-fn.ts) is the batched client boundary, and
+[`src/components/use-hydration.ts`](../../src/components/use-hydration.ts) decides the
+order: visible rows, then the rest on idle.
+
+| Criterion | Evidence |
+|---|---|
+| upgrades without layout shift | the badge cell is always rendered at a fixed `w-24` with `overflow-hidden`; a test captures the element before hydration and asserts it is the **same node** with the **same className** afterwards, empty then contentful |
+| visible rows first | one post-paint `getBoundingClientRect()` pass over `[data-pr-id]` splits the rows; the remainder goes through `requestIdleCallback(…, {timeout: 2000})` |
+| second visit: **zero** per-PR calls | live, two passes over the same cache file: **pass 1 — 12 calls / 1013 ms**, **pass 2 — 0 calls / 0 ms** |
+| the cache is commit-keyed, not time-keyed | same live run, one row replayed with a fabricated `commitId`: **3 calls** |
+| a failing PR still renders | `hydrate` returns `{ok: false, error}` rather than throwing; the row keeps its plain columns and gains a warning badge with ADO's message in the tooltip. Unit-tested, including that the failure is **not** cached, so a transient 500 doesn't freeze the row until the next push |
+| Sonar must not inflate the count | live: the two bot identities author comments on real PRs and the count excludes them; unit test feeds five Sonar threads plus one human and expects **1** |
+| nothing leaks | rebuilt: `.output/public` (9 files) has no `napi-rs`, `keyring`, `getPassword`, `connectionData`, `X-TFS-FedAuthRedirect`, `dev.azure.com`, `vssps`, `searchCriteria`, `queryMembership`, `identityIds`, `node:sqlite`, `policy/evaluations`, `pr_cache` or `Authorization` — while the badge labels *are* present, so the scan reached the right files |
+| tests | **159 passing across 14 files**, up from 133 |
+
+**It is 1+3N, not 1+4N, because one of the four things was already paid for.**
+`mergeStatus` is on the list entry — measured, the single-PR detail call adds only `_links`
+and `artifactId` over what the list already returned — so conflict state costs nothing and
+is the one badge that never waits: it renders with the plain row. The remaining three each
+genuinely need a call: `threads`, `statuses`, `policy/evaluations`.
+
+**`policy/evaluations` needs `7.1-preview.1`** — the *fourth* endpoint in this project whose
+version could only be learned from a real credential. Plain `7.1` is a 400 (`the -preview
+flag must be supplied`), and because ADO validates the credential before the api-version, a
+bad-token test 401s and never reaches the version check. The running list:
+`connectionData` → `7.1-preview.1`, `teams` → `7.1-preview.3`, `policy/evaluations` →
+`7.1-preview.1`, `identities` and everything else → plain `7.1`.
+
+**The near-bug: Sonar's comments are `commentType: 'text'`, not `'system'`.** I expected the
+opposite and probed instead of assuming. Filtering on comment type alone removes only ADO's
+own "X added Y as a reviewer" threads and leaves **every** Sonar thread counted as human —
+which is precisely the failure the ticket's note exists to prevent, shipped silently.
+
+What actually separates them, measured across 30 live PRs: identities that **posted a status
+on the PR** were exactly the two bots — `00000054-…` (Azure Pipelines Test Service) and
+`27ec814b-…` (QA Automation / Sonar). Identities that authored non-system comments were
+those two plus five humans, none of whom posted a status. So the rule is "authored a status
+on this PR", not a hardcoded Sonar GUID: it is shorter, and it caught a second bot the
+ticket didn't know existed. It fails in the conservative direction — a bot that comments
+without ever posting a status inflates the count by one, whereas a name-match that guessed
+wrong would swallow a colleague's comment, and that is the failure that matters.
+
+**"Zero calls" is literal, not nearly.** `approvalWasReset` needs my identity, so the naive
+handler spends one `connectionData` call even when every row is cached. The handler
+memoises identity resolution behind a thunk that the cache path never invokes — unit-tested
+by counting invocations, which is the only way that stays true.
+
+Vote/push reconstruction reads the thread history rather than any dedicated endpoint: a
+`VoteUpdate` thread carries the voter in `comments[0].author` and the vote in
+`properties.CodeReviewVoteResult`, a `RefUpdate` thread is authored by
+`Microsoft.VisualStudio.Services.TFS` and carries `CodeReviewRefNewCommits`. Reset means I
+voted positive, a push landed after it, and my current vote is no longer positive — the last
+clause is what stops the badge firing on every push to a PR whose policy doesn't reset votes.
+
+**The client keys results by `id@commitId`, not by id.** When a PR is pushed to, its badges
+disappear until the new ones arrive. That is the honest state; keying by id would leave the
+pre-push counts on screen looking current.
+
+**A correction to how "nothing leaks" has been verified.** The scan used
+`Select-String -SimpleMatch -Pattern ([regex]::Escape($n))`, which searches for the
+*escaped* text literally — so every needle containing `-` or `.` (`napi-rs`,
+`X-TFS-FedAuthRedirect`, `dev.azure.com`) could not match no matter what the bundle
+contained. It was caught by adding needles that **must** hit. The scan above was re-run
+correctly and is clean; T-006's claim stands, but it was passing for the wrong reason.
+
+**Watch: a comment posted without a push leaves the cached count stale.** `commitId` is the
+only validity token, so a thread opened or resolved between pushes is invisible until the
+next push. This is the cost of "zero calls on an unchanged inbox" and the two cannot both be
+had from this cache design. **Surfaced for T-008**, which owns refresh cadence and is the
+right place to decide whether an explicit refresh should bypass the cache.
+
+**Not verified: that the counts match the ADO web UI.** Same browser check T-006 still owes,
+and now larger — unresolved counts and check states are visible side by side in the ADO PR
+list. The live run exercised four PRs; a `pending` thread status is documented but was never
+seen live, and no PR in the sample had a reset approval, so `approvalWasReset` is unit-tested
+but not live-confirmed.
+
+**Deliberately not done.** No IntersectionObserver — the visibility answer is needed once to
+choose an order, not continuously to track scrolling. No thread bodies, no reviewer avatars,
+no sorting by badge. Nothing writes.
 
 ---
 
