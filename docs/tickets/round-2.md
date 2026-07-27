@@ -132,15 +132,81 @@ footer's `≥ N TSTU` phrasing stays correct and now understates by less.
   `[Products]\Contributors=0 (team, required)`, plus two people at `0` — confirming
   `isContainer` and `isRequired` on live data.
 
-**Not verified:** the work item and label payload shapes (both empty on the sampled PR); the
-`votedFor[]` shape on a person who voted for a container (no non-zero votes on this PR);
-whether `changeEntries` paging suffers the same *short-page-is-not-the-last-page* trap as
-the PR list (note 6 of round 1); the full `changeType` value set beyond `add`/`edit`.
-A supplementary probe against a conflicted PR, a voted-on PR, and the largest PR in the org
-is recorded in [`docs/research/pr-detail-inventory.md`](../research/pr-detail-inventory.md).
+Everything above came from **one** PR. Every "unverified" in it was then chased down by a
+second, wider probe — ~1,300 read-only GETs across the org, recorded in
+[`docs/research/pr-detail-inventory.md`](../research/pr-detail-inventory.md). It contradicted
+the single-PR reading in three places, which is the argument for having run it.
+
+**`mergeFailureMessage` does not exist.** Not empty, not null — the key is **absent** on
+15/15 conflicted active PRs, as are `mergeFailureType` and `lastMergeCommit`. Reading it off
+the single clean PR above, where every field was `null`, would have produced a conflict
+banner that renders nothing on precisely the PRs it was built for. Conflicts come from
+`GET .../pullRequests/{id}/conflicts` on plain `7.1`: `conflictPath` (matches
+`changeEntries[].item.path` exactly) and `conflictType` — live values `editEdit` 36,
+`deleteEdit` 4, `editDelete` 1 across 41 conflicts. A clean PR answers 200 with `count: 0`,
+and conflicts resolved in ADO's UI additionally carry `resolutionStatus` / `resolvedBy` /
+`resolvedDate`. This is why `MergeState` carries a conflict list and not a message.
+
+**`votedFor[]` points the opposite way from the intuitive reading, and has a trap inside
+it.** It hangs off the **person** — 117 of 197 people, **0 of 160 containers** — and names
+the containers whose vote that person's vote counted toward. The trap: **the `vote` nested
+inside a `votedFor` entry is always 0**, on all 117 measured. Reading it renders an approved
+team as "no vote". A container's real vote is its own top-level `vote`, and it agreed with at
+least one member in 86/86 containers, including 31 with multiple voters — zero disagreements.
+Hence `Person` in the contract has no `vote` field: the safest way to not read a field that
+lies is for it not to exist.
+
+**Containers are not an edge case.** 45 % of all reviewer rows are containers, and
+`isRequired` sits on **127 containers against 23 people**. A reviewer section that treats
+teams as a footnote, or a "required reviewers" line filtered to people, shows almost nothing
+on real data.
+
+**The `changes` paging rules, settled.** The round-1 *short-page-is-not-the-last-page* trap
+**does not apply here** — three independent enumerations of the 1,096-file !23194 (a single
+`$top=2000`, a blind `$skip`-25 walk over 45 pages, and a service-directed walk) produced an
+identical path set. `$top` does not clamp: 100000 works, and that whole PR is one 288 KB /
+230 ms call. But **`nextTop = min($top, remaining)`** — feeding it back as the next page size
+makes you crawl the tail one file at a time — and **omitting `$top` silently truncates to
+100**. Two different ways to quietly return a wrong file list, which is why T-012 requires an
+explicit `$top` and forbids trusting `nextTop`.
+
+**`changeType` live:** `edit` 2578 · `add` 588 · `delete` 77 · `edit, rename` 40 · `rename` 5.
+The comma form confirms flag-set parsing. `sourceRename` and friends could not be measured.
+**Zero `isFolder` entries in 3,288.** Two placement traps: `originalPath` sits at the *entry*
+level while `originalObjectId` sits at the *item* level, and a pure rename has
+`objectId === originalObjectId` — no diff needed, which phase 3 will care about. `changeId`
+is not returned sorted.
+
+**`labels` is a wasted call; `workitems` is not.** The labels endpoint is byte-identical to
+what the inbox list already carries, verified across all 164 PRs — it adds only a `url`.
+`workItemRefs`, by contrast, is never on the list, and the refs are `{id, url}` with no title,
+so rendering them needs a separate `_apis/wit/workitems` batch: plain `7.1`, **max 200 ids**
+(210 returns HTTP 500 `VS403474`), **`errorPolicy=omit` mandatory** because one unreadable id
+404s the entire batch, and `fields=` cuts the response from 283,839 to 14,253 bytes. Neither
+is built this round — recorded so the phase that wants them does not re-derive it.
+
+**Refining the T-008 correction above.** `x-ratelimit-cost` is not merely present on more
+endpoints; it is **deterministic per endpoint**: 329/329 responses on `labels`, 275/275 on
+`changes`, 30/30 on detail, 16/16 on `conflicts` — and 0/178 on `iterations`, 0/33 on the PR
+list, 0/12 on `policy/evaluations`, 0/11 on `threads` and `statuses`. One detail-page open
+bills **≈ 0.06 TSTU** against a 200-TSTU five-minute window. Cost is not the constraint, and
+was never going to be; latency remains the only throttle signal we get (note 2). One gap
+worth flagging for phase 3: the blob route bills on `$format=json` but **not** on
+`$format=text`, and `$format=text` is the diff pipeline's real read path — so the read that
+matters most is the one we cannot price.
+
+**Also confirmed:** `mergeStatus` is `string | undefined`, absent on all 1,480 abandoned PRs,
+and `queued` / `rejectedByPolicy` / `failure` / `notSet` never occurred in 21,133 PRs — treat
+an unknown value as neutral, never as a conflict. And the description finding hardens: 59 of
+165 list values sit at exactly 400 characters, detail values ran 436–3,024, and the list
+value was a byte-exact prefix every time.
+
+**Still not verified:** `isFlagged` (never true in the sample); `changeType` values beyond
+the five seen; the cost of the diff pipeline's actual blob read.
 
 **Surfaced for T-012:** four calls cover this page — detail, evaluations, commits, changes —
-and `iterations` is a fifth only because `changes` needs an iteration id.
+with `iterations` a fifth only because `changes` needs an iteration id, and `conflicts` a
+sixth **only when `mergeStatus` is `conflicts`**.
 
 ---
 
@@ -155,15 +221,21 @@ server function that exposes it.
 **Success:**
 
 - `loadPullRequest(client, ref)` returns a fully populated `PullRequestDetail` against the
-  live org, and the page's whole data need is met in **five ADO calls or fewer**.
+  live org, and the page's whole data need is met in **five ADO calls or fewer** — six on a
+  conflicted PR, which is the only case that fetches `conflicts`.
 - The calls that do not depend on each other are issued through `client.fanOut`, not
   awaited in sequence.
+- Conflicts are read from the `conflicts` endpoint, because `mergeFailureMessage` is not a
+  field that exists. `MergeState` carries the conflicting paths and their types — the paths
+  are what tell a reviewer whether this is a rebase or an afternoon.
+- The file list passes an **explicit** `$top` (omitting it silently truncates to 100) and
+  never feeds `nextTop` back as a page size (it is `min($top, remaining)`).
 - A failure in any *one* of commits, evaluations, or changes degrades that section rather
   than emptying the page. The header and conflict state come from the detail call and are
   the only hard dependency.
 - `changeType` is parsed as the comma-separated `[Flags]` set it is, never string-compared.
 - The file list either is complete or reports itself `truncated`. It does not silently stop
-  at one page, and it does not trust `nextTop`.
+  at one page.
 - Policy rows are stable under two policies sharing a `displayName`, and `blocking` means
   *blocking and not yet satisfied* — a passing required policy is required, not blocking.
 - `pull-request-fn.ts` validates `projectId` and `repositoryId` as GUIDs and `id` as a
@@ -195,7 +267,12 @@ The reading surface. Presentational only — it takes a `PullRequestDetail` and 
   400-character truncation.
 - **Conflict state is stated loudly** when it exists — the map's word. A conflicted PR
   should be unmissable above the fold, and a PR that merely has not been merge-tested yet
-  must not be dressed up as one.
+  must not be dressed up as one. Loudly means the **paths**, not the word: T-011 measured
+  that ADO sends no failure message, and a banner that says "conflicts" and stops is the
+  thing you would go back to ADO to resolve.
+- Reviewers are weighted for real data, where **45 % of rows are containers** and
+  `isRequired` sits on 127 containers against 23 people. A person's `votedFor` reads as "on
+  behalf of …", and the vote nested inside it is never read — it is always 0.
 - The policy checklist is the primary content of the page: what is blocking, what passed,
   what is not applicable, each row naming the specific thing (a build, an approval count, a
   named required reviewer) rather than a policy type.
@@ -210,9 +287,12 @@ The reading surface. Presentational only — it takes a `PullRequestDetail` and 
 - Tests cover the vote vocabulary, the conflict banner appearing only on a real conflict,
   the blocking/passing split, and the failed-section state.
 
-**Deliberately not in scope:** labels, work items, and the activity trail. The map lists
-them alongside the diff, but T-011 could not verify either payload's shape on live data, and
-this round does not guess at a shape it has never seen.
+**Deliberately not in scope:** labels, work items, and the activity trail. The map lists the
+first two alongside the diff, and T-011 now knows both shapes — which is exactly why they are
+out. Labels are already on the inbox row, byte for byte, so a page that wants them does not
+need a call; work items need a second `_apis/wit/workitems` batch with its own 200-id cap and
+`errorPolicy` trap to turn refs into anything a person can read. Neither is worth widening
+this round for, and neither has to be re-derived when its round comes.
 
 ---
 
