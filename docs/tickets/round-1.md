@@ -16,7 +16,7 @@ concurrent session skips it.
 
 | Phase | What lands | Status |
 |---|---|---|
-| **1** | Live API inventory · scaffold · secrets · ADO client · SQLite · inbox spine · command registry | **this round** |
+| **1** | Live API inventory · scaffold · hardening · secrets · ADO client · SQLite · inbox spine · command registry | **this round** |
 | 2 | PR detail shell: header, conflicts, policy checklist, votes, commits, file list | next |
 | 3 | The diff: blob fetch, local diff, virtualized rows, Shiki workers, viewed flags, side-by-side | next |
 | 4 | Comments: inline threads, collapse-when-done, composer, mentions, likes, status setters | after 3 |
@@ -97,7 +97,7 @@ until it's measured under real fan-out.
 
 ## T-002 — Scaffold
 
-**Type:** task (AFK) · **Status:** open · **Blocked by:** —
+**Type:** task (AFK) · **Status:** resolved · **Blocked by:** —
 
 TanStack Start + React + TypeScript + Tailwind 4, shadcn initialised with
 `--base aria`, TanStack Query, pnpm, Vitest. SSR disabled for app routes.
@@ -111,11 +111,56 @@ CI-shaped scripts.
 `<base>-<theme>` and cannot be changed later without redoing the components. Get
 `--base aria` right the first time.
 
+### Resolution
+
+All five success criteria verified, twice over — once against `vite dev`, once against
+the Nitro production build.
+
+| Criterion | Evidence |
+|---|---|
+| `pnpm dev` bound to `127.0.0.1` | `netstat` → `TCP 127.0.0.1:3000 LISTENING`, not `0.0.0.0` |
+| `pnpm build && pnpm start` serves the same shell | Nitro node-server preset, `Listening on: http://127.0.0.1:3000/`, `GET /` → 200 |
+| one shadcn component renders | the aria `Button` paints with `data-rac` / `data-react-aria-pressable` |
+| a server function returns a value | page shows `node v24.18.0, pid 24928` — the pid *is* the server process |
+| `pnpm test` / `pnpm typecheck` pass | 1/1 passed; `tsr generate && tsc --noEmit` exits 0 |
+
+**What got built.** `--base aria` is locked in `components.json` as `"style": "aria-nova"`.
+SSR is off via `tanstackStart({ spa: { enabled: true } })` plus `ssr: false` on the root
+route — the prerendered shell ships with an empty `<!--$--><!--/$-->` body, which is the
+proof SSR is genuinely disabled rather than merely unused. Dark is the default
+(`<html class="dark">`); light waits for a settings surface.
+
+**Loopback binding needs two mechanisms, not one.** Vite's `server`/`preview` config
+covers dev; Nitro reads its listen address from `HOST`/`PORT` **at runtime**, so
+production goes through [`scripts/start.mjs`](../../scripts/start.mjs), which sets both
+before importing `.output/server/index.mjs`. `pnpm start` runs that, not the output
+bundle directly — bypassing it re-exposes every interface.
+
+**The shadcn CLI cannot init here.** `init` needs raw TTY mode for its style select;
+`-y`, `--defaults`, `CI=1`, and piped stdin all hang. `components.json` was hand-authored
+against `https://ui.shadcn.com/schema.json` and the rest of `init` reproduced from the
+registry — `/r/styles/aria-nova/{index,utils}.json` for deps and `src/lib/utils.ts`,
+`/r/colors/neutral.json` → `cssVarsV4` for the oklch theme in `src/styles.css`. Note also
+that `--preset` is theme-only: the invocation is `--base aria --preset nova`, and
+`--preset aria-nova` is rejected.
+
+[`src/components/ui/button.test.tsx`](../../src/components/ui/button.test.tsx) is the guard
+on the irreversible bit: it asserts `onPress`/`isDisabled`, so a re-init on a different
+base fails the suite instead of failing silently.
+
+**Vitest runs from its own `vitest.config.ts`**, deliberately — the Start and Nitro
+plugins have no business loading under jsdom.
+
+**Surfaced, now ticketed:** Start already rejects server-function calls whose `Origin`
+isn't the dev origin (403 with no `Origin`, 403 with a foreign one, 200 from
+`http://127.0.0.1:3000`). That closes one third of the map's localhost-hardening note and
+makes the remaining two thirds specifiable — see T-010.
+
 ---
 
 ## T-003 — Secrets and onboarding
 
-**Type:** task (AFK) · **Status:** open · **Blocked by:** T-002
+**Type:** task (AFK) · **Status:** open · **Blocked by:** T-002, T-010
 
 An onboarding route that captures the ADO org + PAT and the SonarCloud token, stores
 them via `@napi-rs/keyring`, and tests each connection before accepting it. Tokens are
@@ -234,3 +279,34 @@ is in a text input. A new shortcut is one registry entry with no changes to the 
 
 **Why now, not later:** every subsequent phase would otherwise add ad-hoc key handlers
 that have to be unpicked.
+
+---
+
+## T-010 — Localhost hardening
+
+**Type:** task (AFK) · **Status:** open · **Blocked by:** T-002
+
+The map's security note in full, minus the third that T-002 already proved is handled.
+**Origin validation ships with Start** — a server-function call with no `Origin`, or a
+foreign one, is rejected 403 before the handler runs. What's missing is the other two:
+
+- **`Host` validation.** Origin checks don't stop DNS rebinding — the attacker's page
+  resolves its own hostname to `127.0.0.1` and the `Origin` it sends is genuinely its
+  own. Reject any request whose `Host` isn't `127.0.0.1:<port>` or `localhost:<port>`.
+- **A per-launch random token header.** Generated at boot, handed to the shell, sent on
+  every server-function call. This is what stops *non-browser* local processes, which
+  send no `Origin` at all and are unaffected by any browser-enforced check.
+
+Both belong in one place — a single request guard the server functions sit behind —
+because "some endpoints are hardened" is the same as none once phase 2 shells out to
+`git`.
+
+**Success:** a request from a foreign `Host` is rejected, and a request with no token or
+a stale one is rejected, each with a test that proves it. The app itself still works
+end-to-end in dev and from `pnpm start`. The token never lands in a log line or in the
+prerendered shell's static HTML — it reaches the client the same way the shell's other
+boot state does, at runtime.
+
+**Why before T-003:** T-003 is the first ticket to put a real PAT behind a server
+function. Hardening after that point means shipping a window where a rebinding page can
+drive the credential endpoints.

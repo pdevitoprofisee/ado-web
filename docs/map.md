@@ -248,8 +248,13 @@ line text — useful only to make our hunk boundaries match theirs. It's preview
 One line per resolved ticket — the gist, plus a link to the ticket that holds the
 detail. Nothing is restated here; this is an index, not a store.
 
-_Nothing resolved yet. [T-001 — Live API inventory spike](./tickets/round-1.md#t-001--live-api-inventory-spike)
-is claimed and waiting on a real PAT._
+- [T-002 — Scaffold](./tickets/round-1.md#t-002--scaffold) — the shape above is real and
+  running: Start with SSR off, shadcn locked to the aria base, loopback-bound in dev
+  *and* in the Nitro build, a server function answering the client, tests and typecheck
+  green.
+
+[T-001 — Live API inventory spike](./tickets/round-1.md#t-001--live-api-inventory-spike)
+is claimed and waiting on a real PAT.
 
 ---
 
