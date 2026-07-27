@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
+import { Route as PrProjectIdRepositoryIdPrIdRouteImport } from './routes/pr.$projectId.$repositoryId.$prId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,31 +23,41 @@ const OnboardingRoute = OnboardingRouteImport.update({
   path: '/onboarding',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PrProjectIdRepositoryIdPrIdRoute =
+  PrProjectIdRepositoryIdPrIdRouteImport.update({
+    id: '/pr/$projectId/$repositoryId/$prId',
+    path: '/pr/$projectId/$repositoryId/$prId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
+  '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
+  '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
+  '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/onboarding'
+  fullPaths: '/' | '/onboarding' | '/pr/$projectId/$repositoryId/$prId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/onboarding'
-  id: '__root__' | '/' | '/onboarding'
+  to: '/' | '/onboarding' | '/pr/$projectId/$repositoryId/$prId'
+  id: '__root__' | '/' | '/onboarding' | '/pr/$projectId/$repositoryId/$prId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   OnboardingRoute: typeof OnboardingRoute
+  PrProjectIdRepositoryIdPrIdRoute: typeof PrProjectIdRepositoryIdPrIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +76,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OnboardingRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/pr/$projectId/$repositoryId/$prId': {
+      id: '/pr/$projectId/$repositoryId/$prId'
+      path: '/pr/$projectId/$repositoryId/$prId'
+      fullPath: '/pr/$projectId/$repositoryId/$prId'
+      preLoaderRoute: typeof PrProjectIdRepositoryIdPrIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   OnboardingRoute: OnboardingRoute,
+  PrProjectIdRepositoryIdPrIdRoute: PrProjectIdRepositoryIdPrIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -17,7 +17,7 @@ concurrent session skips it.
 | Phase | What lands | Status |
 |---|---|---|
 | **1** | Live API inventory · scaffold · hardening · secrets · ADO client · SQLite · inbox spine · command registry | **complete** — all ten tickets resolved |
-| 2 | PR detail shell: header, conflicts, policy checklist, votes, commits, file list | next |
+| 2 | PR detail shell: header, conflicts, policy checklist, votes, commits, file list | **in progress** — [round 2](./round-2.md) |
 | 3 | The diff: blob fetch, local diff, virtualized rows, Shiki workers, viewed flags, side-by-side | next |
 | 4 | Comments: inline threads, collapse-when-done, composer, mentions, likes, status setters | after 3 |
 | 5 | Checks: statuses, build timeline, failed step logs, failed tests, re-run actions | after 2 |
@@ -756,7 +756,10 @@ accounting reads four headers — `X-RateLimit-Remaining`, `-Limit`, `-Delay`, `
 and a header dump across every endpoint this app calls shows Azure DevOps sends **none of
 them**, ever. `rateLimit()` had been returning all-nulls since T-004 and always would.
 What ADO does send is `x-ratelimit-cost`, on `_apis/connectionData` and on nothing else:
-0.00049–0.00055 TSTU per call. So the ticket's own instrument does not exist, and the
+0.00049–0.00055 TSTU per call. (**Corrected in [T-011](./round-2.md#t-011--pr-detail-endpoint-inventory):**
+that "nothing else" generalised from the endpoints the inbox happens to call. Six of the
+eight PR-detail endpoints return the header, at 0.00276–0.01325 TSTU. The floor below is
+still a floor; it is a tighter one than this paragraph claims.) So the ticket's own instrument does not exist, and the
 substitute is our own counter plus that per-call cost as a floor. The measured night
 comes to a quarter of one TSTU against a 200-TSTU window — roughly a 70,000× margin. The
 honest conclusion is that **cadence was never the constraint**, and no interval this
