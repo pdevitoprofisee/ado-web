@@ -9,7 +9,18 @@ import { adoAuthHeaders, serviceDetail } from './connection-test'
 // all; and once seen, backing off is a property of the transport rather than of
 // whichever feature happened to make the call.
 
-const ADO = 'https://dev.azure.com'
+/**
+ * Two hosts, one service. Identity and Graph live on `vssps` and 404 on the
+ * core host, which is easy to misread as "wrong path" rather than "wrong host".
+ * They share the credential, the throttle window and note 4's redirect
+ * behaviour, so they share this client rather than getting one of their own.
+ */
+const HOSTS = {
+  core: 'https://dev.azure.com',
+  vssps: 'https://vssps.dev.azure.com',
+} as const
+
+export type AdoHost = keyof typeof HOSTS
 
 /**
  * The default, overridable per call via an explicit `api-version` param.
@@ -79,7 +90,7 @@ export interface AdoClient {
   /** Not a secret, and callers that build `dev.azure.com` links need it. */
   readonly org: string
   /** `path` is org-relative: `_apis/git/pullrequests`, `Products/_apis/…`. */
-  get<T>(path: string, params?: Record<string, QueryValue>): Promise<T>
+  get<T>(path: string, params?: Record<string, QueryValue>, host?: AdoHost): Promise<T>
   /** Runs `task` over `items` at most `concurrency` at a time, results in order. */
   fanOut<I, O>(items: readonly I[], task: (item: I) => Promise<O>): Promise<O[]>
   rateLimit(): RateLimit
@@ -126,8 +137,13 @@ function assertIdentity(key: string, value: QueryValue): void {
   )
 }
 
-function buildUrl(org: string, path: string, params: Record<string, QueryValue>): string {
-  const url = new URL(`${ADO}/${encodeURIComponent(org)}/${path.replace(/^\//, '')}`)
+function buildUrl(
+  org: string,
+  path: string,
+  params: Record<string, QueryValue>,
+  host: AdoHost,
+): string {
+  const url = new URL(`${HOSTS[host]}/${encodeURIComponent(org)}/${path.replace(/^\//, '')}`)
 
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined) continue
@@ -220,8 +236,12 @@ export function createAdoClient(
     }
   }
 
-  async function get<T>(path: string, params: Record<string, QueryValue> = {}): Promise<T> {
-    const response = await send(buildUrl(credential.org, path, params))
+  async function get<T>(
+    path: string,
+    params: Record<string, QueryValue> = {},
+    host: AdoHost = 'core',
+  ): Promise<T> {
+    const response = await send(buildUrl(credential.org, path, params, host))
 
     if (response.status >= 300 && response.status < 400) {
       throw new AdoError(

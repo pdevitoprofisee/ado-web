@@ -27,6 +27,9 @@ const CONNECTION_DATA_VERSION = '7.1-preview.1'
 /** So is `teams`, on its own preview number. Both verified against a real PAT. */
 const TEAMS_VERSION = '7.1-preview.3'
 
+/** `_apis/teams` pages like everything else; 43 teams live, so one page covers it. */
+const TEAM_PAGE_SIZE = 500
+
 interface ConnectionData {
   readonly authenticatedUser?: {
     readonly id?: string
@@ -39,6 +42,14 @@ interface TeamList {
     readonly id?: string
     readonly name?: string
     readonly projectName?: string
+  }>
+}
+
+interface IdentityList {
+  readonly value?: ReadonlyArray<{
+    readonly id?: string
+    /** Present only on the `queryMembership=Expanded` lookup. */
+    readonly memberOf?: readonly string[]
   }>
 }
 
@@ -127,29 +138,63 @@ export async function resolveIdentity(client: AdoClient): Promise<Identity> {
   return { id, displayName: data.authenticatedUser?.providerDisplayName ?? null }
 }
 
-/**
- * `teams?$mine=true` rather than the Graph API, and the difference is not cost.
- *
- * The Graph route (`graph/descriptors` → `graph/memberships?direction=up` →
- * `graph/groups`) lives on a *different host*, costs 1+N calls, returns only
- * direct containers so it needs a transitive walk — and when walked five levels
- * deep against the live org it returned three project security groups and
- * **missed the actual team**, matching 0 PRs. This one call returned the team
- * whose id matches a container reviewer on 4 of them.
- */
-export async function resolveMyTeams(client: AdoClient): Promise<Team[]> {
-  const teams = await client.get<TeamList>('_apis/teams', {
-    $mine: true,
-    'api-version': TEAMS_VERSION,
-  })
+/** A long `descriptors` list is a query string; chunk rather than find the limit. */
+const DESCRIPTOR_CHUNK = 100
 
-  return (teams.value ?? [])
-    .filter((team): team is { id: string; name?: string; projectName?: string } =>
-      Boolean(team.id),
-    )
+/**
+ * The teams whose review requests are genuinely mine, which is two questions
+ * and **not** the one `$mine=true` answers.
+ *
+ * `_apis/teams?$mine=true` is not membership. Measured live: it returned exactly
+ * one team while the account was a direct member of **0 of 43**, and reported
+ * 1 of the 28 containers the account actually belongs to. It got the right
+ * answer here by luck. Trusting it means a real team assignment can go missing
+ * with no error to see — the silent-empty-inbox failure this ticket is about.
+ *
+ * So: ask the identity service for the *transitive* closure
+ * (`queryMembership=Expanded`, one call, no walk — the earlier Graph attempt
+ * needed 1+N calls and I got the walk wrong), then intersect it with the org's
+ * team list.
+ *
+ * The intersection is the load-bearing half. The closure is full of security
+ * groups, and branch policy staples them to PRs wholesale: `[Products]\
+ * Contributors` is a reviewer on **119 of 163** active PRs and this account is
+ * in it. Matching the raw closure yields 120 "assigned" PRs — technically
+ * correct, useless as an inbox. Intersecting leaves the ticket's actual
+ * wording: a team you belong to.
+ */
+export async function resolveMyTeams(client: AdoClient, identity: Identity): Promise<Team[]> {
+  const [self, all] = await Promise.all([
+    client.get<IdentityList>(
+      '_apis/identities',
+      { identityIds: identity.id, queryMembership: 'Expanded' },
+      'vssps',
+    ),
+    client.get<TeamList>('_apis/teams', { $top: TEAM_PAGE_SIZE, 'api-version': TEAMS_VERSION }),
+  ])
+
+  const descriptors = self.value?.[0]?.memberOf ?? []
+  if (descriptors.length === 0) return []
+
+  const chunks: string[][] = []
+  for (let at = 0; at < descriptors.length; at += DESCRIPTOR_CHUNK) {
+    chunks.push(descriptors.slice(at, at + DESCRIPTOR_CHUNK))
+  }
+  const resolved = await client.fanOut(chunks, (chunk) =>
+    client.get<IdentityList>('_apis/identities', { descriptors: chunk.join(',') }, 'vssps'),
+  )
+
+  const closure = new Set(
+    resolved.flatMap((page) => (page.value ?? []).map((entry) => key(entry.id))),
+  )
+
+  return (all.value ?? [])
+    .filter((team) => team.id !== undefined && closure.has(key(team.id)))
     .map((team) => ({
-      id: team.id,
-      name: team.projectName ? `${team.projectName} \\ ${team.name ?? ''}` : (team.name ?? team.id),
+      id: team.id as string,
+      name: team.projectName
+        ? `${team.projectName} \\ ${team.name ?? ''}`
+        : (team.name ?? (team.id as string)),
     }))
 }
 
@@ -239,12 +284,16 @@ export function partition(
   return { assignedToMe: assignedToMe.sort(byNewest), mine: mine.sort(byNewest) }
 }
 
+/** Teams need the identity, so the pair chains; kept together so it can run alongside. */
+async function resolveWho(client: AdoClient): Promise<{ identity: Identity; teams: Team[] }> {
+  const identity = await resolveIdentity(client)
+
+  return { identity, teams: await resolveMyTeams(client, identity) }
+}
+
 export async function loadInbox(client: AdoClient): Promise<Inbox> {
-  // Independent of each other and of the listing; the client's own concurrency
-  // cap is what keeps this polite.
-  const [identity, teams, pullRequests] = await Promise.all([
-    resolveIdentity(client),
-    resolveMyTeams(client),
+  const [{ identity, teams }, pullRequests] = await Promise.all([
+    resolveWho(client),
     listActivePullRequests(client),
   ])
 

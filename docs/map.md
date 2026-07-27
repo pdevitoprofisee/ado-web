@@ -306,9 +306,13 @@ detail. Nothing is restated here; this is an index, not a store.
   the inbox is real: one org-wide listing, partitioned locally into **Assigned to me** and
   **Mine**. ADO's own `searchCriteria.reviewerId=<me>` does *not* expand team membership —
   live it returned 0 while 4 PRs had my team on them — so the filter that looks right is a
-  silent empty inbox. Team membership comes from `teams?$mine=true`, not the Graph API,
-  which is on another host and missed the actual team. Paging was forced past one page at
-  `$top=50` and three short pages were not the last.
+  silent empty inbox. **`teams?$mine=true` is not membership either** — it shipped that
+  way, Paul challenged the result, and checking every roster showed the account is a direct
+  member of **0 of 43** teams while the filter reported 1 of its 28 real containers.
+  Membership now comes from `identities?queryMembership=Expanded` on `vssps`, intersected
+  with the org's team list — the intersection matters, because `[Products]\Contributors` is
+  a container reviewer on 119 of 163 PRs and the raw closure "assigns" all of them. Paging
+  was forced past one page at `$top=50` and three short pages were not the last.
 - [T-009 — Command registry](./tickets/round-1.md#t-009--command-registry-and-shortcut-sheet) —
   one keydown listener for the app, keys declared in `src/commands/registry.ts` and claimed
   by surfaces with `useCommand`, the `?` sheet generated from that array and dimming what

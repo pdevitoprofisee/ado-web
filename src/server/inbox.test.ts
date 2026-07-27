@@ -3,12 +3,14 @@ import { describe, expect, it } from 'vitest'
 
 import { listActivePullRequests, loadInbox, partition } from './inbox'
 
-import type { AdoClient, QueryValue } from './ado-client'
+import type { AdoClient, AdoHost, QueryValue } from './ado-client'
 
 const ME = 'ba11ca22-79d4-65e2-8401-70ab29e1a5e2'
 const TEAM = 'b53a4272-130f-4541-9d37-d566e39c95d0'
 const OTHER_TEAM = 'ffffffff-0000-4000-8000-000000000000'
 const COLLEAGUE = '87843bfc-6cf0-64be-bd4a-bb9bd6e801df'
+/** A security group, not a team — the distinction the intersection turns on. */
+const CONTRIBUTORS = 'cc86398c-49fe-4239-9765-4a4da7535e01'
 
 const IDENTITY = { id: ME, displayName: 'Paul DeVito' }
 const TEAMS = [{ id: TEAM, name: 'SaaS \\ DevOps Team' }]
@@ -16,19 +18,31 @@ const TEAMS = [{ id: TEAM, name: 'SaaS \\ DevOps Team' }]
 interface Call {
   readonly path: string
   readonly params: Record<string, QueryValue>
+  readonly host: AdoHost
 }
 
-/** Replies are looked up by path; `pullrequests` gets one reply per page, in order. */
-function fakeClient(replies: Record<string, unknown | unknown[]>) {
+type Reply = unknown | unknown[] | ((params: Record<string, QueryValue>) => unknown)
+
+/**
+ * Replies are looked up by path. An array is consumed one entry per call, which
+ * is how `pullrequests` pages; a function receives the params, which is how
+ * `identities` tells its two very different calls apart.
+ */
+function fakeClient(replies: Record<string, Reply>) {
   const calls: Call[] = []
   const cursors = new Map<string, number>()
 
   const client: AdoClient = {
     org: 'Contoso',
-    async get<T>(path: string, params: Record<string, QueryValue> = {}): Promise<T> {
-      calls.push({ path, params })
+    async get<T>(
+      path: string,
+      params: Record<string, QueryValue> = {},
+      host: AdoHost = 'core',
+    ): Promise<T> {
+      calls.push({ path, params, host })
       const reply = replies[path]
       if (reply === undefined) throw new Error(`unexpected call to ${path}`)
+      if (typeof reply === 'function') return reply(params) as T
       if (!Array.isArray(reply)) return reply as T
 
       const index = cursors.get(path) ?? 0
@@ -199,10 +213,31 @@ describe('partition', () => {
   })
 })
 
+/**
+ * The identity service in its two acts: `queryMembership=Expanded` returns
+ * descriptors, and a second call resolves those descriptors back to ids. The
+ * fake keeps the round trip because the round trip is where the bug would live.
+ */
+const membership = (...ids: string[]) => {
+  const descriptor = (id: string) => `vssgp.${id}`
+
+  return (params: Record<string, QueryValue>) =>
+    params.queryMembership === 'Expanded'
+      ? { value: [{ id: ME, memberOf: ids.map(descriptor) }] }
+      : {
+          value: String(params.descriptors)
+            .split(',')
+            .map((d) => ({ id: d.replace('vssgp.', '') })),
+        }
+}
+
+const CONNECTED = { authenticatedUser: { id: ME, providerDisplayName: 'Paul DeVito' } }
+
 describe('loadInbox', () => {
-  it('asks each endpoint for the api-version it actually needs', async () => {
+  it('asks each endpoint for the host and api-version it actually needs', async () => {
     const { client, calls } = fakeClient({
-      '_apis/connectionData': { authenticatedUser: { id: ME, providerDisplayName: 'Paul DeVito' } },
+      '_apis/connectionData': CONNECTED,
+      '_apis/identities': membership(TEAM),
       '_apis/teams': { value: [{ id: TEAM, name: 'DevOps Team', projectName: 'SaaS' }] },
       '_apis/git/pullrequests': [page(pr(1, { reviewers: [{ id: TEAM, isContainer: true }] })), page()],
     })
@@ -210,10 +245,15 @@ describe('loadInbox', () => {
     const inbox = await loadInbox(client)
 
     // Both are preview-only; the plain 7.1 is a 400 that no bad-token test sees.
-    const version = (path: string) => calls.find((c) => c.path === path)?.params['api-version']
-    expect(version('_apis/connectionData')).toBe('7.1-preview.1')
-    expect(version('_apis/teams')).toBe('7.1-preview.3')
-    expect(calls.find((c) => c.path === '_apis/teams')?.params.$mine).toBe(true)
+    const call = (path: string) => calls.find((c) => c.path === path)
+    expect(call('_apis/connectionData')?.params['api-version']).toBe('7.1-preview.1')
+    expect(call('_apis/teams')?.params['api-version']).toBe('7.1-preview.3')
+    // The identity service 404s on the core host, which reads as a bad path.
+    expect(calls.filter((c) => c.path === '_apis/identities').every((c) => c.host === 'vssps')).toBe(
+      true,
+    )
+    // `$mine=true` is not membership — it must not come back.
+    expect(call('_apis/teams')?.params.$mine).toBeUndefined()
 
     expect(inbox.identity).toEqual(IDENTITY)
     expect(inbox.teams).toEqual([{ id: TEAM, name: 'SaaS \\ DevOps Team' }])
@@ -221,9 +261,70 @@ describe('loadInbox', () => {
     expect(inbox.scanned).toBe(1)
   })
 
+  it('drops a security group from the closure instead of flooding the section', async () => {
+    // The whole reason the closure is intersected with the team list. Live,
+    // [Products]\Contributors is a reviewer on 119 of 163 active PRs and this
+    // account belongs to it; matching the raw closure "assigns" all of them.
+    const { client } = fakeClient({
+      '_apis/connectionData': CONNECTED,
+      '_apis/identities': membership(TEAM, CONTRIBUTORS),
+      '_apis/teams': { value: [{ id: TEAM, name: 'DevOps Team', projectName: 'SaaS' }] },
+      '_apis/git/pullrequests': [
+        page(
+          pr(1, { reviewers: [{ id: CONTRIBUTORS, isContainer: true }] }),
+          pr(2, { reviewers: [{ id: TEAM, isContainer: true }] }),
+        ),
+        page(),
+      ],
+    })
+
+    const inbox = await loadInbox(client)
+
+    expect(inbox.teams.map((t) => t.id)).toEqual([TEAM])
+    expect(inbox.assignedToMe.map((r) => r.id)).toEqual([2])
+  })
+
+  it('ignores a team I am not in, however many the org has', async () => {
+    const { client } = fakeClient({
+      '_apis/connectionData': CONNECTED,
+      '_apis/identities': membership(TEAM),
+      '_apis/teams': {
+        value: [
+          { id: OTHER_TEAM, name: 'Portal Kombat', projectName: 'Products' },
+          { id: TEAM, name: 'DevOps Team', projectName: 'SaaS' },
+        ],
+      },
+      '_apis/git/pullrequests': [
+        page(pr(1, { reviewers: [{ id: OTHER_TEAM, isContainer: true }] })),
+        page(),
+      ],
+    })
+
+    expect((await loadInbox(client)).assignedToMe).toEqual([])
+  })
+
+  it('chunks the descriptor lookup rather than building an unbounded query string', async () => {
+    const ids = Array.from({ length: 250 }, (_, i) => `group-${i}`)
+    const { client, calls } = fakeClient({
+      '_apis/connectionData': CONNECTED,
+      '_apis/identities': membership(...ids, TEAM),
+      '_apis/teams': { value: [{ id: TEAM, name: 'DevOps Team', projectName: 'SaaS' }] },
+      '_apis/git/pullrequests': [page()],
+    })
+
+    const inbox = await loadInbox(client)
+
+    const lookups = calls.filter((c) => c.path === '_apis/identities' && c.params.descriptors)
+    expect(lookups).toHaveLength(3)
+    expect(lookups.every((c) => String(c.params.descriptors).split(',').length <= 100)).toBe(true)
+    // Chunking must not lose the one entry that mattered.
+    expect(inbox.teams.map((t) => t.id)).toEqual([TEAM])
+  })
+
   it('refuses to build an inbox with no identity to build it around', async () => {
     const { client } = fakeClient({
       '_apis/connectionData': {},
+      '_apis/identities': membership(),
       '_apis/teams': { value: [] },
       '_apis/git/pullrequests': [page()],
     })
@@ -232,8 +333,9 @@ describe('loadInbox', () => {
   })
 
   it('survives an account on no teams', async () => {
-    const { client } = fakeClient({
+    const { client, calls } = fakeClient({
       '_apis/connectionData': { authenticatedUser: { id: ME } },
+      '_apis/identities': membership(),
       '_apis/teams': {},
       '_apis/git/pullrequests': [page(pr(1, { reviewers: [{ id: TEAM, isContainer: true }] })), page()],
     })
@@ -242,5 +344,7 @@ describe('loadInbox', () => {
 
     expect(inbox.teams).toEqual([])
     expect(inbox.assignedToMe).toEqual([])
+    // An empty closure short-circuits; there is nothing to resolve.
+    expect(calls.filter((c) => c.params.descriptors)).toEqual([])
   })
 })

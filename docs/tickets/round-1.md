@@ -511,8 +511,8 @@ demo — is now the inbox.
 | Criterion | Evidence |
 |---|---|
 | identity from `connectionData` | live: `ba11ca22-…-70ab29e1a5e2` / Paul DeVito, and the same GUID matches 4 PRs' `createdBy.id` |
-| both sections, live | **Assigned to me** 3302 3135 2974 2906 · **Mine** 24698 24696 24587 24586 · disjoint, unique, 164 active PRs scanned in **453 ms** |
-| ≥1 team-assigned PR | all four of "Assigned to me" arrive via `[SaaS]\DevOps Team`; **zero** are direct |
+| both sections, live | **Assigned to me** 3302 3135 2974 2906 · **Mine** 24698 24696 24587 24586 · disjoint, unique, 164 active PRs scanned in **716 ms** |
+| ≥1 team-assigned PR | all four of "Assigned to me" arrive via `[SaaS]\DevOps Team`; **zero** are direct — across all 164 PRs this account has **no** direct reviewer assignment at all |
 | paging past one page | forced live at `$top=50`: `50 + 49 + 43 + 23 + 0 = 165`, identical id set to the single 1000-row page |
 | stop only on empty | three of those pages were short **and not last**; a `count < $top` stop would have quit at page 2 and lost 66 of 165 |
 | dedupe by `pullRequestId` | unit test pages an id across two pages; live sets compared by id, not length |
@@ -527,15 +527,47 @@ direct reviewer on **none**. It fails as a *silent* empty inbox — the same fai
 note 1, one layer up. So the listing is unfiltered and the partition is local: one org-wide
 call, `createdBy.id` for "Mine", `reviewers[].id` plus `isContainer` for "Assigned to me".
 
-**`_apis/teams?$mine=true`, not the Graph API, and the reason is correctness rather than
-cost.** The Graph route (`graph/descriptors` → `graph/memberships?direction=up` →
-`graph/groups`) is on a *different host* — `vssps.dev.azure.com`; `dev.azure.com` 404s it —
-costs 1+N calls, and returns only direct containers so it needs a transitive walk. Walked
-five levels deep against the live org it produced `Contributors`, `Project Valid Users` and
-`Project Collection Valid Users`, matched **0** PRs, and **missed the actual team**. One
-call to `teams?$mine=true` returned `SaaS \ DevOps Team`, whose id is exactly the container
-reviewer on those 4 PRs. That call needs `7.1-preview.3`; plain `7.1` is a 400 — the third
-endpoint in this project whose version could only be learned from a real credential.
+**`_apis/teams?$mine=true` is not membership, and it produced the right answer here by
+luck.** This section originally shipped on that filter. Paul questioned the result — "I
+don't believe I'm a member of the SaaS DevOps team" — and the doubt was well founded even
+though the four PRs were right. Measured against the live org:
+
+- the roster of `SaaS \ DevOps Team` is three entries — Manju Thomas, Yonko Ganchev, and
+  the group `[TEAM FOUNDATION]\Solliance - SaaS`. **This account is not on it.**
+- checking all 43 rosters in the org: **direct member of 0 of 43 teams**.
+- the account's real transitive closure is **28 containers**. `$mine=true` reported **1**.
+
+So the filter under-reports by 27 and reports one thing it should not. Membership here is
+real but indirect: the account is in `Solliance - SaaS`, which is on the team's roster, so
+ADO expands it in. What matters is the failure mode — a filter that returns 1 of 28 can
+drop a genuine team assignment with nothing to see, which is the silent-empty-inbox trap
+this ticket exists to avoid.
+
+**The replacement is the transitive closure intersected with the org's team list.**
+`identities?identityIds=<me>&queryMembership=Expanded` on `vssps.dev.azure.com` returns all
+28 containers in **one call, no walk**, then one batched call resolves the descriptors to
+ids (chunked at 100 — a 250-group account would otherwise build a 15 KB query string), and
+`_apis/teams` supplies the intersection.
+
+**The intersection is the load-bearing half, not a tidying step.** The raw closure is
+mostly security groups, and branch policy staples those to PRs wholesale:
+`[Products]\Contributors` is a container reviewer on **119 of 163** active PRs and this
+account belongs to it. Matching the closure directly yields **120** "assigned" PRs —
+defensible on the data, useless as an inbox. Intersecting with `_apis/teams` drops all 27
+non-teams and leaves the ticket's own wording: *a team you belong to*. A unit test pins
+this, because the correct-looking simplification is to skip it.
+
+**Correction to an earlier claim in this document: the Graph API did not "miss the actual
+team."** The five-level `graph/memberships?direction=up` walk that returned only
+`Contributors`, `Project Valid Users` and `Project Collection Valid Users` was my walk
+being wrong, not the API. `queryMembership=Expanded` finds the team on the same host in one
+request. The original text blamed the API for an error in the code that called it.
+
+`_apis/teams` needs `7.1-preview.3`; plain `7.1` is a 400 — the third endpoint in this
+project whose version could only be learned from a real credential. `identities` is fine on
+plain `7.1`, but it 404s on `dev.azure.com`, which reads as a bad path rather than a wrong
+host; [`ado-client.ts`](../../src/server/ado-client.ts) now takes a `host` argument so both
+share one credential, one throttle gate and note 4's redirect handling.
 
 **One client per credential, for the life of the process**
 ([`src/server/ado.ts`](../../src/server/ado.ts)). The rate-limit gate is state *inside* the
@@ -552,7 +584,19 @@ when your team is on it, because it is a review request you cannot act on.
 
 **Not verified: that the list matches the ADO web UI.** Everything above is measured
 against the API, which is the same source the web UI reads, but nobody has put the two
-side by side. That is a browser check and it is the one criterion still owed.
+side by side. That is a browser check and it is the one criterion still owed. The
+`$mine=true` episode is the argument for actually doing it: the section was populated,
+plausible, and internally consistent while resting on a filter that did not mean what the
+name said.
+
+**Surfaced for a later ticket: "Assigned to me" is technically correct and practically
+empty.** All four rows are from January–March **2022**, all authored by one person, all in
+`SaaS/PC.IAC.*`, and they reach this account only through a contractor group nested in a
+team it is not on. The container's vote on 3302 is `-10` (rejected). Meanwhile the account
+has **zero** direct reviewer assignments org-wide. So the honest reading is that there is
+nothing to review, and the section is showing four abandoned PRs rather than a queue. The
+levers, if that is unwanted, are an age cut-off or dropping indirect (nested-group)
+membership — both are product calls, not bugs, and neither is taken here.
 
 **Watch:** `X-RateLimit-*` still never appeared — a 4-call inbox is far too cheap to
 provoke it, so `DEFAULT_CONCURRENCY = 4` remains an unmeasured guess (T-004).
