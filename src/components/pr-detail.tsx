@@ -1,0 +1,509 @@
+import { Check, CircleHelp, Clock, Minus, TriangleAlert, X } from 'lucide-react'
+
+import type { ReactNode } from 'react'
+
+import { age } from './pr-list'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { cn } from '@/lib/utils'
+
+import type {
+  ChangedFile,
+  Commit,
+  MergeState,
+  Policy,
+  PolicyStatus,
+  PullRequestDetail,
+  Reviewer,
+} from '@/server/pull-request'
+
+// The detail page's reading surface. Split out of the route for the same reason
+// the inbox list is: the route's only other job is fetching, and the answer to
+// "what is stopping this from merging" is worth being able to test without a
+// router or a credential.
+
+/**
+ * Which sections came back empty because their fetch failed rather than because
+ * there is nothing in them — an empty array cannot say which, and only one of
+ * the two means the section can be trusted.
+ *
+ * `pullRequestDetail({...}).failed` from `pull-request-fn.ts` is assignable
+ * straight to this, so the route hands it over untranslated. Optional here so a
+ * section still renders standalone, plain, in a test.
+ *
+ * Reviewers and conflict state are absent because they ride on the detail call,
+ * the page's one hard dependency. The conflicting *paths* can fail on their own
+ * and are read from `pr.errors.conflicts` instead.
+ */
+export interface FailedSections {
+  readonly policies?: boolean
+  readonly commits?: boolean
+  readonly files?: boolean
+}
+
+/** ADO says `refs/heads/foo`; nobody else does. */
+function branch(ref: string): string {
+  return ref.replace(/^refs\/heads\//, '')
+}
+
+function Chip({ children }: { children: ReactNode }) {
+  return (
+    <span className="text-muted-foreground border-border ml-1.5 rounded border px-1 text-[10px] uppercase">
+      {children}
+    </span>
+  )
+}
+
+function Section({
+  title,
+  count,
+  children,
+}: {
+  title: string
+  /** Omitted when the section failed: "0" would be a number we do not have. */
+  count?: number
+  children: ReactNode
+}) {
+  return (
+    <section className="w-full" aria-label={title}>
+      <h2
+        aria-label={count === undefined ? undefined : `${title}, ${count}`}
+        className="text-muted-foreground mb-1 flex items-baseline gap-2 text-xs font-medium tracking-wide uppercase"
+      >
+        {title}
+        {count === undefined ? null : <span className="tabular-nums">{count}</span>}
+      </h2>
+      {children}
+    </section>
+  )
+}
+
+/** "There are none" and "we could not find out" are different facts. */
+function Empty({ children }: { children: ReactNode }) {
+  return <p className="text-muted-foreground px-2 py-1.5 text-sm">{children}</p>
+}
+
+function Failed({ children }: { children: ReactNode }) {
+  return (
+    <p className="text-destructive flex items-center gap-1.5 px-2 py-1.5 text-sm">
+      <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
+      {children}
+    </p>
+  )
+}
+
+/**
+ * ADO's words for "nobody has attempted this merge yet". Neither was seen once
+ * in 21,133 live PRs, and an empty `status` — ADO having omitted the field — is
+ * deliberately not in here: not saying is not the same as saying "not tested".
+ */
+const UNTESTED = new Set(['queued', 'notSet'])
+
+function MergeBanner({ merge, conflictsError }: { merge: MergeState; conflictsError: string | null }) {
+  // Loud for a real conflict and quiet for everything else. The banner keys on
+  // `conflicted`, never on the status: `mergeStatus` arrives empty when ADO
+  // omitted it, which it does on every abandoned PR, and an empty or
+  // unrecognised status has to read as neutral. A banner that shouts at an
+  // untested PR is a banner people stop reading on the conflicted one.
+  if (merge.conflicted) {
+    return (
+      <Alert variant="destructive">
+        <TriangleAlert aria-hidden />
+        <AlertTitle>Merge conflicts</AlertTitle>
+        <AlertDescription>
+          {/* Three states, not two. "It conflicts, and we could not read which
+              files" is a worse answer than the path list but a much better one
+              than a path list that is silently empty. */}
+          {conflictsError !== null ? (
+            `This branch conflicts with its target. Azure DevOps did not say which files: ${conflictsError}`
+          ) : merge.conflicts.length === 0 ? (
+            'This branch conflicts with its target and cannot merge until the conflicts are resolved.'
+          ) : (
+            // The paths, not the word: they are what says whether this is a
+            // five-second rebase or an afternoon.
+            <ul aria-label="Conflicting files" className="flex flex-col gap-0.5 font-mono text-xs">
+              {merge.conflicts.map((conflict) => (
+                <li key={conflict.path}>
+                  {conflict.path}
+                  {/* ADO's own word, kept verbatim: which side of `deleteEdit`
+                      did the deleting is not something the probe established,
+                      and a confidently wrong sentence is worse than a token. */}
+                  <span className="text-muted-foreground"> {conflict.type}</span>
+                  {conflict.resolved ? <Chip>resolved</Chip> : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </AlertDescription>
+      </Alert>
+    )
+  }
+
+  if (UNTESTED.has(merge.status)) {
+    return (
+      <p className="text-muted-foreground text-sm">Azure DevOps has not tested this merge yet.</p>
+    )
+  }
+
+  return null
+}
+
+const POLICY_WORDS: Record<PolicyStatus, string> = {
+  approved: 'passed',
+  rejected: 'failed',
+  // The live probe's finding: on a reviewer policy `queued` means "not yet
+  // satisfied", not "something is running". Only a build is actually running.
+  queued: 'not yet met',
+  running: 'running',
+  broken: 'broken',
+  notApplicable: 'not applicable',
+  unknown: 'unknown',
+}
+
+function PolicyIcon({ status }: { status: PolicyStatus }) {
+  switch (status) {
+    case 'approved':
+      return <Check className="size-3.5 shrink-0" aria-hidden />
+    case 'rejected':
+    case 'broken':
+      return <X className="text-destructive size-3.5 shrink-0" aria-hidden />
+    case 'queued':
+    case 'running':
+      return <Clock className="size-3.5 shrink-0" aria-hidden />
+    case 'notApplicable':
+      return <Minus className="size-3.5 shrink-0" aria-hidden />
+    default:
+      return <CircleHelp className="size-3.5 shrink-0" aria-hidden />
+  }
+}
+
+/**
+ * The four verdicts, in the order they are read: what is stopping the merge,
+ * what is done, what does not apply to this branch, and what is only advice.
+ * A policy lands in the first group that claims it.
+ */
+const GROUPS: ReadonlyArray<[string, (policy: Policy) => boolean]> = [
+  ['Blocking', (policy) => policy.blocking],
+  ['Passed', (policy) => policy.status === 'approved'],
+  ['Not applicable', (policy) => policy.status === 'notApplicable'],
+  ['Optional', () => true],
+]
+
+function label(policy: Policy): string {
+  return policy.detail === null ? policy.name : `${policy.name} — ${policy.detail}`
+}
+
+function PolicyRow({ policy, ambiguous }: { policy: Policy; ambiguous: boolean }) {
+  return (
+    <li className="border-border/60 flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
+      <PolicyIcon status={policy.status} />
+      <span className="min-w-0 flex-1">
+        {policy.name}
+        {policy.detail === null ? null : (
+          <span className="text-muted-foreground"> — {policy.detail}</span>
+        )}
+        {ambiguous ? (
+          <span className="text-muted-foreground font-mono text-xs"> #{policy.id}</span>
+        ) : null}
+      </span>
+      {policy.url === null ? null : (
+        <a
+          href={policy.url}
+          target="_blank"
+          rel="noreferrer"
+          className="text-muted-foreground shrink-0 text-xs underline underline-offset-4"
+        >
+          result
+        </a>
+      )}
+      <span className="text-muted-foreground w-24 shrink-0 text-right text-xs">
+        {POLICY_WORDS[policy.status]}
+      </span>
+    </li>
+  )
+}
+
+function PolicyChecklist({ policies }: { policies: readonly Policy[] }) {
+  const buckets = GROUPS.map(() => [] as Policy[])
+  for (const policy of policies) {
+    buckets[GROUPS.findIndex(([, matches]) => matches(policy))].push(policy)
+  }
+
+  // `configuration.type.displayName` is not unique — the probe found two
+  // "Minimum number of reviewers" on one PR — and the settings do not always
+  // offer a qualifier. A row that still collides after its detail carries the
+  // configuration id, because two identical rows with different verdicts are a
+  // checklist nobody can act on.
+  const counts = new Map<string, number>()
+  for (const policy of policies) counts.set(label(policy), (counts.get(label(policy)) ?? 0) + 1)
+
+  return (
+    <div className="flex w-full flex-col gap-3">
+      {GROUPS.map(([name], index) =>
+        buckets[index].length === 0 ? null : (
+          <div key={name}>
+            <h3
+              className={cn(
+                'mb-1 text-xs font-medium',
+                name === 'Blocking' ? 'text-destructive' : 'text-muted-foreground',
+              )}
+            >
+              {name}
+            </h3>
+            <ul aria-label={name} className="border-border/60 rounded-md border">
+              {buckets[index].map((policy) => (
+                <PolicyRow
+                  key={policy.id}
+                  policy={policy}
+                  ambiguous={(counts.get(label(policy)) ?? 0) > 1}
+                />
+              ))}
+            </ul>
+          </div>
+        ),
+      )}
+    </div>
+  )
+}
+
+/** ADO's vote scale is five integers; this is what they mean. */
+const VOTES = new Map<number, string>([
+  [10, 'approved'],
+  [5, 'approved with suggestions'],
+  [0, 'no vote'],
+  [-5, 'waiting for author'],
+  [-10, 'rejected'],
+])
+
+export function voteWord(vote: number): string {
+  return VOTES.get(vote) ?? `vote ${vote}`
+}
+
+function ReviewerRow({ reviewer, viewerId }: { reviewer: Reviewer; viewerId: string | null }) {
+  return (
+    <li className="border-border/60 flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
+      <span className="min-w-0 flex-1">
+        {reviewer.displayName}
+        {reviewer.isContainer ? <Chip>team</Chip> : null}
+        {viewerId !== null && reviewer.id === viewerId ? <Chip>you</Chip> : null}
+        {reviewer.votedFor.length > 0 ? (
+          <span className="text-muted-foreground text-xs">
+            {' '}
+            on behalf of {reviewer.votedFor.map((team) => team.displayName).join(', ')}
+          </span>
+        ) : null}
+      </span>
+      {/* Required carries full weight and optional recedes: `isRequired` sits
+          on 127 containers against 23 people in the live sample, so a section
+          that reads teams as a footnote reads almost empty on a real PR. */}
+      <span
+        className={cn(
+          'w-16 shrink-0 text-right text-xs',
+          reviewer.isRequired ? 'font-medium' : 'text-muted-foreground',
+        )}
+      >
+        {reviewer.isRequired ? 'required' : 'optional'}
+      </span>
+      <span className="w-44 shrink-0 text-right text-xs">{voteWord(reviewer.vote)}</span>
+    </li>
+  )
+}
+
+function CommitRow({ commit }: { commit: Commit }) {
+  return (
+    <li className="border-border/60 flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
+      <a
+        href={commit.url}
+        target="_blank"
+        rel="noreferrer"
+        className="text-muted-foreground w-16 shrink-0 font-mono text-xs"
+      >
+        {commit.id.slice(0, 7)}
+      </a>
+      <span className="min-w-0 flex-1 truncate">
+        {commit.subject}
+        {/* ADO's `commentTruncated`, read as a field. The subject arrives with
+            no marker on it — a message clipped mid-word is simply a subject
+            that stops — so the text cannot be asked and the boolean is the
+            only thing that knows. */}
+        {commit.truncated ? <Chip>truncated</Chip> : null}
+      </span>
+      <span className="text-muted-foreground hidden shrink-0 truncate text-xs sm:block sm:max-w-40">
+        {commit.author}
+      </span>
+      <span
+        className="text-muted-foreground w-16 shrink-0 text-right text-xs tabular-nums"
+        title={commit.at}
+      >
+        {age(commit.at)}
+      </span>
+    </li>
+  )
+}
+
+function FileRow({ file, conflicted }: { file: ChangedFile; conflicted: boolean }) {
+  const cut = file.path.lastIndexOf('/')
+
+  return (
+    <li
+      className="border-border/60 flex items-baseline border-b px-2 py-1 font-mono text-xs last:border-b-0"
+      title={file.path}
+    >
+      {/* The end of a 90-column monorepo path is the part that identifies the
+          file, so the directory is what gives way when the row runs out of
+          room — never the name. */}
+      <span className="text-muted-foreground truncate">{file.path.slice(0, cut + 1)}</span>
+      <span className="shrink-0">{file.path.slice(cut + 1)}</span>
+      {conflicted ? <span className="text-destructive shrink-0 pl-1.5">conflict</span> : null}
+    </li>
+  )
+}
+
+function ChangedFiles({
+  list,
+  conflicted,
+}: {
+  list: PullRequestDetail['files']
+  /** Conflict paths match `changeEntries[].item.path` exactly, so the banner's
+      files can be found again in the list they actually live in. */
+  conflicted: ReadonlySet<string>
+}) {
+  // `changeType` is a flag set, so "edit, rename" is its own kind of change and
+  // is grouped as one rather than counted twice.
+  const groups = new Map<string, ChangedFile[]>()
+  for (const file of list.files) {
+    const key = file.changeType.length === 0 ? 'unknown' : file.changeType.join(', ')
+    const bucket = groups.get(key)
+    if (bucket === undefined) groups.set(key, [file])
+    else bucket.push(file)
+  }
+
+  return (
+    <div className="flex w-full flex-col gap-3">
+      {[...groups].map(([key, files]) => (
+        <div key={key}>
+          <h3 className="text-muted-foreground mb-1 flex items-baseline gap-2 text-xs font-medium">
+            {key}
+            <span className="tabular-nums">{files.length}</span>
+          </h3>
+          <ul aria-label={key} className="border-border/60 rounded-md border">
+            {files.map((file) => (
+              <FileRow key={file.path} file={file} conflicted={conflicted.has(file.path)} />
+            ))}
+          </ul>
+        </div>
+      ))}
+      {list.truncated ? (
+        <p className="text-muted-foreground text-xs">
+          Azure DevOps returned only the first {list.files.length} files. There are more.
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+export function PullRequestDetailView({
+  pr,
+  failed = {},
+}: {
+  pr: PullRequestDetail
+  failed?: FailedSections
+}) {
+  return (
+    <article className="flex w-full flex-col items-start gap-5">
+      <header className="w-full">
+        <div className="flex items-baseline justify-between gap-4">
+          <h1 className="text-xl leading-tight font-semibold tracking-tight">{pr.title}</h1>
+          {/* Demoted, not removed: there will always be something only ADO can do. */}
+          <a
+            href={pr.url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-muted-foreground shrink-0 text-xs underline underline-offset-4"
+          >
+            Azure DevOps
+          </a>
+        </div>
+        <p className="text-muted-foreground mt-1 text-xs">
+          <span className="font-mono tabular-nums">!{pr.id}</span>
+          {' · '}
+          {pr.project}/{pr.repository}
+          {' · '}
+          {pr.author.displayName}
+          {' · '}
+          {age(pr.createdAt)}
+          {' · '}
+          <span className="font-mono">
+            {branch(pr.sourceBranch)} → {branch(pr.targetBranch)}
+          </span>
+          {pr.isDraft ? <Chip>draft</Chip> : null}
+        </p>
+      </header>
+
+      <MergeBanner merge={pr.merge} conflictsError={pr.errors.conflicts} />
+
+      {/* Ahead of the description deliberately: the description measured 1710
+          characters on a real PR, and the checklist is the thing the page
+          exists to answer. */}
+      <Section title="Policies" count={failed.policies === true ? undefined : pr.policies.length}>
+        {failed.policies === true ? (
+          <Failed>Could not load the branch policies for this pull request.</Failed>
+        ) : pr.policies.length === 0 ? (
+          <Empty>No branch policies apply to this pull request.</Empty>
+        ) : (
+          <PolicyChecklist policies={pr.policies} />
+        )}
+      </Section>
+
+      <Section title="Reviewers" count={pr.reviewers.length}>
+        {pr.reviewers.length === 0 ? (
+          <Empty>Nobody has been asked to review this.</Empty>
+        ) : (
+          <ul className="border-border/60 w-full rounded-md border">
+            {pr.reviewers.map((reviewer) => (
+              <ReviewerRow key={reviewer.id} reviewer={reviewer} viewerId={pr.viewerId} />
+            ))}
+          </ul>
+        )}
+      </Section>
+
+      <Section title="Description">
+        {pr.description.trim() === '' ? (
+          <Empty>No description.</Empty>
+        ) : (
+          // Whole and unparsed. The inbox's copy stops at 400 characters and
+          // that truncation is the entire reason this page fetches the PR; the
+          // text is often markdown-ish, but a markdown renderer is a dependency
+          // this round has not agreed to.
+          <p className="w-full text-sm whitespace-pre-wrap">{pr.description}</p>
+        )}
+      </Section>
+
+      <Section title="Commits" count={failed.commits === true ? undefined : pr.commits.length}>
+        {failed.commits === true ? (
+          <Failed>Could not load the commits for this pull request.</Failed>
+        ) : pr.commits.length === 0 ? (
+          <Empty>No commits on this branch.</Empty>
+        ) : (
+          <ul className="border-border/60 w-full rounded-md border">
+            {pr.commits.map((commit) => (
+              <CommitRow key={commit.id} commit={commit} />
+            ))}
+          </ul>
+        )}
+      </Section>
+
+      <Section title="Files" count={failed.files === true ? undefined : pr.files.files.length}>
+        {failed.files === true ? (
+          <Failed>Could not load the changed files for this pull request.</Failed>
+        ) : pr.files.files.length === 0 ? (
+          <Empty>No files changed.</Empty>
+        ) : (
+          <ChangedFiles
+            list={pr.files}
+            conflicted={new Set(pr.merge.conflicts.map((conflict) => conflict.path))}
+          />
+        )}
+      </Section>
+    </article>
+  )
+}
