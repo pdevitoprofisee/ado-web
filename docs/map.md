@@ -2,9 +2,10 @@
 
 A local-only, single-user web client for reviewing Azure DevOps pull requests.
 
-This document is the agreed route. Three sections: **the destination** (what we're
+This document is the agreed route. Four sections: **the destination** (what we're
 building and why), **the notes** (facts and constraints we paid for, which the build
-must not rediscover), and **the fog** (deliberately unmapped).
+must not rediscover), **decisions so far** (an index of resolved tickets), and **the
+fog** (deliberately unmapped).
 
 Detailed API evidence lives in [`docs/research/`](./research/). Anything marked
 `[LIVE]` there was verified against real endpoints; trust it over intuition.
@@ -239,6 +240,16 @@ line text — useful only to make our hunk boundaries match theirs. It's preview
 - `simple-git` must be `>=3.36.0` (three 2026 option-injection RCEs) and request data
   must never reach its options array.
 - `@napi-rs/keyring`, never `keytar` — archived and deprecated.
+
+---
+
+## Decisions so far
+
+One line per resolved ticket — the gist, plus a link to the ticket that holds the
+detail. Nothing is restated here; this is an index, not a store.
+
+_Nothing resolved yet. [T-001 — Live API inventory spike](./tickets/round-1.md#t-001--live-api-inventory-spike)
+is claimed and waiting on a real PAT._
 
 ---
 

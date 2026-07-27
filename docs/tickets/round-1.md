@@ -5,6 +5,11 @@ The route as a whole, then the tickets that are actually actionable now.
 Each ticket states **success criteria**, not steps. Facts referenced by number come
 from [the notes](../map.md#the-notes); don't re-derive them.
 
+Every ticket carries a **Type · Status · Blocked by** line. The **frontier** — what a
+session may pick up — is the tickets that are `open`, `unclaimed`, and whose blockers
+are all `resolved`. Claim before working: set `Status: claimed` and save first, so a
+concurrent session skips it.
+
 ---
 
 ## The route
@@ -28,6 +33,8 @@ Phases 3 and 4 are the reason this project exists; phase 1 exists to make them c
 
 ## T-001 — Live API inventory spike
 
+**Type:** task (HITL — needs a real credential) · **Status:** claimed · **Blocked by:** —
+
 **Do this first.** Two of its answers can delete work from the route, and it costs an
 afternoon with a real PAT.
 
@@ -44,9 +51,53 @@ is edited in the same commit.
 
 **Explicitly not in scope:** any application code. This is a throwaway script.
 
+### The script exists — it needs credentials
+
+[`scripts/live-inventory.mjs`](../../scripts/live-inventory.mjs) is written and answers all
+six unknowns plus the fan-out pricing, writing `docs/research/live-inventory.md` with the
+raw response under every verdict. Secrets are redacted from the output; no token value is
+written to disk.
+
+To finish this ticket:
+
+1. **ADO PAT** at `https://dev.azure.com/{org}/_usersSettings/tokens` with **Code (read &
+   write)**, **Build (read & execute)**, and **Identity (read)**. Read-only would answer
+   five of the six unknowns; `vso.code_write` is only needed for the `--allow-writes`
+   probe in unknown #4.
+2. **SonarCloud token** at `https://sonarcloud.io/account/security` — must be a *personal*
+   token; only those can read issues.
+3. Run it:
+
+   ```powershell
+   $env:ADO_ORG='<org>'; $env:ADO_PAT='<pat>'; $env:SONAR_TOKEN='<token>'
+   node scripts/live-inventory.mjs
+   ```
+
+   Optional: `ADO_PR_ID=<id>` to point unknowns 3–5 at a specific Sonar-analysed PR
+   (otherwise it auto-picks the first active PR carrying a Sonar status), `SONAR_ORG=<key>`
+   to skip organization discovery.
+
+4. **Unknown #4 needs one deliberate mutation.** The default run only probes route
+   *existence* — whether `.../comments/{id}/likes` answers 404 (missing) or 401/405
+   (exists). Proving it's *writable* means actually liking a real comment. Re-run with
+   `--allow-writes` on a PR whose comment you don't mind liking and unliking; the script
+   PUTs then DELETEs the same like.
+
+**Baseline already captured:** [`docs/research/sonar-rules-show-unauthenticated.json`](../research/sonar-rules-show-unauthenticated.json)
+is the *unauthenticated* `rules/show` for `java:S1541` — 1101 bytes, metadata only, no
+`htmlDesc` / `mdDesc` / `descriptionSections`, and a `requiredEntitlements: []` field.
+Unknown #2 is settled by whether a token changes that.
+
+**On rate-limit pricing:** ADO does not emit `X-RateLimit-*` on every response — the
+headers appear as you approach the limit. If the run reports no headers, that is a
+"couldn't measure", not a "cost is zero", and T-004's concurrency default stays a guess
+until it's measured under real fan-out.
+
 ---
 
 ## T-002 — Scaffold
+
+**Type:** task (AFK) · **Status:** open · **Blocked by:** —
 
 TanStack Start + React + TypeScript + Tailwind 4, shadcn initialised with
 `--base aria`, TanStack Query, pnpm, Vitest. SSR disabled for app routes.
@@ -64,6 +115,8 @@ CI-shaped scripts.
 
 ## T-003 — Secrets and onboarding
 
+**Type:** task (AFK) · **Status:** open · **Blocked by:** T-002
+
 An onboarding route that captures the ADO org + PAT and the SonarCloud token, stores
 them via `@napi-rs/keyring`, and tests each connection before accepting it. Tokens are
 readable only inside server functions.
@@ -76,6 +129,8 @@ a client bundle, a network response body, or a log line.
 ---
 
 ## T-004 — ADO HTTP client
+
+**Type:** task (AFK) · **Status:** open · **Blocked by:** T-001, T-002, T-003
 
 The single server-side chokepoint for every ADO call.
 
@@ -99,6 +154,8 @@ which makes the two bullets above impossible.
 
 ## T-005 — SQLite
 
+**Type:** task (AFK) · **Status:** open · **Blocked by:** T-002
+
 Server-side store plus migrations. Round-1 tables only: PR cache (keyed by PR id,
 carrying `lastMergeSourceCommit.commitId` as the validity token) and the schema-version
 row. Thread collapse state, viewed-file flags, and the notification log get added by
@@ -110,6 +167,8 @@ boot, and deleting the file is a clean recovery rather than a crash.
 ---
 
 ## T-006 — Identity and PR listing
+
+**Type:** task (AFK) · **Status:** open · **Blocked by:** T-001, T-004
 
 Resolve the authenticated user's GUID from `connectionData`, then list PRs into the two
 sections — **Assigned to me** and **Mine** — as plain rows: title, repo, author, target
@@ -130,6 +189,8 @@ the GUID guard by pointing a test at a non-GUID filter.
 
 ## T-007 — Lazy row hydration
 
+**Type:** task (AFK) · **Status:** open · **Blocked by:** T-005, T-006
+
 Rich row data — check state, unresolved *human* comment count, conflict state,
 whether a push reset your approval — fetched per PR at 1+N (note: irreducible), for
 **visible rows first**, the remainder on idle.
@@ -147,6 +208,8 @@ Sonar feature itself.
 
 ## T-008 — Refresh cadence
 
+**Type:** task (AFK) · **Status:** open · **Blocked by:** T-007
+
 Tiered polling: ~30 s for an open PR, ~2 min for the inbox, backing off when the window
 is unfocused, resuming on focus.
 
@@ -156,6 +219,8 @@ against the `X-RateLimit` accounting from T-004, not by feel.
 ---
 
 ## T-009 — Command registry and shortcut sheet
+
+**Type:** task (AFK) · **Status:** open · **Blocked by:** T-002
 
 One registry that owns every keyboard shortcut, plus the `?` sheet rendered *from* the
 registry so it can't drift.
