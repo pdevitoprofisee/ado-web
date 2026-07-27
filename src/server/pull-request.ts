@@ -142,13 +142,18 @@ export interface Commit {
   /** First line of the message, derived here. */
   readonly subject: string
   /**
-   * ADO's `commentTruncated`, verbatim: the *message* was clipped before it
-   * reached us. It is not a statement about `subject` — a multi-line message is
-   * not truncated just because only its first line is shown — but it is the
-   * only signal that `subject` might itself be missing its ending, which is the
-   * case when the clipped text has no line break left in it.
+   * ADO's `commentTruncated`, renamed because its own name misleads. Measured
+   * against the standalone commit resource, which returns the whole message: on
+   * 4 of 4 truncated commits the `comment` we were handed was **exactly the
+   * complete first line**, a prefix of the full text, and what was dropped was
+   * the body after the blank line. It fired on 9 of 21 commits at message
+   * lengths of 33–86 characters, so it is not a length limit either.
+   *
+   * So it does not mean `subject` is clipped — `subject` is whole. It means
+   * there is more commit message than this page is showing. Called `truncated`,
+   * it produced a UI that marked nearly half of all commits as cut off.
    */
-  readonly truncated: boolean
+  readonly bodyOmitted: boolean
   readonly author: string
   readonly at: string
   readonly url: string
@@ -345,10 +350,10 @@ export function changeFlags(raw: string | undefined): string[] {
 }
 
 /**
- * The first line, and nothing else — no ellipsis, no marker. ADO's
- * `commentTruncated` is carried beside it as a boolean instead, because a
- * punctuation mark is not a signal: a commit subject can legitimately end in
- * one, and the UI would have to guess.
+ * The first line, and nothing else — no ellipsis, no marker. Whether a body
+ * followed is carried beside it as `bodyOmitted`, because a punctuation mark is
+ * not a signal: a commit subject can legitimately end in one, and the UI would
+ * have to guess.
  */
 export const commitSubject = (comment: string | undefined): string =>
   (comment ?? '').split('\n')[0].trim()
@@ -409,13 +414,18 @@ function policyDetail(
       .filter((part) => part !== null)
       .join(' · ')
   }
+  // Before the approver count, not after: a "Required reviewers" policy carries
+  // **both** keys — measured, 10 of 10 — and the count is the less specific of
+  // the two. Ordered the other way, every required-reviewer row on the live org
+  // read "1 approval, author counts", which is the checklist answering a
+  // question nobody asked.
+  if (settings.requiredReviewerIds !== undefined) {
+    return plural(settings.requiredReviewerIds.length, 'required reviewer')
+  }
   if (typeof settings.minimumApproverCount === 'number') {
     const counts = settings.creatorVoteCounts === true ? ', author counts' : ''
 
     return `${plural(settings.minimumApproverCount, 'approval')}${counts}`
-  }
-  if (settings.requiredReviewerIds !== undefined) {
-    return plural(settings.requiredReviewerIds.length, 'required reviewer')
   }
 
   return null
@@ -545,7 +555,7 @@ async function loadCommits(
     .map((commit) => ({
       id: commit.commitId,
       subject: commitSubject(commit.comment),
-      truncated: commit.commentTruncated === true,
+      bodyOmitted: commit.commentTruncated === true,
       author: commit.author?.name ?? 'unknown',
       at: commit.author?.date ?? '',
       // ADO's own `url` on a commit is the REST resource, which is not

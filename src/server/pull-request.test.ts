@@ -384,7 +384,14 @@ describe('the policy checklist', () => {
         minimumApproverCount: 1,
         creatorVoteCounts: true,
       }),
-      evaluation(103, 'Required reviewers', 'queued', { requiredReviewerIds: [ME, COLLEAGUE] }),
+      // Live, a "Required reviewers" policy carries **both** keys — 10 of 10 —
+      // and the earlier fixture carried only one, which is why the rows read
+      // "1 approval, author counts" on the real org and passed here anyway.
+      evaluation(103, 'Required reviewers', 'queued', {
+        requiredReviewerIds: [ME, COLLEAGUE],
+        minimumApproverCount: 1,
+        creatorVoteCounts: true,
+      }),
       evaluation(104, 'Comment requirements', 'rejected', {}),
     ])
 
@@ -409,19 +416,19 @@ describe('the policy checklist', () => {
 })
 
 describe('commits', () => {
-  it('takes the first line and reports ADO’s own truncation flag beside it', async () => {
+  it('takes the first line and reports a dropped body beside it', async () => {
     const pr = await load({
       '/commits': {
         value: [
           commit('a'.repeat(40), 'feat: add logging\n\nA long body ADO clipped', {
             commentTruncated: true,
           }),
-          // The awkward case: the clipped text has no line break left in it, so
-          // the first line *is* the clipped part. The flag says so; `subject` is
-          // still handed over exactly as ADO sent it, with no guessed ellipsis.
-          commit('b'.repeat(40), 'fix: a subject with no line break left in i', {
-            commentTruncated: true,
-          }),
+          // What `commentTruncated` actually looks like on the wire: measured
+          // against the standalone commit resource, the `comment` handed over
+          // is the complete first line every time and the body is what went
+          // missing. So the flag rides beside a *whole* subject, and the field
+          // is named `bodyOmitted` rather than ADO's `commentTruncated`.
+          commit('b'.repeat(40), 'fix: rename the sink', { commentTruncated: true }),
           commit('c'.repeat(40), 'chore: whole message'),
         ],
       },
@@ -429,10 +436,10 @@ describe('commits', () => {
 
     expect(pr.commits.map((entry) => entry.subject)).toEqual([
       'feat: add logging',
-      'fix: a subject with no line break left in i',
+      'fix: rename the sink',
       'chore: whole message',
     ])
-    expect(pr.commits.map((entry) => entry.truncated)).toEqual([true, true, false])
+    expect(pr.commits.map((entry) => entry.bodyOmitted)).toEqual([true, true, false])
   })
 
   it('links a commit somewhere a person can read it', async () => {

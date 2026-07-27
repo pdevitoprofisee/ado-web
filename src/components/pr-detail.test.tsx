@@ -51,7 +51,7 @@ const reviewer = (over: Partial<Reviewer> = {}): Reviewer => ({
 const commit = (over: Partial<Commit> = {}): Commit => ({
   id: 'a1b2c3d4e5f6a7b8',
   subject: 'point the sink at the new workspace',
-  truncated: false,
+  bodyOmitted: false,
   author: 'Paul DeVito',
   at: '2026-07-21T00:00:00Z',
   url: 'https://dev.azure.com/Profisee/_git/utilities/commit/a1b2c3d4e5f6a7b8',
@@ -379,22 +379,25 @@ describe('PullRequestDetailView commits', () => {
     expect(row).toHaveTextContent('Paul DeVito')
   })
 
-  it('marks a message ADO clipped instead of presenting it as whole', () => {
+  it('says a body was left behind, and does not call the subject truncated', () => {
     render(
-      <PullRequestDetailView pr={detail({ commits: [commit({ truncated: true })] })} />,
+      <PullRequestDetailView pr={detail({ commits: [commit({ bodyOmitted: true })] })} />,
     )
 
-    expect(screen.getByText('truncated')).toBeVisible()
+    expect(screen.getByText('+ body')).toBeVisible()
+    // The word that was here before was wrong about live data on half the
+    // commits in the org: the subject ADO hands over is complete.
+    expect(screen.queryByText('truncated')).toBeNull()
   })
 
   it('trusts the flag, not the text, which carries no marker either way', () => {
     render(
       <PullRequestDetailView
-        pr={detail({ commits: [commit({ subject: 'and then, well…', truncated: false })] })}
+        pr={detail({ commits: [commit({ subject: 'and then, well…', bodyOmitted: false })] })}
       />,
     )
 
-    expect(screen.queryByText('truncated')).toBeNull()
+    expect(screen.queryByText('+ body')).toBeNull()
   })
 
   it('tells the two empty commit states apart', () => {

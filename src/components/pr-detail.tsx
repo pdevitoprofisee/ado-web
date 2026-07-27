@@ -321,11 +321,11 @@ function CommitRow({ commit }: { commit: Commit }) {
       </a>
       <span className="min-w-0 flex-1 truncate">
         {commit.subject}
-        {/* ADO's `commentTruncated`, read as a field. The subject arrives with
-            no marker on it — a message clipped mid-word is simply a subject
-            that stops — so the text cannot be asked and the boolean is the
-            only thing that knows. */}
-        {commit.truncated ? <Chip>truncated</Chip> : null}
+        {/* Not "truncated": the subject is whole, and ADO's own name for this
+            flag is a trap the contract now spells out. It says there is a
+            message body underneath, which is worth knowing and is not a
+            defect — it is true of about half the commits on this org. */}
+        {commit.bodyOmitted ? <Chip>+ body</Chip> : null}
       </span>
       <span className="text-muted-foreground hidden shrink-0 truncate text-xs sm:block sm:max-w-40">
         {commit.author}
