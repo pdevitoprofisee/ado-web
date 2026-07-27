@@ -252,6 +252,10 @@ detail. Nothing is restated here; this is an index, not a store.
   running: Start with SSR off, shadcn locked to the aria base, loopback-bound in dev
   *and* in the Nitro build, a server function answering the client, tests and typecheck
   green.
+- [T-005 — SQLite](./tickets/round-1.md#t-005--sqlite) — `node:sqlite` (no native addon,
+  proven inside the Nitro build), a `schema_migrations` table applied transactionally at
+  first use, and one round-1 table: a PR cache whose staleness check lives inside the
+  read, so a caller cannot serve a row from before the last push.
 
 [T-001 — Live API inventory spike](./tickets/round-1.md#t-001--live-api-inventory-spike)
 is claimed and waiting on a real PAT.

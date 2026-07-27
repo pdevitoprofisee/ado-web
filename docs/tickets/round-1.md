@@ -199,7 +199,7 @@ which makes the two bullets above impossible.
 
 ## T-005 — SQLite
 
-**Type:** task (AFK) · **Status:** open · **Blocked by:** T-002
+**Type:** task (AFK) · **Status:** resolved · **Blocked by:** T-002
 
 Server-side store plus migrations. Round-1 tables only: PR cache (keyed by PR id,
 carrying `lastMergeSourceCommit.commitId` as the validity token) and the schema-version
@@ -208,6 +208,65 @@ the phases that need them — don't build empty tables now.
 
 **Success:** the file lives in a per-user app-data path, migrations run idempotently at
 boot, and deleting the file is a clean recovery rather than a crash.
+
+### Resolution
+
+All three success criteria have a test that proves them.
+[`src/server/db.ts`](../../src/server/db.ts) owns the path, the open, the migration
+runner and the process handle; [`src/server/pr-cache.ts`](../../src/server/pr-cache.ts)
+is round 1's only consumer.
+
+| Criterion | Evidence |
+|---|---|
+| per-user app-data path | `databasePath()` → `%LOCALAPPDATA%\ado-web\ado-web.db`; test asserts it is outside `cwd()` |
+| migrations idempotent | opening twice, plus a third explicit `migrate()`, leaves one `schema_migrations` row and the data intact |
+| deleting the file recovers | `unlink` then reopen yields an empty, fully-migrated schema; a missing directory tree is recreated, not required |
+
+**Driver: `node:sqlite`, not better-sqlite3.** Node 24.18 ships it (SQLite 3.53.1) with
+no experimental warning. The deciding factor is the Nitro build: a native addon has to
+be externalised from the bundle and carries per-platform prebuilds, and buys nothing at
+this scale. **Verified against the production build, not just `vite dev`** — a temporary
+server function touching the store was built and run, and the Nitro server process
+created and migrated its own database file (`pr_cache` + `schema_migrations`, migration 1
+recorded). `node:sqlite` is emitted as a real external `import` in the server bundle and
+appears **nowhere** in the client bundle. The probe wiring was then reverted; nothing
+imports the store yet, so that check has to be re-run by the first ticket that does.
+
+**`schema_migrations` table, not `pragma user_version`.** `user_version` is one integer
+and would have worked, but later phases add tables (thread collapse, viewed flags, the
+notification log) and a row per migration with its `applied_at` is the difference
+between a debuggable schema and an opaque one. Each migration's DDL and its bookkeeping
+row commit in **one transaction** — SQLite DDL is transactional — so the schema and the
+version record cannot diverge, which is the only thing `user_version` was buying.
+
+**Cache tables get truncated by migrations, not migrated.** Recorded next to
+`MIGRATIONS`: when a cached payload's shape changes, the migration `DELETE`s rather than
+transforms. Re-fetchable data doesn't earn a data migration.
+
+**The validity token is why there is no organization column.** `readPrCache(prId,
+commitId)` compares `commit_id` *inside* the read, so a caller cannot forget the check
+and serve a stale row — T-007's "zero calls on an unchanged inbox" is only sound if that
+half is exact. It also settles cross-org contamination without a column: a PR id is
+org-scoped in ADO, so serving a wrong row would need a collision on both the id and a
+40-hex commit sha, i.e. the same commit.
+
+**Deliberately not done.** No WAL journal mode — access is single-process and
+synchronous via `DatabaseSync`, so there is no reader/writer contention to relieve, and
+it keeps "delete the database" to exactly one file instead of three. No eviction: the
+cache grows one row per PR ever seen, which is megabytes over years for one user;
+`fetched_at` is stored so a prune is possible when that stops being true. No tables for
+later phases — empty tables are guesses.
+
+**Watch:** every `node:sqlite` call is synchronous and blocks the Nitro event loop.
+Irrelevant for small cache rows; it becomes a real consideration if a later phase stores
+anything large (phase 3's blob or token caches).
+
+**Surfaced for T-010:** a server function cannot be driven by curling
+`/_serverFn/<id>`. The id in the server bundle comes from `createSsrRpc` and is not the
+client's RPC id; the same hand-rolled call returns 500 on a build containing no store
+code at all. T-010 must prove its `Host` and token guards at the request-guard level or
+through a real client, not by curling a guessed URL — otherwise it will read a 403 as a
+pass when the call was never well-formed.
 
 ---
 
@@ -302,7 +361,9 @@ because "some endpoints are hardened" is the same as none once phase 2 shells ou
 `git`.
 
 **Success:** a request from a foreign `Host` is rejected, and a request with no token or
-a stale one is rejected, each with a test that proves it. The app itself still works
+a stale one is rejected, each with a test that proves it. Prove them at the request-guard
+level or through a real client — **not** by curling `/_serverFn/<id>` with an id scraped
+from the bundle, which fails for reasons of its own and would read as a pass (T-005). The app itself still works
 end-to-end in dev and from `pnpm start`. The token never lands in a log line or in the
 prerendered shell's static HTML — it reaches the client the same way the shell's other
 boot state does, at runtime.
