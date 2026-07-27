@@ -7,6 +7,7 @@ import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 
 import TanStackQueryDevtools from '../integrations/tanstack-query/devtools'
+import { CommandProvider } from '../commands/command-provider'
 
 import appCss from '../styles.css?url'
 
@@ -52,7 +53,8 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <HeadContent />
       </head>
       <body>
-        {children}
+        {/* The app's one keydown listener, and the `?` sheet it renders. */}
+        <CommandProvider>{children}</CommandProvider>
         <TanStackDevtools
           config={{
             position: 'bottom-right',

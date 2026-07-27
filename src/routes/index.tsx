@@ -3,6 +3,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { useQuery } from '@tanstack/react-query'
 
 import { Button } from '@/components/ui/button'
+import { Kbd } from '@/components/ui/kbd'
 
 // The scaffold's proof-of-life for the half of the app that matters: this body
 // is replaced by an RPC stub in the client bundle, so `process` is only ever
@@ -24,7 +25,8 @@ function Home() {
     <main className="mx-auto flex max-w-xl flex-col items-start gap-4 p-8">
       <h1 className="text-2xl font-semibold tracking-tight">ado-web</h1>
       <p className="text-muted-foreground text-sm">
-        Scaffold only. The inbox lands in T-006.
+        Scaffold only. The inbox lands in T-006. Press{' '}
+        <Kbd>?</Kbd> for keyboard shortcuts.
       </p>
 
       <p className="text-sm">

@@ -256,6 +256,10 @@ detail. Nothing is restated here; this is an index, not a store.
   proven inside the Nitro build), a `schema_migrations` table applied transactionally at
   first use, and one round-1 table: a PR cache whose staleness check lives inside the
   read, so a caller cannot serve a row from before the last push.
+- [T-009 — Command registry](./tickets/round-1.md#t-009--command-registry-and-shortcut-sheet) —
+  one keydown listener for the app, keys declared in `src/commands/registry.ts` and claimed
+  by surfaces with `useCommand`, the `?` sheet generated from that array and dimming what
+  nothing is listening for, and a text-entry guard that knows React Aria's widgets.
 
 [T-001 — Live API inventory spike](./tickets/round-1.md#t-001--live-api-inventory-spike)
 is claimed and waiting on a real PAT.

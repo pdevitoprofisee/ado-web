@@ -324,7 +324,7 @@ against the `X-RateLimit` accounting from T-004, not by feel.
 
 ## T-009 — Command registry and shortcut sheet
 
-**Type:** task (AFK) · **Status:** claimed · **Blocked by:** T-002
+**Type:** task (AFK) · **Status:** resolved · **Blocked by:** T-002
 
 One registry that owns every keyboard shortcut, plus the `?` sheet rendered *from* the
 registry so it can't drift.
@@ -338,6 +338,85 @@ is in a text input. A new shortcut is one registry entry with no changes to the 
 
 **Why now, not later:** every subsequent phase would otherwise add ad-hoc key handlers
 that have to be unpicked.
+
+### Resolution
+
+Four files under [`src/commands/`](../../src/commands/):
+[`registry.ts`](../../src/commands/registry.ts) is the declaration,
+[`command-provider.tsx`](../../src/commands/command-provider.tsx) is the app's one
+`keydown` listener plus the `useCommand` hook surfaces bind with,
+[`text-entry.ts`](../../src/commands/text-entry.ts) is the "is the user typing" rule, and
+[`shortcut-sheet.tsx`](../../src/commands/shortcut-sheet.tsx) renders the registry.
+`__root.tsx` gains one wrapper around `{children}`.
+
+| Criterion | Evidence |
+|---|---|
+| the sheet is generated | `shortcut-sheet.test.tsx` renders it against a **fabricated** registry (`vi.mock('./registry')` — labels "Fabricated first/second/third", groups reversed) and asserts the rows equal that array; a hand-written sheet fails it outright |
+| no firing from a text input | `does not fire while focus is in a text input` and `… in a React Aria TextField` — the handler is never called and the input ends up holding `jk` / `j`; 16 more cases in `text-entry.test.ts` |
+| a new shortcut is one entry | the sheet names no key and no label; the row assertion is `COMMANDS.map(...)`, so an added entry needs no edit to either the sheet or its test |
+
+**Observed, not inferred.** Headless Chrome over CDP, against `pnpm dev` and again against
+`pnpm start`: pressing `?` produced rows
+`[["Next item","j","false"],["Previous item","k","false"],["Open","Enter","false"],["Back","Esc","true"],["Keyboard shortcuts","?","true"]]`
+in groups `["Navigation","Help"]`; `Esc` closed the sheet and left `location.pathname` at
+`/`; with focus in an `<input>`, `?` opened nothing and the character landed in the field;
+after `blur()` the same key opened the sheet again.
+
+**The registry holds no handlers.** `j` is "next inbox row" now and "next diff row" in
+phase 3, so the entry owns the key, the wording and the sheet order, and a surface claims
+it with `useCommand('nav.next', fn)`. Bindings are a **stack per id, not a slot**: two
+surfaces can own the same key across a route transition, so the most recent one wins and
+hands the key back when it unmounts, rather than clobbering its predecessor permanently
+(`gives the key to the most recent binding and hands it back`). They live in a ref, not
+state — phase 3's virtualized rows will bind and unbind as they scroll, and that must not
+re-render anything.
+
+**The sheet dims what nothing is listening for.** `j`/`k`/`Enter` are registered per the
+ticket but no surface exists to bind them, and a sheet that lists a dead key is a lie. The
+`data-bound` attribute is also the only reason the sheet needs anything from the provider;
+it reads a snapshot at open time, which cannot go stale because the dispatcher stands down
+while the sheet is up.
+
+**The text-input rule has to know React Aria, not just `<input>`.** React Aria's date and
+time segments are `contenteditable` `role="spinbutton"` divs, so tag-name matching alone
+would let `j` fire mid-edit; conversely a Select's trigger is a plain button and a checkbox
+is an `<input>`, and shortcuts must keep working from both. The rule is "does this widget
+consume characters" — a deny-list of non-text `input` types, plus `textbox` / `searchbox` /
+`combobox` / `spinbutton` roles, plus `contenteditable` walked as an *attribute* as well as
+via `isContentEditable`, because jsdom doesn't implement the latter and the test would have
+passed vacuously.
+
+**While the sheet is open the dispatcher does nothing at all.** That is the guard, rather
+than reasoning about whether React Aria's `Escape` handling stops propagation before a
+window listener sees it: `Esc` in an open dialog must close the dialog, never also run
+`nav.back`. Only `?` is still honoured, to toggle the sheet shut.
+
+**`Esc` calls `window.history.back()`, not `router.history.back()`.** TanStack Router
+drives the browser history and listens to popstate, so it lands in the router either way,
+and the command layer needs no router — which is what lets the whole provider be tested
+without one (`binds Esc to history without needing a router`). Overrule this if a later
+phase wants `Esc` to mean something router-specific.
+
+**`shadcn add` works here even though `init` doesn't.** T-002 recorded that `init` needs
+raw TTY mode; `pnpm exec shadcn add dialog kbd --yes` ran clean against the locked
+`aria-nova` base and wrote `src/components/ui/{dialog,kbd}.tsx`. It also rewrote
+`button.tsx` to add a `"use client"` banner, which was reverted — the CLI touches
+dependencies of what you ask for.
+
+**Deliberately not done.** No `[`/`]`, `n`/`p`, `r` or `e` entries: they are one line each
+and belong with the surface that gives them meaning, and per T-005's "empty tables are
+guesses" a registry entry with no wording behind it is the same mistake. No chords, no
+sequences (`g i`), no per-scope registries, no user rebinding — five bindings and a stated
+growth path don't pay for any of it. No command palette; the registry would feed one, but
+nothing asked for it. Modifier combinations are ignored outright rather than modelled,
+since every binding in the map is a bare key.
+
+**Surfaced for T-006 and phase 3:** `nav.next` / `nav.previous` / `nav.open` render dimmed
+until something binds them, so the inbox ticket's visible acceptance check is that those
+three go solid in the `?` sheet. `Enter` is the one round-1 key with a native meaning —
+binding `nav.open` will fire alongside a focused button's own activation, and the surface
+that binds it has to decide whether the row list takes focus off buttons or the handler
+checks the target.
 
 ---
 
