@@ -76,6 +76,8 @@ export class AdoError extends Error {
 }
 
 export interface AdoClient {
+  /** Not a secret, and callers that build `dev.azure.com` links need it. */
+  readonly org: string
   /** `path` is org-relative: `_apis/git/pullrequests`, `Products/_apis/…`. */
   get<T>(path: string, params?: Record<string, QueryValue>): Promise<T>
   /** Runs `task` over `items` at most `concurrency` at a time, results in order. */
@@ -257,5 +259,10 @@ export function createAdoClient(
     return results
   }
 
-  return { get, fanOut, rateLimit: () => ({ ...state, throttled: (state.throttledUntil ?? 0) > Date.now() }) }
+  return {
+    org: credential.org,
+    get,
+    fanOut,
+    rateLimit: () => ({ ...state, throttled: (state.throttledUntil ?? 0) > Date.now() }),
+  }
 }

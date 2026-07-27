@@ -1,71 +1,92 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { createServerFn } from '@tanstack/react-start'
 import { useQuery } from '@tanstack/react-query'
 
-import { credentialStatus } from '@/server/credentials-fn'
+import { inboxQuery } from '@/server/inbox-fn'
+import { PullRequestSection } from '@/components/pr-list'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
-
-// The scaffold's proof-of-life for the half of the app that matters: this body
-// is replaced by an RPC stub in the client bundle, so `process` is only ever
-// read on the server. Everything that touches a PAT, ADO, or Sonar lives here.
-const getServerInfo = createServerFn({ method: 'GET' }).handler(async () => ({
-  node: process.version,
-  pid: process.pid,
-}))
 
 export const Route = createFileRoute('/')({ component: Home })
 
 function Home() {
-  const server = useQuery({
-    queryKey: ['server-info'],
-    queryFn: () => getServerInfo(),
-  })
-  const credentials = useQuery({
-    queryKey: ['credential-status'],
-    queryFn: () => credentialStatus(),
-  })
-
-  const connected = [
-    credentials.data?.ado.configured ? `Azure DevOps (${credentials.data.ado.org})` : null,
-    credentials.data?.sonar.configured ? 'SonarCloud' : null,
-  ].filter(Boolean)
+  const query = useQuery({ queryKey: ['inbox'], queryFn: () => inboxQuery() })
+  const result = query.data
+  const inbox = result?.inbox ?? null
 
   return (
-    <main className="mx-auto flex max-w-xl flex-col items-start gap-4 p-8">
-      <h1 className="text-2xl font-semibold tracking-tight">ado-web</h1>
-      <p className="text-muted-foreground text-sm">
-        Scaffold only. The inbox lands in T-006. Press{' '}
-        <Kbd>?</Kbd> for keyboard shortcuts.
-      </p>
+    <main className="mx-auto flex max-w-4xl flex-col items-start gap-5 p-8">
+      <header className="flex w-full items-baseline justify-between gap-4">
+        <h1 className="text-2xl font-semibold tracking-tight">ado-web</h1>
+        <p className="text-muted-foreground text-xs">
+          <Link to="/onboarding" className="underline underline-offset-4">
+            connections
+          </Link>
+          {' · '}
+          <Kbd>?</Kbd> for shortcuts
+        </p>
+      </header>
 
-      <p className="text-sm">
-        Server function says:{' '}
-        <code className="bg-muted rounded px-1.5 py-0.5 text-xs">
-          {server.isPending
-            ? 'asking…'
-            : server.isError
-              ? `failed: ${server.error.message}`
-              : `node ${server.data.node}, pid ${server.data.pid}`}
-        </code>
-      </p>
+      {query.isPending ? <p className="text-muted-foreground text-sm">Loading the inbox…</p> : null}
 
-      <p className="text-sm">
-        Connections:{' '}
-        {credentials.isPending
-          ? 'checking…'
-          : connected.length > 0
-            ? connected.join(', ')
-            : 'none yet'}
-        {' — '}
-        <Link to="/onboarding" className="underline underline-offset-4">
-          manage
-        </Link>
-      </p>
+      {result && !result.connected ? (
+        <Alert>
+          <AlertTitle>Not connected yet</AlertTitle>
+          <AlertDescription>
+            Add an Azure DevOps personal access token in{' '}
+            <Link to="/onboarding">connections</Link> and the inbox will fill in.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
-      <Button onPress={() => server.refetch()} isDisabled={server.isFetching}>
-        Ask the server again
-      </Button>
+      {result?.connected && result.error ? (
+        <Alert variant="destructive">
+          <AlertTitle>Azure DevOps did not answer</AlertTitle>
+          <AlertDescription>{result.error}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {query.isError ? (
+        <Alert variant="destructive">
+          <AlertTitle>The server function failed</AlertTitle>
+          <AlertDescription>{query.error.message}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {inbox ? (
+        <>
+          <PullRequestSection
+            title="Assigned to me"
+            rows={inbox.assignedToMe}
+            empty="Nothing waiting on you."
+          />
+          <PullRequestSection
+            title="Mine"
+            rows={inbox.mine}
+            empty="You have no open pull requests."
+          />
+
+          <footer className="text-muted-foreground flex w-full items-center gap-3 text-xs">
+            {/* The team list is shown because it is the entire reason "Assigned
+                to me" is not empty: on this account every assignment is
+                team-mediated, so an inbox that looks wrong is usually this. */}
+            <span>
+              {inbox.identity.displayName ?? inbox.identity.id} ·{' '}
+              {inbox.teams.length > 0
+                ? inbox.teams.map((team) => team.name).join(', ')
+                : 'no teams'}{' '}
+              · {inbox.scanned} active PRs scanned
+            </span>
+            <Button
+              className="ml-auto"
+              onPress={() => query.refetch()}
+              isDisabled={query.isFetching}
+            >
+              {query.isFetching ? 'Refreshing…' : 'Refresh'}
+            </Button>
+          </footer>
+        </>
+      ) : null}
     </main>
   )
 }

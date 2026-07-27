@@ -479,7 +479,7 @@ pass when the call was never well-formed.
 
 ## T-006 — Identity and PR listing
 
-**Type:** task (AFK) · **Status:** open · **Blocked by:** T-001, T-004
+**Type:** task (AFK) · **Status:** resolved · **Blocked by:** T-001, T-004
 
 Resolve the authenticated user's GUID from `connectionData`, then list PRs into the two
 sections — **Assigned to me** and **Mine** — as plain rows: title, repo, author, target
@@ -498,6 +498,70 @@ this: `$top` clamps at 1000 and the service filters *after* applying it, so a sh
 is **not** the last page. There is no continuation token. Dedupe by `pullRequestId`.)
 "Mine" is genuinely only mine — prove
 the GUID guard by pointing a test at a non-GUID filter.
+
+### Resolution
+
+[`src/server/inbox.ts`](../../src/server/inbox.ts) resolves the identity, resolves the
+teams, lists every active PR in the org, and partitions the result locally.
+[`inbox-fn.ts`](../../src/server/inbox-fn.ts) is the client boundary,
+[`src/components/pr-list.tsx`](../../src/components/pr-list.tsx) the two sections, and
+[`src/routes/index.tsx`](../../src/routes/index.tsx) — which was still the T-002 scaffold
+demo — is now the inbox.
+
+| Criterion | Evidence |
+|---|---|
+| identity from `connectionData` | live: `ba11ca22-…-70ab29e1a5e2` / Paul DeVito, and the same GUID matches 4 PRs' `createdBy.id` |
+| both sections, live | **Assigned to me** 3302 3135 2974 2906 · **Mine** 24698 24696 24587 24586 · disjoint, unique, 164 active PRs scanned in **453 ms** |
+| ≥1 team-assigned PR | all four of "Assigned to me" arrive via `[SaaS]\DevOps Team`; **zero** are direct |
+| paging past one page | forced live at `$top=50`: `50 + 49 + 43 + 23 + 0 = 165`, identical id set to the single 1000-row page |
+| stop only on empty | three of those pages were short **and not last**; a `count < $top` stop would have quit at page 2 and lost 66 of 165 |
+| dedupe by `pullRequestId` | unit test pages an id across two pages; live sets compared by id, not length |
+| "Mine" is only mine | unit tests: a `${me}x` author, an unrelated author, and a same-id-but-`isContainer:false` reviewer are all excluded |
+| the GUID guard | three tests in `ado-client.test.ts` — a non-GUID `creatorId` and a non-GUID `reviewerId` both throw before a request is sent, a real GUID passes through |
+| nothing leaks | rebuilt: `.output/public` (9 files) still has no `napi-rs`, `keyring`, `getPassword`, `connectionData`, `X-TFS-FedAuthRedirect`, `dev.azure.com` or `searchCriteria`; the prerendered shell contains no PR id |
+
+**Azure DevOps cannot answer "what is in my inbox", and the filter that looks like it can
+is the trap.** `searchCriteria.reviewerId=<my GUID>` does not expand team membership:
+live it returned **0** while 4 PRs had my team sitting on them as a reviewer, and I was a
+direct reviewer on **none**. It fails as a *silent* empty inbox — the same failure mode as
+note 1, one layer up. So the listing is unfiltered and the partition is local: one org-wide
+call, `createdBy.id` for "Mine", `reviewers[].id` plus `isContainer` for "Assigned to me".
+
+**`_apis/teams?$mine=true`, not the Graph API, and the reason is correctness rather than
+cost.** The Graph route (`graph/descriptors` → `graph/memberships?direction=up` →
+`graph/groups`) is on a *different host* — `vssps.dev.azure.com`; `dev.azure.com` 404s it —
+costs 1+N calls, and returns only direct containers so it needs a transitive walk. Walked
+five levels deep against the live org it produced `Contributors`, `Project Valid Users` and
+`Project Collection Valid Users`, matched **0** PRs, and **missed the actual team**. One
+call to `teams?$mine=true` returned `SaaS \ DevOps Team`, whose id is exactly the container
+reviewer on those 4 PRs. That call needs `7.1-preview.3`; plain `7.1` is a 400 — the third
+endpoint in this project whose version could only be learned from a real credential.
+
+**One client per credential, for the life of the process**
+([`src/server/ado.ts`](../../src/server/ado.ts)). The rate-limit gate is state *inside* the
+T-004 client, so building a new one per request would discard the fact that ADO just asked
+us to back off. Keyed on a hash of org+PAT, so re-entering a token or switching orgs
+replaces it and the process never holds a second plaintext copy.
+
+**Identity comparisons are case-folded.** ADO is not consistent about GUID casing between
+endpoints and every decision here is a string compare; a mismatch would not throw, it would
+render an empty inbox, which reads as "nothing to review".
+
+Authoring wins over reviewing: a PR you wrote never appears under "Assigned to me" even
+when your team is on it, because it is a review request you cannot act on.
+
+**Not verified: that the list matches the ADO web UI.** Everything above is measured
+against the API, which is the same source the web UI reads, but nobody has put the two
+side by side. That is a browser check and it is the one criterion still owed.
+
+**Watch:** `X-RateLimit-*` still never appeared — a 4-call inbox is far too cheap to
+provoke it, so `DEFAULT_CONCURRENCY = 4` remains an unmeasured guess (T-004).
+
+**Deliberately not done.** No virtualisation: 8 rows, and T-007 owns the row work. No
+per-PR calls, no vote state, no filtering or sorting controls. The reviewer's own
+`votedFor[]` — which is how you would know you already voted *on behalf of* the team — is
+read only far enough to identify the container; **surfaced for T-007**, which owns rich row
+data. Nothing writes.
 
 ---
 

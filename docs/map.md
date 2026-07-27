@@ -302,6 +302,13 @@ detail. Nothing is restated here; this is an index, not a store.
   proven inside the Nitro build), a `schema_migrations` table applied transactionally at
   first use, and one round-1 table: a PR cache whose staleness check lives inside the
   read, so a caller cannot serve a row from before the last push.
+- [T-006 — Identity and PR listing](./tickets/round-1.md#t-006--identity-and-pr-listing) —
+  the inbox is real: one org-wide listing, partitioned locally into **Assigned to me** and
+  **Mine**. ADO's own `searchCriteria.reviewerId=<me>` does *not* expand team membership —
+  live it returned 0 while 4 PRs had my team on them — so the filter that looks right is a
+  silent empty inbox. Team membership comes from `teams?$mine=true`, not the Graph API,
+  which is on another host and missed the actual team. Paging was forced past one page at
+  `$top=50` and three short pages were not the last.
 - [T-009 — Command registry](./tickets/round-1.md#t-009--command-registry-and-shortcut-sheet) —
   one keydown listener for the app, keys declared in `src/commands/registry.ts` and claimed
   by surfaces with `useCommand`, the `?` sheet generated from that array and dimming what
