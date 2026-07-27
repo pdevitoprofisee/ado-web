@@ -1,13 +1,27 @@
-import { Check, Clock, GitMerge, MessageSquare, RotateCcw, TriangleAlert, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Link, useNavigate } from '@tanstack/react-router'
+import {
+  Check,
+  Clock,
+  ExternalLink,
+  GitMerge,
+  MessageSquare,
+  RotateCcw,
+  TriangleAlert,
+  X,
+} from 'lucide-react'
+
+import { useCommand } from '@/commands/command-provider'
+import { cn } from '@/lib/utils'
 
 import type { ReactNode } from 'react'
 
 import type { HydrationResult } from '@/server/hydrate'
 import type { PullRequestRow } from '@/server/inbox'
 
-// The inbox's two sections. Split out of the route so it can be rendered without
-// a router: the route's only other job is fetching, and a list this dense is
-// worth being able to test on its own.
+// The inbox's two sections, and the keyboard selection that runs across both of
+// them. Split out of the route so the list can be tested on its own: the route's
+// only other job is fetching.
 
 const UNITS: ReadonlyArray<[Intl.RelativeTimeFormatUnit, number]> = [
   ['year', 365 * 24 * 3600e3],
@@ -98,50 +112,169 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
   )
 }
 
-function Row({ row, result }: { row: PullRequestRow; result: HydrationResult | undefined }) {
+/** Whether the detail route can address this PR: it is keyed by the two GUIDs. */
+function addressable(
+  row: PullRequestRow,
+): row is PullRequestRow & { projectId: string; repositoryId: string } {
+  return row.projectId !== null && row.repositoryId !== null
+}
+
+function Row({
+  row,
+  result,
+  isSelected = false,
+}: {
+  row: PullRequestRow
+  result: HydrationResult | undefined
+  isSelected?: boolean
+}) {
+  // Every other column is truncated or hidden at narrow widths, so the
+  // accessible name has to carry what the eye might not get.
+  const label = `${row.project}/${row.repository} · ${row.author}${row.viaTeam ? ` · via ${row.viaTeam}` : ''}`
+  const columns = 'flex min-w-0 flex-1 items-baseline gap-x-3 px-2 py-1.5 text-sm'
+  const body = (
+    <>
+      <span className="text-muted-foreground w-14 shrink-0 text-right font-mono text-xs tabular-nums">
+        {row.id}
+      </span>
+      <span className="min-w-0 flex-1 truncate">
+        {row.isDraft ? (
+          <span className="text-muted-foreground border-border mr-1.5 rounded border px-1 text-[10px] uppercase">
+            draft
+          </span>
+        ) : null}
+        {row.title}
+      </span>
+      <span className="text-muted-foreground hidden shrink-0 truncate text-xs sm:block sm:max-w-40">
+        {row.repository}
+      </span>
+      <span className="text-muted-foreground hidden shrink-0 truncate text-xs md:block md:max-w-32">
+        {row.author}
+      </span>
+      <span className="text-muted-foreground hidden shrink-0 truncate font-mono text-xs lg:block lg:max-w-28">
+        →{row.targetBranch}
+      </span>
+      <Rich row={row} result={result} />
+      <span className="text-muted-foreground w-16 shrink-0 text-right text-xs tabular-nums">
+        {age(row.createdAt)}
+      </span>
+    </>
+  )
+
   return (
     <li
       // How `useHydration` finds this row in the DOM to measure whether it is
-      // above the fold.
+      // above the fold, and how the selection finds it to focus it.
       data-pr-id={row.id}
-      className="hover:bg-muted/50 border-border/60 border-b last:border-b-0"
+      aria-current={isSelected ? true : undefined}
+      className={cn(
+        'hover:bg-muted/50 border-border/60 flex border-b last:border-b-0',
+        isSelected && 'bg-muted',
+      )}
     >
-      <a
-        href={row.url}
-        target="_blank"
-        rel="noreferrer"
-        className="flex items-baseline gap-x-3 px-2 py-1.5 text-sm"
-        // Every other column is truncated or hidden at narrow widths, so the
-        // accessible name has to carry what the eye might not get.
-        title={`${row.project}/${row.repository} · ${row.author}${row.viaTeam ? ` · via ${row.viaTeam}` : ''}`}
-      >
-        <span className="text-muted-foreground w-14 shrink-0 text-right font-mono text-xs tabular-nums">
-          {row.id}
-        </span>
-        <span className="min-w-0 flex-1 truncate">
-          {row.isDraft ? (
-            <span className="text-muted-foreground border-border mr-1.5 rounded border px-1 text-[10px] uppercase">
-              draft
-            </span>
-          ) : null}
-          {row.title}
-        </span>
-        <span className="text-muted-foreground hidden shrink-0 truncate text-xs sm:block sm:max-w-40">
-          {row.repository}
-        </span>
-        <span className="text-muted-foreground hidden shrink-0 truncate text-xs md:block md:max-w-32">
-          {row.author}
-        </span>
-        <span className="text-muted-foreground hidden shrink-0 truncate font-mono text-xs lg:block lg:max-w-28">
-          →{row.targetBranch}
-        </span>
-        <Rich row={row} result={result} />
-        <span className="text-muted-foreground w-16 shrink-0 text-right text-xs tabular-nums">
-          {age(row.createdAt)}
-        </span>
-      </a>
+      {addressable(row) ? (
+        <>
+          <Link
+            to="/pr/$projectId/$repositoryId/$prId"
+            params={{
+              projectId: row.projectId,
+              repositoryId: row.repositoryId,
+              prId: String(row.id),
+            }}
+            className={columns}
+            title={label}
+          >
+            {body}
+          </Link>
+          {/* Demoted, not removed: this app replaces the ADO tab for reading a
+              PR, and there will always be something only ADO can do. */}
+          <a
+            href={row.url}
+            target="_blank"
+            rel="noreferrer"
+            title={`Open !${row.id} in Azure DevOps`}
+            className="text-muted-foreground hover:text-foreground flex shrink-0 items-center px-2"
+          >
+            <ExternalLink className="size-3.5" aria-hidden />
+            <span className="sr-only">Open in Azure DevOps</span>
+          </a>
+        </>
+      ) : (
+        // ADO answered without the GUIDs, so there is no internal address for
+        // this row. Its own click goes where it always went rather than to a
+        // route that cannot be built.
+        <a href={row.url} target="_blank" rel="noreferrer" className={columns} title={label}>
+          {body}
+        </a>
+      )}
     </li>
   )
+}
+
+/** A row's primary link, found the same way `use-hydration.ts` finds its row. */
+const linkOf = (id: number): HTMLElement | null =>
+  document.querySelector(`[data-pr-id="${id}"] a`)
+
+/**
+ * Keyboard selection over the inbox as one list.
+ *
+ * Takes both sections concatenated in visual order, because `j` off the end of
+ * "Assigned to me" lands on the top of "Mine" — which neither section can know
+ * on its own. The selection is a PR id rather than an index, so a poll that
+ * reorders or drops rows cannot quietly move it to a different pull request.
+ */
+export function useInboxSelection(rows: readonly PullRequestRow[]): number | null {
+  const [selected, setSelected] = useState<number | null>(null)
+  const navigate = useNavigate()
+
+  const move = (step: number) => {
+    if (rows.length === 0) return
+    const at = rows.findIndex((row) => row.id === selected)
+    if (at === -1) {
+      setSelected((step > 0 ? rows[0] : rows[rows.length - 1]).id)
+      return
+    }
+    setSelected(rows[Math.min(Math.max(at + step, 0), rows.length - 1)].id)
+  }
+
+  useCommand('nav.next', () => move(1))
+  useCommand('nav.previous', () => move(-1))
+  useCommand('nav.open', () => {
+    const row = rows.find((one) => one.id === selected)
+    if (row === undefined) return
+    if (!addressable(row)) {
+      window.open(row.url, '_blank', 'noreferrer')
+      return
+    }
+
+    void navigate({
+      to: '/pr/$projectId/$repositoryId/$prId',
+      params: {
+        projectId: row.projectId,
+        repositoryId: row.repositoryId,
+        prId: String(row.id),
+      },
+    })
+  })
+  // Nothing to go back to from the inbox, so Escape means "never mind" here.
+  useCommand('nav.back', () => {
+    if (selected === null) return
+    const focused = linkOf(selected)
+    setSelected(null)
+    if (document.activeElement === focused) focused?.blur()
+  })
+
+  // Moving focus, not just painting a highlight: it is what puts the row in
+  // front of a screen reader, and it scrolls the row into view for free.
+  useEffect(() => {
+    if (selected === null) return
+    const row = linkOf(selected)
+    row?.focus()
+    // Absent in jsdom, and the selection is still correct without it.
+    row?.scrollIntoView?.({ block: 'nearest' })
+  }, [selected])
+
+  return selected
 }
 
 export function PullRequestSection({
@@ -150,13 +283,16 @@ export function PullRequestSection({
   empty,
   hydration,
   listRef,
+  selectedId,
 }: {
   title: string
   rows: readonly PullRequestRow[]
   empty: string
-  /** Both optional so a section still renders standalone, plain, in a test. */
+  /** All optional so a section still renders standalone, plain, in a test. */
   hydration?: (row: PullRequestRow) => HydrationResult | undefined
   listRef?: (element: HTMLUListElement | null) => (() => void) | undefined
+  /** The inbox-wide selection; at most one section holds it at a time. */
+  selectedId?: number | null
 }) {
   return (
     <section className="w-full" aria-label={title}>
@@ -174,7 +310,12 @@ export function PullRequestSection({
       ) : (
         <ul ref={listRef} className="border-border/60 rounded-md border">
           {rows.map((row) => (
-            <Row key={row.id} row={row} result={hydration?.(row)} />
+            <Row
+              key={row.id}
+              row={row}
+              result={hydration?.(row)}
+              isSelected={row.id === selectedId}
+            />
           ))}
         </ul>
       )}

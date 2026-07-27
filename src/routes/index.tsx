@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { inboxQuery } from '@/server/inbox-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
-import { PullRequestSection } from '@/components/pr-list'
+import { PullRequestSection, useInboxSelection } from '@/components/pr-list'
 import { useHydration } from '@/components/use-hydration'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -36,13 +36,16 @@ function Home() {
   const result = query.data
   const inbox = result?.inbox ?? null
 
-  // One hook across both sections, because "visible first" is a property of the
-  // page, not of a list: the top of "Mine" is above the fold long before the
-  // bottom of "Assigned to me" is.
-  const { hydrationOf, registerList } = useHydration(
-    useMemo(() => [...(inbox?.assignedToMe ?? []), ...(inbox?.mine ?? [])], [inbox]),
-    generation,
+  // Both sections as one list, in the order they are read. Hydration wants it
+  // because "visible first" is a property of the page, not of a list — the top
+  // of "Mine" is above the fold long before the bottom of "Assigned to me" is —
+  // and `j`/`k` want it for the same reason.
+  const rows = useMemo(
+    () => [...(inbox?.assignedToMe ?? []), ...(inbox?.mine ?? [])],
+    [inbox],
   )
+  const { hydrationOf, registerList } = useHydration(rows, generation)
+  const selectedId = useInboxSelection(rows)
 
   return (
     <main className="mx-auto flex max-w-4xl flex-col items-start gap-5 p-8">
@@ -91,6 +94,7 @@ function Home() {
             empty="Nothing waiting on you."
             hydration={hydrationOf}
             listRef={registerList}
+            selectedId={selectedId}
           />
           <PullRequestSection
             title="Mine"
@@ -98,6 +102,7 @@ function Home() {
             empty="You have no open pull requests."
             hydration={hydrationOf}
             listRef={registerList}
+            selectedId={selectedId}
           />
 
           <footer className="text-muted-foreground flex w-full items-center gap-3 text-xs">
