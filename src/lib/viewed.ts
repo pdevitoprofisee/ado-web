@@ -20,6 +20,16 @@ const NONE: ReadonlySet<string> = new Set()
 export interface ViewedFiles {
   /** Keys, not paths. Test a row with `fileViewedKey`. */
   readonly keys: ReadonlySet<string>
+  /**
+   * The marks have not arrived yet.
+   *
+   * Worth waiting on rather than treating as "nothing is marked", because a file
+   * panel decides whether to start expanded once, when it mounts: rendering the
+   * list a tick early opens all forty files on a pull request that was half read
+   * yesterday, and nothing shuts them again. False once the read fails, too — a
+   * broken marks table should cost the marks, not the diff.
+   */
+  readonly pending: boolean
   readonly setViewed: (file: ChangedFile, viewed: boolean) => void
 }
 
@@ -85,6 +95,7 @@ export function useViewedFiles(ref: PullRequestRef): ViewedFiles {
 
   return {
     keys,
+    pending: query.isPending,
     setViewed: (file, viewed) => {
       // A change entry with a blob on neither side has nothing for a mark to be
       // about, and `markViewed` rejects it. Nothing in a live payload has ever

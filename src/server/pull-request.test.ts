@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { changeFlags, commitSubject, loadPullRequest, toPolicies } from './pull-request'
+import { changeFlags, commitSubject, loadChanges, loadPullRequest, toPolicies } from './pull-request'
 
 import type { AdoClient, QueryValue } from './ado-client'
 import type { PullRequestRef } from './pull-request'
@@ -546,6 +546,72 @@ describe('the file list', () => {
     expect(changes?.params.$skip).toBeUndefined()
   })
 
+  it('compares the page against the merge base, which is the combined diff', async () => {
+    // The whole pull request and not the latest push. `$compareTo=0` is the merge
+    // base and is what the parameter defaults to, so this asserts the zero is
+    // sent rather than assumed: the same call with `$compareTo=1` would answer
+    // with one update's files under a heading that says all of them.
+    const { calls, loading } = load()
+    await loading
+
+    expect(calls.find((call) => call.path.endsWith('/changes'))?.params.$compareTo).toBe(0)
+  })
+
+  it('carries every update, so the view can offer one without a second round trip', async () => {
+    const pr = await load({
+      '/iterations': {
+        value: [
+          {
+            id: 1,
+            // ADO calls this a description and sends the tip commit's whole
+            // message. Cut to its first line, the same way a commit's is.
+            description: 'point the sink at its own account\n\nand explain why',
+            author: { displayName: 'Paul DeVito' },
+            createdDate: '2026-07-20T09:00:00Z',
+            reason: 'push',
+          },
+          { id: 2, reason: 'forcePush' },
+        ],
+      },
+    }).loading
+
+    expect(pr.files.iterations).toEqual([
+      {
+        id: 1,
+        subject: 'point the sink at its own account',
+        author: 'Paul DeVito',
+        createdAt: '2026-07-20T09:00:00Z',
+        reason: 'push',
+      },
+      // Everything absent, because a payload is allowed to be thin: iteration 1
+      // of a real PR arrived with no `push` key at all, so nothing here is
+      // load-bearing except the id.
+      { id: 2, subject: '', author: 'unknown', createdAt: '', reason: 'forcePush' },
+    ])
+  })
+
+  it('asks one update for its own changes and nothing else', async () => {
+    // Measured: `$compareTo=k-1` isolates update k. On !24766 the 39 updates
+    // answered 64, 34, 12, 3, … files against a combined diff of 294.
+    const { client, calls } = fakeClient(REPLIES)
+    const changes = await loadChanges(client, REF, 7, 6)
+
+    expect(calls.map((call) => call.path)).toEqual([`${PR}/iterations/7/changes`])
+    expect(calls[0]?.params).toMatchObject({ $top: 5000, $compareTo: 6 })
+    expect(changes).toEqual({
+      files: [
+        {
+          path: '/src/log.ts',
+          changeType: ['edit'],
+          originalPath: null,
+          objectId: 'a'.repeat(40),
+          originalObjectId: null,
+        },
+      ],
+      truncated: false,
+    })
+  })
+
   it('says so when it hit its own ceiling instead of pretending the list is whole', async () => {
     const many = Array.from({ length: 5000 }, (_, index) => change(`/src/f${index}.ts`, 'edit'))
     const pr = await load({ '/changes': { changeEntries: many } }).loading
@@ -558,7 +624,7 @@ describe('the file list', () => {
     const { calls, loading } = load({ '/iterations': { value: [] } })
     const pr = await loading
 
-    expect(pr.files).toEqual({ files: [], iterationId: null, truncated: false })
+    expect(pr.files).toEqual({ files: [], iterationId: null, iterations: [], truncated: false })
     expect(pr.errors.files).toBeNull()
     expect(calls.some((call) => call.path.endsWith('/changes'))).toBe(false)
   })
@@ -592,7 +658,7 @@ describe('degrading one section', () => {
       conflicts: null,
     })
     expect(pr.policies).toEqual([])
-    expect(pr.files).toEqual({ files: [], iterationId: null, truncated: false })
+    expect(pr.files).toEqual({ files: [], iterationId: null, iterations: [], truncated: false })
   })
 
   it('keeps the page when nobody can say who is looking', async () => {

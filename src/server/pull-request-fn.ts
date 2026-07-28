@@ -2,10 +2,10 @@ import { createServerFn } from '@tanstack/react-start'
 
 import { NotConnectedError, adoClient } from './ado'
 import { AdoError } from './ado-client'
-import { loadPullRequest } from './pull-request'
+import { loadChanges, loadPullRequest } from './pull-request'
 
 import type { AdoClient, RateLimit } from './ado-client'
-import type { PullRequestDetail, PullRequestRef } from './pull-request'
+import type { ChangeSet, PullRequestDetail, PullRequestRef } from './pull-request'
 
 // The route addresses a PR by three values out of a URL, which makes all three
 // attacker-controlled in the only sense that matters here: every one of them is
@@ -82,6 +82,44 @@ export function pullRequestRef(input: unknown): PullRequestRef {
   }
 }
 
+/** One update's changes: which iteration, and which earlier one to measure from. */
+export interface IterationChangesRequest extends PullRequestRef {
+  readonly iterationId: number
+  readonly compareTo: number
+}
+
+export interface IterationChangesResult {
+  readonly changes: ChangeSet | null
+  readonly error: string | null
+}
+
+/**
+ * The range check that stops a mislabelled diff.
+ *
+ * `$compareTo` out of range does not error — measured on !24766, a 39-iteration
+ * pull request: `$compareTo=999` answered 200 with all 294 files, the complete
+ * combined diff. Under a heading reading "Update 7" that is a wrong answer the
+ * reviewer has no way to spot. So `compareTo` must name an iteration *before*
+ * `iterationId`, zero being the merge base, and anything else is refused here
+ * rather than sent.
+ */
+function iterationChangesRequest(input: unknown): IterationChangesRequest {
+  const ref = pullRequestRef(input)
+  const raw = (input ?? {}) as Record<string, unknown>
+
+  if (!Number.isSafeInteger(raw.iterationId) || (raw.iterationId as number) < 1) {
+    throw new Error('iterationId must be an iteration number.')
+  }
+  if (!Number.isSafeInteger(raw.compareTo) || (raw.compareTo as number) < 0) {
+    throw new Error('compareTo must be an iteration number or zero.')
+  }
+  if ((raw.compareTo as number) >= (raw.iterationId as number)) {
+    throw new Error('compareTo must name an earlier iteration.')
+  }
+
+  return { ...ref, iterationId: raw.iterationId as number, compareTo: raw.compareTo as number }
+}
+
 /** The error rather than `null`, so the message it already carries is the one shown. */
 function connectedClient(): AdoClient | NotConnectedError {
   try {
@@ -131,5 +169,29 @@ export const pullRequestQuery = createServerFn({ method: 'GET' })
         failed: NOTHING_FAILED,
         rateLimit: client.rateLimit(),
       }
+    }
+  })
+
+/**
+ * One update's changed files, fetched on demand.
+ *
+ * Separate from `pullRequestQuery` rather than a parameter on it: the combined
+ * list arrives with the page and is what it leads with, and switching to an
+ * update should not re-fetch the policies, the commits and the reviewers to
+ * answer a question about files. It also means each update gets its own cache
+ * entry, so flipping back to one already looked at is free.
+ */
+export const iterationChangesQuery = createServerFn({ method: 'GET' })
+  .validator(iterationChangesRequest)
+  .handler(async ({ data }): Promise<IterationChangesResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) return { changes: null, error: client.message }
+
+    const { iterationId, compareTo, ...ref } = data
+
+    try {
+      return { changes: await loadChanges(client, ref, iterationId, compareTo), error: null }
+    } catch (error) {
+      return { changes: null, error: error instanceof Error ? error.message : String(error) }
     }
   })

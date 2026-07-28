@@ -11,6 +11,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Kbd } from '@/components/ui/kbd'
 import { cn } from '@/lib/utils'
 
+import type { DetailTab } from '@/components/pr-detail'
 import type { DiffLayout } from '@/lib/diff-contract'
 
 // One pull request. Addressed by GUIDs rather than by the `Project/_git/Repo`
@@ -40,6 +41,12 @@ function PullRequestPage() {
   // shrinking the diff to fit is the one thing side-by-side cannot survive.
   const [layout, setLayout] = useState<DiffLayout>('unified')
 
+  // Same reason, one step earlier: a diff tab adds a file tree beside the diff,
+  // which the reading width for prose cannot hold either. Not in the URL — a tab
+  // is where you are looking, not what the page is, and putting it there would
+  // fill the back button with it.
+  const [tab, setTab] = useState<DetailTab>('details')
+
   // The URL is the one input nobody validated — it can be typed, pasted, or
   // stale. Checked here so a bad id is answered with a sentence instead of a
   // server round trip that throws.
@@ -64,7 +71,10 @@ function PullRequestPage() {
     <main
       className={cn(
         'mx-auto flex flex-col items-start gap-5 p-8',
-        layout === 'split' ? 'max-w-[1600px]' : 'max-w-4xl',
+        // Prose width for the details tab, and as much as the diff asks for on
+        // the other two: 1600px for two 80-column halves, and 1200px for one
+        // plus the 256px tree.
+        tab === 'details' ? 'max-w-4xl' : layout === 'split' ? 'max-w-[1600px]' : 'max-w-[1200px]',
       )}
     >
       <header className="flex w-full items-baseline justify-between gap-4">
@@ -135,6 +145,8 @@ function PullRequestPage() {
           failed={result.failed}
           layout={layout}
           onLayoutChange={setLayout}
+          tab={tab}
+          onTabChange={setTab}
         />
       ) : null}
 

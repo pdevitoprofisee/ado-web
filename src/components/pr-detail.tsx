@@ -1,18 +1,26 @@
 import { Check, CircleHelp, Clock, Minus, TriangleAlert, X } from 'lucide-react'
+import { useMemo, useState } from 'react'
 
 import type { ReactNode } from 'react'
 
 import { age } from './pr-list'
+import { Markdown } from './markdown'
 import { ChangedFileDiff } from './diff/changed-file'
+import { FileTree } from './diff/file-tree'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { COMBINED, useChanges } from '@/lib/changes'
+import { buildFileTree, treeFiles } from '@/lib/file-tree'
 import { cn } from '@/lib/utils'
 import { useViewedFiles } from '@/lib/viewed'
 import { fileViewedKey } from '@/lib/viewed-key'
 
+import type { ChangeView } from '@/lib/changes'
 import type { DiffLayout } from '@/lib/diff-contract'
 import type {
+  ChangeSet,
   ChangedFile,
   Commit,
+  Iteration,
   MergeState,
   Policy,
   PolicyStatus,
@@ -381,6 +389,140 @@ function LayoutToggle({
 }
 
 /**
+ * How one update reads in the dropdown, and in the heading above the list.
+ *
+ * The subject and not the author: on a pull request with a run of pushes they are
+ * all by the same person, so the author distinguishes nothing while the tip
+ * commit's first line says which push this was. The reason rides along only when
+ * it is not a plain push — a force push or a rebase changes what the update's
+ * diff even means, and all 44 iterations measured said `push`, so seeing anything
+ * else there is worth a second look.
+ */
+function updateLabel(iteration: Iteration): string {
+  const parts = [`Update ${iteration.id}`]
+  if (iteration.createdAt !== '') parts.push(age(iteration.createdAt))
+  if (iteration.reason !== 'push') parts.push(iteration.reason)
+  if (iteration.subject !== '') parts.push(iteration.subject)
+
+  return parts.join(' · ')
+}
+
+/**
+ * Which update the "By update" tab is showing.
+ *
+ * A dropdown and not tabs of its own: median 2 updates but a p99 of 15 and a real
+ * pull request with 39, which is thirty-nine tabs across a page that also has to
+ * hold a file tree.
+ */
+function UpdatePicker({
+  iterations,
+  selected,
+  onSelect,
+}: {
+  iterations: readonly Iteration[]
+  selected: number
+  onSelect: (iterationId: number) => void
+}) {
+  return (
+    <select
+      aria-label="Update"
+      value={selected}
+      onChange={(event) => onSelect(Number(event.target.value))}
+      className="border-input bg-background max-w-full rounded border px-1.5 py-0.5 text-xs"
+    >
+      {/* Newest first: the reason to be in this view at all is the push that just
+          arrived, and it should not be at the bottom of thirty-nine. */}
+      {[...iterations].reverse().map((iteration) => (
+        <option key={iteration.id} value={iteration.id}>
+          {updateLabel(iteration)}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+/** The three things this page can be showing. */
+export type DetailTab = 'details' | 'combined' | 'update'
+
+interface TabSpec {
+  readonly id: DetailTab
+  readonly label: string
+  readonly count?: number
+}
+
+/**
+ * Details, the combined diff, or one update.
+ *
+ * Details leads and is the default because of what this page is for: the answer to
+ * "what is stopping this from merging" comes before the diff, not after it. The two
+ * diff tabs exist so that when you do go to read the code you get the whole window
+ * for it — a tree down one side and eighty columns of it — instead of the bottom
+ * third of a page whose top is a policy checklist you have already read.
+ *
+ * "By update" is absent on a single-update pull request, nearly half of them
+ * measured, because there the two diffs are the same files and offering a choice
+ * between them only invites the reader to look for a difference.
+ */
+function TabStrip({
+  tab,
+  tabs,
+  onTabChange,
+}: {
+  tab: DetailTab
+  tabs: readonly TabSpec[]
+  onTabChange: (tab: DetailTab) => void
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Pull request"
+      className="border-border/60 flex w-full items-baseline gap-1 border-b text-sm"
+    >
+      {tabs.map(({ id, label, count }) => (
+        <button
+          key={id}
+          type="button"
+          role="tab"
+          id={`tab-${id}`}
+          aria-selected={tab === id}
+          aria-controls={`panel-${id}`}
+          // One tab stop for the strip, arrows to move inside it. The alternative
+          // costs three presses to get past a control that sits above a diff with
+          // a checkbox on every file.
+          tabIndex={tab === id ? 0 : -1}
+          onKeyDown={(event) => {
+            const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0
+            if (step === 0) return
+
+            event.preventDefault()
+            const next = tabs[(tabs.findIndex((entry) => entry.id === tab) + step + tabs.length) % tabs.length]
+            if (next === undefined) return
+
+            onTabChange(next.id)
+            // Focus follows selection, which is the automatic-activation pattern
+            // and what makes arrows usable at all: the row we are standing on is
+            // about to become `tabIndex={-1}`.
+            document.getElementById(`tab-${next.id}`)?.focus()
+          }}
+          onClick={() => onTabChange(id)}
+          className={cn(
+            '-mb-px flex items-baseline gap-1.5 rounded-t border-b-2 px-2 py-1',
+            tab === id
+              ? 'border-foreground text-foreground'
+              : 'text-muted-foreground hover:text-foreground border-transparent',
+          )}
+        >
+          {label}
+          {count === undefined ? null : (
+            <span className="text-muted-foreground text-xs tabular-nums">{count}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
  * Whether this row is one of the marked ones.
  *
  * `fileViewedKey` returns `null` for a change entry with a blob on neither side
@@ -394,7 +536,10 @@ function isViewed(viewed: ReadonlySet<string>, file: ChangedFile): boolean {
 }
 
 function ChangedFiles({
-  list,
+  changes,
+  update,
+  pending,
+  error,
   ref,
   conflicted,
   layout,
@@ -402,7 +547,12 @@ function ChangedFiles({
   viewed,
   onViewedChange,
 }: {
-  list: PullRequestDetail['files']
+  /** The selected view's files — the combined diff, or one update's. */
+  changes: ChangeSet
+  /** The update picker, when this is an update's diff — and the word the empty state needs. */
+  update: ReactNode | null
+  pending: boolean
+  error: string | null
   ref: PullRequestRef
   /** Conflict paths match `changeEntries[].item.path` exactly, so the banner's
       files can be found again in the list they actually live in. */
@@ -412,60 +562,76 @@ function ChangedFiles({
   viewed: ReadonlySet<string>
   onViewedChange: (file: ChangedFile, viewed: boolean) => void
 }) {
-  // `changeType` is a flag set, so "edit, rename" is its own kind of change and
-  // is grouped as one rather than counted twice.
-  const groups = new Map<string, ChangedFile[]>()
-  for (const file of list.files) {
-    const key = file.changeType.length === 0 ? 'unknown' : file.changeType.join(', ')
-    const bucket = groups.get(key)
-    if (bucket === undefined) groups.set(key, [file])
-    else bucket.push(file)
-  }
+  const nodes = useMemo(() => buildFileTree(changes.files), [changes.files])
 
-  const read = list.files.filter((file) => isViewed(viewed, file)).length
+  // The tree's order, not the payload's, and one order for both halves. Grouping
+  // the list by change type — which is what this replaced — reads well alone and
+  // fights a tree beside it: `src/a.ts` and `src/b.ts` end up a screen apart, and
+  // then a sidebar row and the panel it points at have nothing to do with each
+  // other. The change type survives as the letter on each tree row, and now that
+  // files are expanded, as the panel's own add and delete notices.
+  const ordered = useMemo(() => treeFiles(nodes), [nodes])
+
+  const read = changes.files.filter((file) => isViewed(viewed, file)).length
+  const isRead = (file: ChangedFile) => isViewed(viewed, file)
 
   return (
     <div className="flex w-full flex-col gap-3">
       {/* Progress and layout on one line, above everything, because both are
           answers you want without opening a file — which is the whole of the
           ticket's third success criterion. */}
-      <div className="text-muted-foreground flex items-baseline justify-between gap-4 text-xs">
-        <span className="tabular-nums">
-          {read} of {list.files.length} read
+      <div className="text-muted-foreground flex flex-wrap items-baseline justify-between gap-4 text-xs">
+        <span className="flex items-baseline gap-3">
+          <span className="tabular-nums">
+            {read} of {changes.files.length} read
+          </span>
+          {update}
         </span>
         <LayoutToggle layout={layout} onLayoutChange={onLayoutChange} />
       </div>
 
-      {[...groups].map(([key, files]) => (
-        <div key={key}>
-          <h3 className="text-muted-foreground mb-1 flex items-baseline gap-2 text-xs font-medium">
-            {key}
-            <span className="tabular-nums">{files.length}</span>
-          </h3>
-          {/* A list of sections rather than a list of rows. Each file is its
-              own landmark once it opens, and `li > section` is the only way to
-              keep the group countable without wrapping the diff in one. */}
-          <ul aria-label={key} className="flex flex-col gap-1">
-            {files.map((file) => (
-              <li key={file.path}>
-                <ChangedFileDiff
-                  projectId={ref.projectId}
-                  repositoryId={ref.repositoryId}
-                  id={ref.id}
-                  file={file}
-                  layout={layout}
-                  conflicted={conflicted.has(file.path)}
-                  viewed={isViewed(viewed, file)}
-                  onViewedChange={(next) => onViewedChange(file, next)}
-                />
-              </li>
-            ))}
-          </ul>
-        </div>
-      ))}
-      {list.truncated ? (
+      {/* An update that failed or is still arriving renders no rows at all, so
+          these say which of the two it is. Falling back to the combined list
+          would put every file in the pull request under a heading that says
+          "Update 4", which is the one wrong answer this view can give. */}
+      {error !== null ? (
+        <Failed>Could not load this update&rsquo;s changes. {error}</Failed>
+      ) : pending ? (
+        <p className="text-muted-foreground text-xs">Loading this update&rsquo;s changes…</p>
+      ) : changes.files.length === 0 ? (
+        <Empty>
+          {update === null
+            ? 'No files changed.'
+            : 'This update changed no files. A push that only moves the branch pointer — a rebase or a merge from the target — leaves nothing new to read.'}
+        </Empty>
+      ) : null}
+
+      <div className="flex w-full items-start gap-6">
+        <FileTree nodes={nodes} viewed={isRead} conflicted={conflicted} />
+
+        {/* `min-w-0` because the diff inside is wide and a flex child defaults to
+            its content's width, which would push the tree off the screen. */}
+        <ul aria-label="Changed files" className="flex min-w-0 flex-1 flex-col gap-1">
+          {ordered.map((file) => (
+            <li key={file.path}>
+              <ChangedFileDiff
+                projectId={ref.projectId}
+                repositoryId={ref.repositoryId}
+                id={ref.id}
+                file={file}
+                layout={layout}
+                conflicted={conflicted.has(file.path)}
+                viewed={isRead(file)}
+                onViewedChange={(next) => onViewedChange(file, next)}
+              />
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {changes.truncated ? (
         <p className="text-muted-foreground text-xs">
-          Azure DevOps returned only the first {list.files.length} files. There are more.
+          Azure DevOps returned only the first {changes.files.length} files. There are more.
         </p>
       ) : null}
     </div>
@@ -478,6 +644,8 @@ export function PullRequestDetailView({
   failed = {},
   layout = 'unified',
   onLayoutChange = () => {},
+  tab = 'details',
+  onTabChange = () => {},
 }: {
   pr: PullRequestDetail
   /**
@@ -490,10 +658,40 @@ export function PullRequestDetailView({
   /** Owned by the route, because the page widens for side-by-side. */
   layout?: DiffLayout
   onLayoutChange?: (layout: DiffLayout) => void
+  /** Owned by the route for the same reason `layout` is: a diff tab widens the container. */
+  tab?: DetailTab
+  onTabChange?: (tab: DetailTab) => void
 }) {
   // Persisted, so closing the tab halfway through a 40-file review does not
   // start it over. Read once per page and written through on each tick.
-  const { keys: viewed, setViewed } = useViewedFiles(prRef)
+  const { keys: viewed, pending: viewedPending, setViewed } = useViewedFiles(prRef)
+
+  const iterations = pr.files.iterations
+  const latest = iterations[iterations.length - 1]
+
+  // Which update the update tab is on — here rather than in the route because,
+  // unlike the tab and the layout, it changes nothing about the page's shape.
+  const [chosen, setChosen] = useState<number | null>(null)
+  const selected = chosen ?? latest?.id ?? null
+
+  const tabs: readonly TabSpec[] = [
+    { id: 'details', label: 'Details' },
+    {
+      id: 'combined',
+      label: 'Combined',
+      count: failed.files === true ? undefined : pr.files.files.length,
+    },
+    ...(iterations.length > 1 ? ([{ id: 'update', label: 'By update' }] as const) : []),
+  ]
+
+  // A tab that is not on offer cannot be the one we are showing: the update tab
+  // disappears on a single-update pull request, and the route's state outlives
+  // the payload it was chosen against.
+  const active = tabs.some((entry) => entry.id === tab) ? tab : 'details'
+  const update = active === 'update' && selected !== null ? selected : null
+
+  const view: ChangeView = update === null ? COMBINED : { kind: 'update', iterationId: update }
+  const changes = useChanges(prRef, view, pr.files)
 
   return (
     <article className="flex w-full flex-col items-start gap-5">
@@ -526,76 +724,101 @@ export function PullRequestDetailView({
         </p>
       </header>
 
-      <MergeBanner merge={pr.merge} conflictsError={pr.errors.conflicts} />
+      <TabStrip tab={active} tabs={tabs} onTabChange={onTabChange} />
 
-      {/* Ahead of the description deliberately: the description measured 1710
-          characters on a real PR, and the checklist is the thing the page
-          exists to answer. */}
-      <Section title="Policies" count={failed.policies === true ? undefined : pr.policies.length}>
-        {failed.policies === true ? (
-          <Failed>Could not load the branch policies for this pull request.</Failed>
-        ) : pr.policies.length === 0 ? (
-          <Empty>No branch policies apply to this pull request.</Empty>
-        ) : (
-          <PolicyChecklist policies={pr.policies} />
-        )}
-      </Section>
+      {active === 'details' ? (
+        <div
+          role="tabpanel"
+          id="panel-details"
+          aria-labelledby="tab-details"
+          className="flex w-full flex-col items-start gap-5"
+        >
+          <MergeBanner merge={pr.merge} conflictsError={pr.errors.conflicts} />
 
-      <Section title="Reviewers" count={pr.reviewers.length}>
-        {pr.reviewers.length === 0 ? (
-          <Empty>Nobody has been asked to review this.</Empty>
-        ) : (
-          <ul className="border-border/60 w-full rounded-md border">
-            {pr.reviewers.map((reviewer) => (
-              <ReviewerRow key={reviewer.id} reviewer={reviewer} viewerId={pr.viewerId} />
-            ))}
-          </ul>
-        )}
-      </Section>
+          {/* Ahead of the description deliberately: the description measured 1710
+              characters on a real PR, and the checklist is the thing the page
+              exists to answer. */}
+          <Section title="Policies" count={failed.policies === true ? undefined : pr.policies.length}>
+            {failed.policies === true ? (
+              <Failed>Could not load the branch policies for this pull request.</Failed>
+            ) : pr.policies.length === 0 ? (
+              <Empty>No branch policies apply to this pull request.</Empty>
+            ) : (
+              <PolicyChecklist policies={pr.policies} />
+            )}
+          </Section>
 
-      <Section title="Description">
-        {pr.description.trim() === '' ? (
-          <Empty>No description.</Empty>
-        ) : (
-          // Whole and unparsed. The inbox's copy stops at 400 characters and
-          // that truncation is the entire reason this page fetches the PR; the
-          // text is often markdown-ish, but a markdown renderer is a dependency
-          // this round has not agreed to.
-          <p className="w-full text-sm whitespace-pre-wrap">{pr.description}</p>
-        )}
-      </Section>
+          <Section title="Reviewers" count={pr.reviewers.length}>
+            {pr.reviewers.length === 0 ? (
+              <Empty>Nobody has been asked to review this.</Empty>
+            ) : (
+              <ul className="border-border/60 w-full rounded-md border">
+                {pr.reviewers.map((reviewer) => (
+                  <ReviewerRow key={reviewer.id} reviewer={reviewer} viewerId={pr.viewerId} />
+                ))}
+              </ul>
+            )}
+          </Section>
 
-      <Section title="Commits" count={failed.commits === true ? undefined : pr.commits.length}>
-        {failed.commits === true ? (
-          <Failed>Could not load the commits for this pull request.</Failed>
-        ) : pr.commits.length === 0 ? (
-          <Empty>No commits on this branch.</Empty>
-        ) : (
-          <ul className="border-border/60 w-full rounded-md border">
-            {pr.commits.map((commit) => (
-              <CommitRow key={commit.id} commit={commit} />
-            ))}
-          </ul>
-        )}
-      </Section>
+          <Section title="Description">
+            {pr.description.trim() === '' ? (
+              <Empty>No description.</Empty>
+            ) : (
+              // Whole, and rendered. The inbox's copy stops at 400 characters and
+              // that truncation is the entire reason this page fetches the PR — so
+              // the full text arriving as its own source, `## Summary` and all, was
+              // the last thing standing between the section and being readable.
+              // `Markdown` renders no raw HTML; see its header.
+              <Markdown>{pr.description}</Markdown>
+            )}
+          </Section>
 
-      <Section title="Files" count={failed.files === true ? undefined : pr.files.files.length}>
-        {failed.files === true ? (
-          <Failed>Could not load the changed files for this pull request.</Failed>
-        ) : pr.files.files.length === 0 ? (
-          <Empty>No files changed.</Empty>
-        ) : (
-          <ChangedFiles
-            list={pr.files}
-            ref={prRef}
-            conflicted={new Set(pr.merge.conflicts.map((conflict) => conflict.path))}
-            layout={layout}
-            onLayoutChange={onLayoutChange}
-            viewed={viewed}
-            onViewedChange={setViewed}
-          />
-        )}
-      </Section>
+          <Section title="Commits" count={failed.commits === true ? undefined : pr.commits.length}>
+            {failed.commits === true ? (
+              <Failed>Could not load the commits for this pull request.</Failed>
+            ) : pr.commits.length === 0 ? (
+              <Empty>No commits on this branch.</Empty>
+            ) : (
+              <ul className="border-border/60 w-full rounded-md border">
+                {pr.commits.map((commit) => (
+                  <CommitRow key={commit.id} commit={commit} />
+                ))}
+              </ul>
+            )}
+          </Section>
+        </div>
+      ) : (
+        // No `Section` around this and no heading: the tab is the heading, and it
+        // already carries the count. What the diff needs from the page is width.
+        <div role="tabpanel" id={`panel-${active}`} aria-labelledby={`tab-${active}`} className="w-full">
+          {failed.files === true ? (
+            <Failed>Could not load the changed files for this pull request.</Failed>
+          ) : viewedPending ? (
+            // One tick against a local SQLite table, and it buys the whole of
+            // "expanded by default" on a pull request you are coming back to: a
+            // panel chooses whether to start open when it mounts, so the list
+            // cannot mount before the marks it would be choosing against.
+            <p className="text-muted-foreground text-xs">Loading…</p>
+          ) : (
+            <ChangedFiles
+              changes={changes.changes}
+              update={
+                update === null ? null : (
+                  <UpdatePicker iterations={iterations} selected={update} onSelect={setChosen} />
+                )
+              }
+              pending={changes.pending}
+              error={changes.error}
+              ref={prRef}
+              conflicted={new Set(pr.merge.conflicts.map((conflict) => conflict.path))}
+              layout={layout}
+              onLayoutChange={onLayoutChange}
+              viewed={viewed}
+              onViewedChange={setViewed}
+            />
+          )}
+        </div>
+      )}
     </article>
   )
 }

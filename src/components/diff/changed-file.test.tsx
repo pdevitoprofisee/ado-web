@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChangedFileDiff } from './changed-file'
+import { fileAnchor } from '@/lib/file-anchor'
 
 import type { ReactElement } from 'react'
 import type { FileBlobs } from '@/lib/diff-contract'
@@ -21,14 +22,43 @@ vi.mock('@/lib/highlight/shared', () => ({
 const { fileBlobsQuery } = await import('@/server/blob-fn')
 const call = vi.mocked(fileBlobsQuery)
 
+/**
+ * Whether the stubbed observer says its target is on screen.
+ *
+ * `true` for most of this file, because the list expands every panel from the
+ * start and a panel that is being read is a panel that fetches. The two tests
+ * about *not* fetching set it false — which is also jsdom's own answer, since it
+ * implements no `IntersectionObserver` at all.
+ */
+let inView = true
+
 // Same reason as diff-view.test.tsx: virtual-core's `getRect` reads
 // `offsetWidth`/`offsetHeight`, and jsdom reports 0 for both.
 beforeEach(() => {
   call.mockReset()
+  inView = true
   vi.stubGlobal(
     'ResizeObserver',
     class {
       observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  )
+  // Synchronous where the real one is not, which is the point: `observe` is
+  // called from an effect, so the panel knows on its first commit whether it is
+  // being looked at and the test needs no extra tick to find out.
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      constructor(private readonly notify: IntersectionObserverCallback) {}
+      observe(target: Element) {
+        if (!inView) return
+        this.notify(
+          [{ isIntersecting: true, target } as IntersectionObserverEntry],
+          this as unknown as IntersectionObserver,
+        )
+      }
       unobserve() {}
       disconnect() {}
     },
@@ -85,20 +115,35 @@ function panel(props: Partial<Parameters<typeof ChangedFileDiff>[0]> = {}) {
 const header = () => screen.getByRole('button', { name: /log\.ts/ })
 
 describe('ChangedFileDiff', () => {
-  it('fetches nothing until the file is opened', () => {
-    // The reason the panel takes `defaultOpen`. Forty files rendered eagerly is
-    // eighty ADO calls spent before anyone said which file they cared about.
+  it('is open from the start but fetches nothing until it is looked at', async () => {
+    // Both halves of the same bargain. Files are expanded so that scrolling the
+    // list reads like a diff instead of like a directory, and the bytes are still
+    // deferred, because a 294-file pull request expanded eagerly is 588 ADO calls
+    // spent before anyone has read a line.
+    inView = false
     draw(panel())
 
+    expect(header()).toHaveAttribute('aria-expanded', 'true')
     expect(call).not.toHaveBeenCalled()
-    expect(header()).toHaveAttribute('aria-expanded', 'false')
+
+    // The header is the other trigger, and on a file already scrolled past and
+    // shut it is the only one left.
+    await userEvent.click(header())
+    await userEvent.click(header())
+
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
-  it('fetches once when opened, and shows the diff it came back with', async () => {
+  it('can be found by the file tree, which jumps by id rather than by ref', () => {
+    inView = false
+    const { container } = draw(panel())
+
+    expect(container.querySelector(`#${fileAnchor(FILE.path)}`)).not.toBeNull()
+  })
+
+  it('fetches once when it comes into view, and shows the diff it came back with', async () => {
     call.mockResolvedValue(answer(BLOBS))
     draw(panel())
-
-    await userEvent.click(header())
 
     await waitFor(() => expect(screen.getByRole('region', { name: FILE.path })).toBeInTheDocument())
     expect(screen.getByRole('region', { name: FILE.path })).toHaveTextContent('is here')
@@ -121,7 +166,6 @@ describe('ChangedFileDiff', () => {
     call.mockResolvedValue(answer(BLOBS))
     draw(panel())
 
-    await userEvent.click(header())
     await waitFor(() => expect(screen.getByRole('region', { name: FILE.path })).toBeInTheDocument())
     await userEvent.click(header())
     await userEvent.click(header())
@@ -130,13 +174,11 @@ describe('ChangedFileDiff', () => {
     expect(call).toHaveBeenCalledTimes(1)
   })
 
-  it('says the file is loading rather than that it is empty', async () => {
+  it('says the file is loading rather than that it is empty', () => {
     // The placeholder blobs are absent on both sides, and `blobNotice` would
     // otherwise call a file nobody has fetched yet "nothing to show".
     call.mockReturnValue(new Promise(() => {}))
     draw(panel())
-
-    await userEvent.click(header())
 
     expect(screen.getByText('Loading…')).toBeVisible()
     expect(screen.queryByText('Nothing to show for this file.')).toBeNull()
@@ -145,8 +187,6 @@ describe('ChangedFileDiff', () => {
   it('shows what went wrong when the call could not be made', async () => {
     call.mockResolvedValue(answer(null, 'No Azure DevOps token is stored yet.'))
     draw(panel())
-
-    await userEvent.click(header())
 
     await waitFor(() =>
       expect(screen.getByText('No Azure DevOps token is stored yet.')).toBeVisible(),
@@ -158,8 +198,6 @@ describe('ChangedFileDiff', () => {
     call.mockRejectedValue(new Error('fetch failed'))
     draw(panel())
 
-    await userEvent.click(header())
-
     await waitFor(() => expect(screen.getByText('fetch failed')).toBeVisible())
   })
 
@@ -167,7 +205,6 @@ describe('ChangedFileDiff', () => {
     call.mockResolvedValue(answer(BLOBS))
     const { rerender } = draw(panel())
 
-    await userEvent.click(header())
     await waitFor(() => expect(screen.getByRole('region', { name: FILE.path })).toBeInTheDocument())
 
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -186,8 +223,6 @@ describe('ChangedFileDiff', () => {
       answer({ ...BLOBS, before: { kind: 'absent' }, after: { kind: 'binary', bytes: 750 } }),
     )
     draw(panel())
-
-    await userEvent.click(header())
 
     await waitFor(() =>
       expect(screen.getByText('Binary file. There is nothing to show as text.')).toBeVisible(),
@@ -212,17 +247,27 @@ describe('ChangedFileDiff', () => {
     )
     draw(panel({ file: renamed }))
 
-    await userEvent.click(screen.getByRole('button', { name: /sink\.ts/ }))
-
     await waitFor(() =>
       expect(screen.getByText('Renamed. The contents did not change.')).toBeVisible(),
     )
     expect(screen.getByRole('button', { name: /← \/src\/drain\.ts/ })).toBeInTheDocument()
   })
 
-  it('marks a file viewed without having ever opened it', async () => {
+  it('starts shut on a file already marked read', () => {
+    // What "expanded by default" has to mean on a page you come back to: the
+    // panel's own default is "open unless already read", and the pass you did
+    // yesterday should still be out of the way.
+    inView = false
+    draw(panel({ viewed: true }))
+
+    expect(header()).toHaveAttribute('aria-expanded', 'false')
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('marks a file viewed without its bytes ever arriving', async () => {
     // Progress has to be recordable from the list, which means the checkbox
     // works on a file whose bytes were never fetched.
+    inView = false
     const onViewedChange = vi.fn()
     draw(panel({ onViewedChange }))
 

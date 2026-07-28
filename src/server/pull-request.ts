@@ -190,12 +190,51 @@ export interface ChangedFile {
   readonly originalObjectId: string | null
 }
 
-export interface FileList {
+/**
+ * One push onto the source branch — what ADO calls an iteration and labels
+ * "Update N" in its own UI. The unit `$compareTo` speaks, and the reason the
+ * per-update view is keyed on these rather than on commits: a single push can
+ * carry five commits, and asking for one commit's changes means a second
+ * endpoint that has nothing sensible to say about a merge commit.
+ *
+ * Measured: 120 pull requests across the org, 58 with one iteration, median 2,
+ * p90 5, p99 15, max 39.
+ */
+export interface Iteration {
+  readonly id: number
+  /**
+   * First line of the tip commit's message. ADO calls this the iteration's
+   * `description` and sends the *whole* message, body and all, so it is cut here
+   * the same way a commit's is.
+   */
+  readonly subject: string
+  readonly author: string
+  readonly createdAt: string
+  /**
+   * `push` | `forcePush` | `create` | `rebase` | `retarget` | `resolveConflicts`
+   * | `unknown`. Every one of the 44 iterations measured said `push`, so the rest
+   * are documented rather than observed — which is why this is a string the view
+   * prints and not a union it switches on.
+   */
+  readonly reason: string
+}
+
+/** A set of changed files, however it was asked for. */
+export interface ChangeSet {
   readonly files: readonly ChangedFile[]
-  /** The iteration these files belong to — phase 3 needs it for `$compareTo`. */
-  readonly iterationId: number | null
   /** More files exist than were fetched. Rendered, never silently dropped. */
   readonly truncated: boolean
+}
+
+export interface FileList extends ChangeSet {
+  /** The iteration these files belong to — the latest one. */
+  readonly iterationId: number | null
+  /**
+   * Every update, oldest first, so the view can offer one of them without a
+   * second round trip. Free: the changes endpoint is iteration-scoped, so this
+   * list had to be fetched to know which iteration to ask about.
+   */
+  readonly iterations: readonly Iteration[]
 }
 
 /**
@@ -340,6 +379,15 @@ interface AdoChangeEntry {
     readonly originalObjectId?: string
     readonly isFolder?: boolean
   }
+}
+
+interface AdoIteration {
+  readonly id?: number
+  /** The tip commit's *entire* message, despite the name. */
+  readonly description?: string
+  readonly author?: AdoIdentity
+  readonly createdDate?: string
+  readonly reason?: string
 }
 
 interface AdoConflict {
@@ -502,7 +550,11 @@ async function section<T>(load: () => Promise<T>, empty: T): Promise<Section<T>>
 const NO_POLICIES: readonly Policy[] = []
 const NO_COMMITS: readonly Commit[] = []
 const NO_CONFLICTS: readonly Conflict[] = []
-const NO_FILES: FileList = { files: [], iterationId: null, truncated: false }
+const NO_FILES: FileList = { files: [], iterationId: null, iterations: [], truncated: false }
+
+/** Where every call about one pull request hangs off. Two callers, hence a name. */
+const prBase = (ref: PullRequestRef): string =>
+  `${ref.projectId}/_apis/git/repositories/${ref.repositoryId}/pullRequests/${ref.id}`
 const UNFETCHED: Section<readonly Conflict[]> = { data: NO_CONFLICTS, error: null }
 
 /**
@@ -599,24 +651,7 @@ async function loadCommits(
  * page size; feeding it back walks the tail one file at a time. It is ignored,
  * as is `nextSkip`.
  */
-async function loadFiles(client: AdoClient, base: string): Promise<FileList> {
-  const iterations = await client.get<{ value?: ReadonlyArray<{ id?: number }> }>(
-    `${base}/iterations`,
-  )
-  const ids = (iterations.value ?? [])
-    .map((iteration) => iteration.id)
-    .filter((id): id is number => typeof id === 'number')
-
-  // No iterations is an answer, not a failure — and asking for `/iterations/0/
-  // changes` would be a 404 dressed up as one.
-  if (ids.length === 0) return NO_FILES
-
-  const iterationId = Math.max(...ids)
-  const result = await client.get<{ changeEntries?: readonly AdoChangeEntry[] }>(
-    `${base}/iterations/${iterationId}/changes`,
-    { $top: FILE_LIMIT },
-  )
-  const entries = result.changeEntries ?? []
+function toChangeSet(entries: readonly AdoChangeEntry[]): ChangeSet {
   const files: ChangedFile[] = []
 
   for (const entry of entries) {
@@ -640,7 +675,62 @@ async function loadFiles(client: AdoClient, base: string): Promise<FileList> {
     })
   }
 
-  return { files, iterationId, truncated: entries.length >= FILE_LIMIT }
+  return { files, truncated: entries.length >= FILE_LIMIT }
+}
+
+/**
+ * The changes on one iteration, against whichever earlier one you name.
+ *
+ * `compareTo` is ADO's `$compareTo` and it is not optional here on purpose.
+ * Omitting the parameter means zero, zero means the merge base, and the merge
+ * base is the whole-PR diff — so a caller that meant "what update 7 changed" and
+ * forgot the argument gets 294 files back and no error. Making it explicit turns
+ * that into a type error instead. Range-checking it is `pull-request-fn.ts`'s
+ * job, for the same reason: **`$compareTo=999` on a 39-iteration PR answers with
+ * the full combined diff**, measured, so an out-of-range value fails open into a
+ * wrong answer wearing an update's label.
+ */
+export async function loadChanges(
+  client: AdoClient,
+  ref: PullRequestRef,
+  iterationId: number,
+  compareTo: number,
+): Promise<ChangeSet> {
+  const result = await client.get<{ changeEntries?: readonly AdoChangeEntry[] }>(
+    `${prBase(ref)}/iterations/${iterationId}/changes`,
+    { $top: FILE_LIMIT, $compareTo: compareTo },
+  )
+
+  return toChangeSet(result.changeEntries ?? [])
+}
+
+async function loadFiles(client: AdoClient, ref: PullRequestRef, base: string): Promise<FileList> {
+  const result = await client.get<{ value?: readonly AdoIteration[] }>(`${base}/iterations`)
+  const iterations = (result.value ?? [])
+    .filter((iteration): iteration is AdoIteration & { id: number } =>
+      typeof iteration.id === 'number',
+    )
+    .map((iteration) => ({
+      id: iteration.id,
+      subject: commitSubject(iteration.description),
+      author: iteration.author?.displayName ?? 'unknown',
+      createdAt: iteration.createdDate ?? '',
+      reason: iteration.reason ?? 'unknown',
+    }))
+
+  // No iterations is an answer, not a failure — and asking for `/iterations/0/
+  // changes` would be a 404 dressed up as one.
+  if (iterations.length === 0) return NO_FILES
+
+  const iterationId = Math.max(...iterations.map((iteration) => iteration.id))
+
+  // `$compareTo: 0` and not the absent parameter, though they are the same call:
+  // measured identical on !24766 (64 entries either way), and writing the zero
+  // says out loud that this is the merge-base comparison — the combined diff of
+  // the whole pull request, which is what the page leads with.
+  const changes = await loadChanges(client, ref, iterationId, 0)
+
+  return { ...changes, iterationId, iterations }
 }
 
 /**
@@ -674,14 +764,14 @@ export async function loadPullRequest(
   client: AdoClient,
   ref: PullRequestRef,
 ): Promise<PullRequestDetail> {
-  const base = `${ref.projectId}/_apis/git/repositories/${ref.repositoryId}/pullRequests/${ref.id}`
+  const base = prBase(ref)
 
   const [pr, viewerId, policies, commits, files] = await fanOutTuple(client, [
     () => client.get<AdoDetail>(base),
     () => resolveViewer(client),
     () => section(() => loadPolicies(client, ref), NO_POLICIES),
     () => section(() => loadCommits(client, ref, base), NO_COMMITS),
-    () => section(() => loadFiles(client, base), NO_FILES),
+    () => section(() => loadFiles(client, ref, base), NO_FILES),
   ])
 
   if (typeof pr.pullRequestId !== 'number') {
