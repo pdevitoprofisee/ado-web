@@ -81,6 +81,30 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
            fetched_at INTEGER NOT NULL
          ) STRICT`,
   },
+  {
+    version: 3,
+    name: 'viewed-files',
+    // The first table here that is **not** a cache, so the `DELETE FROM`
+    // licence above does not extend to it: a viewed mark is a fact about the
+    // person reading, nothing re-fetches it, and dropping the table loses work
+    // rather than a copy of something Azure DevOps still has.
+    //
+    // `object_id` is in the key and that is the whole feature — the mark is on
+    // the content, so a push that rewrites the file writes a new sha and the
+    // old row stops matching. On a delete, which has no after-sha, the caller
+    // stores the before-sha; it may not simply store NULL, because a STRICT
+    // table makes every PRIMARY KEY column implicitly NOT NULL (measured on
+    // SQLite 3.53.1 — the same table without STRICT happily holds two rows that
+    // differ only by a NULL key part). See src/server/viewed.ts.
+    up: `CREATE TABLE viewed_file (
+           repository_id   TEXT    NOT NULL,
+           pull_request_id INTEGER NOT NULL,
+           path            TEXT    NOT NULL,
+           object_id       TEXT    NOT NULL,
+           viewed_at       INTEGER NOT NULL,
+           PRIMARY KEY (repository_id, pull_request_id, path, object_id)
+         ) STRICT`,
+  },
 ]
 
 /**
