@@ -37,6 +37,16 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* The rest of this palette is deliberately greyscale; a diff is the one place
+     that cannot be. The row tints stay pale enough for syntax colour to survive
+     on top of them, and the word tints are the same hue two steps stronger, so
+     an intra-line edit reads against its own row rather than against the page. */
+  --diff-add: oklch(0.95 0.04 150);
+  --diff-add-word: oklch(0.87 0.11 150);
+  --diff-delete: oklch(0.95 0.04 25);
+  --diff-delete-word: oklch(0.88 0.1 25);
+  --diff-word: transparent;
 }
 
 .dark {
@@ -71,6 +81,12 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  --diff-add: oklch(0.32 0.05 150);
+  --diff-add-word: oklch(0.45 0.11 150);
+  --diff-delete: oklch(0.32 0.05 25);
+  --diff-delete-word: oklch(0.45 0.12 25);
+  --diff-word: transparent;
 }
 
 @theme inline {
@@ -109,6 +125,23 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-diff-add: var(--diff-add);
+  --color-diff-delete: var(--diff-delete);
+  /* Resolved per row, not per theme: `.diff-add` and `.diff-delete` below each
+     rebind `--diff-word`, so one `bg-diff-word` on a token renders green inside
+     an added line and red inside a removed one without knowing which it is in. */
+  --color-diff-word: var(--diff-word);
+}
+
+@layer components {
+  .diff-add {
+    background-color: var(--diff-add);
+    --diff-word: var(--diff-add-word);
+  }
+  .diff-delete {
+    background-color: var(--diff-delete);
+    --diff-word: var(--diff-delete-word);
+  }
 }
 
 @layer base {
