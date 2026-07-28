@@ -50,14 +50,20 @@ function Failed({ children }: { children: ReactNode }) {
   )
 }
 
+/**
+ * The same chip `pr-detail.tsx` gives the little words that qualify a row.
+ *
+ * Deliberately the same mark and not an import: that one is private to that
+ * module, this one takes an arbitrary tone string rather than one named tone, and
+ * the note above `Empty` already says what to do the first time a third section
+ * wants any of this. `.annotation` carries the type — tiny mono, uppercase,
+ * 0.08em tracking, secondary ink — which is what the hand-rolled
+ * `text-[10px] uppercase` was reaching for, and the 1.5px pen in construction ink
+ * is Prof's weight for a mark that qualifies a row without outdrawing it.
+ */
 function Chip({ children, tone }: { children: ReactNode; tone?: string }) {
   return (
-    <span
-      className={cn(
-        'ml-1.5 rounded border px-1 text-[10px] uppercase',
-        tone ?? 'text-muted-foreground border-border',
-      )}
-    >
+    <span className={cn('annotation ml-1.5 rounded-sm border-[1.5px] px-1', tone ?? 'border-ink-150')}>
       {children}
     </span>
   )
@@ -100,13 +106,24 @@ export function scrollToFinding(jump: SonarJump): void {
  * fields still arrive on every issue and are unreliable, and `type` has been
  * removed from the `rules` API's field list outright. The group's badge is the
  * worst impact among its findings, computed where the grouping happens.
+ *
+ * **Three bands for five severities, and the alpha is gone from the strokes.**
+ * Prof has five pens and a five-step scale is what they look like they are for,
+ * but only three of them can carry 11px type on paper: `--pen-red` measures
+ * 4.65:1 on the app's sheet, ink 7.9 and secondary ink 4.9, while `--pen-amber`
+ * manages 3.39 and `--pen-green` 4.01. Both clear the 3:1 a stroke or an icon
+ * owes — `pr-detail` draws its status icons in exactly those two pens — and
+ * neither clears the 4.5 a word owes. Buying a fourth step by making "medium"
+ * unreadable is not a scale, it is a decoration, and the chip prints the severity
+ * as a word anyway: "blocker" and "high" do not need different colours to be
+ * told apart, they need to both be red.
  */
 const SEVERITY_TONE: Record<SonarSeverity, string> = {
-  BLOCKER: 'text-destructive border-destructive/60',
-  HIGH: 'text-destructive border-destructive/60',
-  MEDIUM: 'text-foreground border-border',
-  LOW: 'text-muted-foreground border-border',
-  INFO: 'text-muted-foreground border-border',
+  BLOCKER: 'text-destructive border-destructive',
+  HIGH: 'text-destructive border-destructive',
+  MEDIUM: 'text-ink border-ink-150',
+  LOW: 'text-muted-foreground border-ink-150',
+  INFO: 'text-muted-foreground border-ink-150',
 }
 
 function SeverityBadge({ severity }: { severity: SonarSeverity | null }) {
@@ -146,7 +163,28 @@ function GateSummary({ gate }: { gate: QualityGate }) {
   const failing = gate.conditions.filter((condition) => condition.status !== 'OK')
 
   return (
-    <div className="w-full">
+    // A failed gate is the most consequential sentence on this page, so it is the
+    // one place in the panel that gets drawn: the red pen around it and a hatched
+    // bar down its margin, built the way `ui/alert.tsx` builds the same mark. A
+    // passing gate stays a bare line of text and takes no room, which is the whole
+    // reason the passing conditions are not rendered either.
+    //
+    // No `bg-pen-red-tint` wash under it, tempting as it is. `--pen-red` measures
+    // 4.65:1 on this sheet and 4.08 on its own tint, and the failing rows below
+    // print their actual values in that pen — the wash would take the numbers the
+    // gate exists to show from clearing AA to failing it. The hatch does the
+    // shouting; the pen stays readable.
+    //
+    // `.sketch-underline` under the verdict word was the other candidate and is
+    // one mark too many: the bar already says "look here", and an 8px underline
+    // inside a bordered block is a second voice saying the same thing.
+    <div
+      className={cn(
+        'w-full',
+        gate.status === 'ERROR' &&
+          'border-destructive relative overflow-hidden rounded-lg border-[1.5px] py-2 pr-2.5 pl-4 before:absolute before:inset-y-0 before:left-0 before:w-1.5 before:bg-[image:var(--hatch-red)]',
+      )}
+    >
       <p className="text-sm">
         Quality gate{' '}
         <span className={cn(gate.status === 'ERROR' ? 'text-destructive font-medium' : undefined)}>
@@ -154,11 +192,15 @@ function GateSummary({ gate }: { gate: QualityGate }) {
         </span>
       </p>
       {failing.length === 0 ? null : (
-        <ul aria-label="Failing conditions" className="border-border/60 mt-1 w-full rounded-md border">
+        // No box of its own: it is already inside one. Rows divided by the line at
+        // full strength — `/60` was tuned against a dark app and is nothing at all
+        // against warm paper — and not by `.sketch-rule`, which costs 6px a
+        // boundary and would double the height of a four-condition gate.
+        <ul aria-label="Failing conditions" className="mt-1 w-full">
           {failing.map((condition) => (
             <li
               key={condition.metricKey}
-              className="border-border/60 flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0"
+              className="border-border flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0"
             >
               {/* The metric key with its underscores opened out, not a lookup
                   table: the key set is open (`new_*` variants arrive as the gate
@@ -204,7 +246,7 @@ function FindingRow({
   const label = path === null ? null : line === null ? path : `${path}:${line}`
 
   return (
-    <li className="border-border/60 flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
+    <li className="border-border flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
       {path === null || label === null ? (
         <span className="text-muted-foreground shrink-0 text-xs">project-level</span>
       ) : changedPaths.has(path) ? (
@@ -271,11 +313,15 @@ function GroupRow({
   const title = group.name ?? group.rule
 
   return (
-    <li className="border-border/60 border-b last:border-b-0">
+    <li className="border-border border-b last:border-b-0">
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
+        // `hover:bg-muted` stays, and deliberately does not become the teal wash
+        // the toggles use. Teal means "this is the one you picked"; a pointer
+        // resting on a row has picked nothing yet, and spending the accent on
+        // hover would leave selection with nothing left to say.
         className="hover:bg-muted flex w-full items-baseline gap-2 px-2 py-1 text-left text-sm"
       >
         {open ? (
@@ -299,7 +345,13 @@ function GroupRow({
 
       {open ? (
         <div className="flex flex-col gap-3 px-2 pb-2">
-          <ul aria-label={`${title} occurrences`} className="border-border/60 w-full rounded-md border">
+          {/* A sunken well, not a fourth outline. This list is already inside the
+              open group, which is inside the panel's bordered list — one more box
+              and the occurrences of a rule would be a box in a box in a box.
+              Prof's answer to "nested and secondary" is the paper going down a
+              step rather than another pen going round it, so: `bg-muted`, the
+              sketch radius, and the rows keep their own dividers. */}
+          <ul aria-label={`${title} occurrences`} className="bg-muted w-full rounded-lg">
             {group.findings.map((finding) => (
               <FindingRow
                 key={finding.key}
@@ -373,7 +425,15 @@ export function SonarPanel({
     <section className="w-full" aria-label="Sonar">
       <h2
         aria-label={`Sonar, ${total}`}
-        className="text-muted-foreground mb-1 flex items-baseline gap-2 text-xs font-medium tracking-wide uppercase"
+        // `.annotation` is exactly what the four utilities here were reaching for
+        // — mono at `--text-2xs`, medium, uppercase, 0.08em tracking — and it is
+        // what every other section heading in the app now uses, so this matches
+        // `Section` in `pr-detail.tsx` rather than approximating it. Ink instead
+        // of secondary ink because a section's name is structure, not a caption.
+        //
+        // The `normal-case` on the project links below still wins: `.annotation`
+        // lives in `@layer components` and a utility outranks the whole layer.
+        className="annotation text-ink mb-1 flex items-baseline gap-2"
       >
         Sonar
         <span className="tabular-nums">{total}</span>
@@ -423,7 +483,11 @@ export function SonarPanel({
         {report.groups.length === 0 ? (
           <Empty>No open findings. Sonar reported nothing on this pull request.</Empty>
         ) : (
-          <ul aria-label="Findings by rule" className="border-border/60 w-full rounded-md border">
+          // The panel's one outline, at Prof's construction weight: 1.5px of the
+          // quiet line around a sketch-md corner. `rounded-md` was a mechanical
+          // 6px, and `/60` on the stroke was tuned against a dark app — on warm
+          // paper it thins the only edge this list has to nearly nothing.
+          <ul aria-label="Findings by rule" className="border-border w-full rounded-lg border-[1.5px]">
             {report.groups.map((group) => (
               <GroupRow
                 key={group.rule}

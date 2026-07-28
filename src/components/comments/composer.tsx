@@ -98,8 +98,20 @@ export function Composer({
   }
 
   return (
-    <div className="border-border/60 bg-background rounded-md border">
-      <div className="border-border/60 flex items-center gap-1 border-b px-1.5 py-1">
+    // Drawn as the app's other text fields are, because that is what this is: a
+    // textarea with chrome. `bg-popover` is Prof's input sheet (`--paper-3`, the
+    // brightest paper) and `border-input` is its stroke, so a composer sitting on
+    // a `bg-card` thread reads as somewhere to type rather than as another panel.
+    // `rounded-lg`, not `input.tsx`'s `rounded-sm`, because it is panel-sized —
+    // and not bare `rounded`, which is the one step of the scale still mapped to a
+    // machine corner. The 1.5px pen matches every other bordered surface; `/60` on
+    // the line was tuned against a dark app and is nothing against warm paper.
+    <div className="rounded-lg border-[1.5px] border-input bg-popover">
+      {/* 1px borders, not `.sketch-rule`, for all three boundaries in here. A
+          drawn rule costs 6px and there are up to three of them in a box about
+          140px tall — that is 18px of texture inside a thing whose whole job is
+          to get out of the way while someone writes a sentence. */}
+      <div className="border-border flex items-center gap-1 border-b px-1.5 py-1">
         {(['write', 'preview'] as const).map((which) => (
           <Button
             key={which}
@@ -107,7 +119,12 @@ export function Composer({
             size="xs"
             onPress={() => setPane(which)}
             aria-pressed={pane === which}
-            className={cn(pane === which && 'bg-muted text-foreground')}
+            // The teal wash for the chosen pane, as `LayoutToggle` and
+            // `HideDoneToggle` use it. `bg-muted` said "sunken" about the control
+            // you are currently on, which is the wrong direction — and on this
+            // sheet it is the wrong colour twice over, because `--muted` is
+            // `--paper-1` and the box under it is `--paper-3`.
+            className={cn(pane === which && 'bg-accent text-ink')}
           >
             {which === 'write' ? 'Write' : 'Preview'}
           </Button>
@@ -123,7 +140,13 @@ export function Composer({
           rows={4}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
-          className="placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 field-sizing-content min-h-20 w-full resize-y border-0 bg-transparent px-2 py-1.5 text-sm outline-none focus-visible:ring-3"
+          // No `ring-*` and no `focus-visible:border-*`: styles.css draws focus
+          // once, globally, as a teal box-shadow with a paper gap inside it, and a
+          // second ring on top of it would be two rings. `rounded-sm` is here for
+          // that shadow alone — the field is transparent, so the radius shows up
+          // nowhere else, and without it the one drawn corner in this box would be
+          // a hard rectangle appearing the moment you focus the thing.
+          className="placeholder:text-muted-foreground field-sizing-content min-h-20 w-full resize-y rounded-sm border-0 bg-transparent px-2 py-1.5 text-sm outline-none"
         />
       ) : (
         <div className="min-h-20 px-2 py-1.5">
@@ -138,12 +161,19 @@ export function Composer({
       {error === null ? null : (
         // Above the buttons rather than replacing them: the text is still there
         // and pressing the same button again is the retry.
-        <p role="alert" className="text-destructive border-border/60 border-t px-2 py-1.5 text-xs">
+        // The pen and nothing else. A `bg-pen-red-tint` wash under it was the
+        // obvious Prof move and it is the wrong one here: `--pen-red` measures
+        // 5.01:1 on this box's white sheet and 4.08:1 on its own tint, so adding
+        // the wash would take the one sentence in this component that has to be
+        // read from clearing AA to failing it. The wash earns its place on `Alert`,
+        // which is a whole surface you are meant to notice; this is a line of type
+        // eight pixels under the button that caused it.
+        <p role="alert" className="text-destructive border-border border-t px-2 py-1.5 text-xs">
           {error}
         </p>
       )}
 
-      <div className="border-border/60 flex items-center gap-2 border-t px-1.5 py-1">
+      <div className="border-border flex items-center gap-2 border-t px-1.5 py-1">
         <Button size="xs" onPress={() => void submit()} isDisabled={empty || busy}>
           {busy ? 'Saving…' : submitLabel}
         </Button>

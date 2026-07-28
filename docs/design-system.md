@@ -69,6 +69,24 @@ Tailwind's default palette; they are not in this system.
 | `pen-amber` | `pen-amber-tint` | waiting, caution, draft |
 | `pen-green` (= `teal-600`) | `pen-green-tint` | success, approval, addition |
 
+**A pen is not automatically a text colour.** Measured against `--paper-0`, the
+app's sheet: `pen-red` is 4.65:1, `pen-green` 4.01, `pen-amber` 3.39. Ink is
+7.91 and secondary ink (`text-muted-foreground`, `--ink-500`) 4.92. Every one of
+them clears the **3:1** a border, an icon or any other non-text mark owes; only
+red, ink and secondary ink clear the **4.5:1** a word owes. So:
+
+- amber and green are for **strokes, washes and icons** — `border-pen-amber`,
+  `bg-pen-green-tint`, a `<Check className="text-pen-green">`;
+- when the same status has to be a *word*, put the colour on the stroke or the
+  wash and leave the type in ink. `pr-detail`'s draft chip is the pattern:
+  `border-pen-amber bg-pen-amber-tint text-ink`, which is 7.2:1 and still the
+  one amber thing on the row.
+
+A pen on its own tint is worse than on paper, not better — `pen-red` drops from
+4.65 to **4.08** on `pen-red-tint`. `ui/alert.tsx` accepts that for a whole
+surface you are meant to notice; a single must-read sentence should stay on
+paper. Recompute before assuming, and put the number in the comment.
+
 ### Lines — by intent, not by colour
 
 | Token | Utility | Use |

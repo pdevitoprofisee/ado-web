@@ -57,9 +57,18 @@ export const RULE_HTML_SCHEMA: SanitizeSchema = defaultSchema
  * `pre > code` is styled through the `pre` for the same reason `markdown.tsx`
  * does it: react-markdown gives inline code and fenced code the same `code`
  * component, so the parent is the only thing that knows which one this is.
+ *
+ * Drawn the way that renderer draws it, down to the string: the sunken sheet, the
+ * pen at construction weight round it, and `font-mono` on the `pre` itself so a
+ * bare block does not fall back to the browser's generic monospace instead of the
+ * one this system draws in. A rule's compliant/non-compliant pair is the same kind
+ * of object as a stack trace in a description — something pasted into the page —
+ * and the outline is doing work here that it is not doing there, because the
+ * `data-diff-*` attributes that used to pair those blocks are dropped by the
+ * sanitiser. A drawn box each is what is left to say "two snippets, not one".
  */
 const PRE =
-  'bg-muted mb-2 overflow-x-auto rounded-md p-3 text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit'
+  'bg-muted border-border mb-2 overflow-x-auto rounded-md border-[1.5px] p-3 font-mono text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit'
 
 // The heading scale is flattened harder than the description renderer's, because
 // a rule reads at a deeper indent: it is inside an expanded finding group, which
@@ -77,8 +86,11 @@ const COMPONENTS: Components = {
   ul: ({ children }) => <ul className="mb-2 list-disc pl-5 last:mb-0">{children}</ul>,
   ol: ({ children }) => <ol className="mb-2 list-decimal pl-5 last:mb-0">{children}</ol>,
   li: ({ children }) => <li className="mb-0.5">{children}</li>,
+  // `rounded-sm`, not bare `rounded`: the sketch radii are mapped onto the named
+  // steps of the scale and bare `rounded` is the one that still resolves to
+  // `--radius`, which puts a machine corner on every `<code>` in a sentence.
   code: ({ children }) => (
-    <code className="bg-muted rounded px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
+    <code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
   ),
   pre: ({ children }) => <pre className={PRE}>{children}</pre>,
   // A new tab and `noreferrer`, exactly as the description renderer does it: a
@@ -86,26 +98,51 @@ const COMPONENTS: Components = {
   // half-read diff to one of them is not on offer. `rel` and `target` are added
   // here rather than allowed through the schema, so they cannot be overridden by
   // the incoming markup.
+  //
+  // Brand navy at the pen's 1.5px with the stroke lifted to 3px, as every other
+  // link in the app is drawn — a "Resources" list is a dozen of these in a row,
+  // and inheriting the body colour left them looking like underlined prose.
   a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer" className="underline underline-offset-4">
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-primary underline decoration-[1.5px] underline-offset-[3px]"
+    >
       {children}
     </a>
   ),
+  // The margin mark in ink at the pen's weight, as the description renderer draws
+  // it: the line down the side is the whole of what says "this is quoted", so it
+  // should look drawn rather than like a 2px rule in the border colour.
   blockquote: ({ children }) => (
-    <blockquote className="border-border text-muted-foreground mb-2 border-l-2 pl-3 last:mb-0">
+    <blockquote className="border-ink text-muted-foreground mb-2 border-l-[1.5px] pl-3 last:mb-0">
       {children}
     </blockquote>
   ),
-  hr: () => <hr className="border-border/60 my-3" />,
+  // A drawn rule — 6px where the border was 1px, hence the shorter margin. Worth
+  // its height here in a way it would not be inside a thread card: a rule
+  // contributor writing an `<hr>` into a description means a chapter break, and
+  // there is at most a handful in a page of prose.
+  hr: () => <hr className="sketch-rule my-2" />,
   table: ({ children }) => (
     <div className="mb-2 w-full overflow-x-auto last:mb-0">
-      <table className="border-border/60 w-full border-collapse border text-xs">{children}</table>
+      {/* Stripes on the body rows and no fill under the header, exactly as
+          `markdown.tsx` sets the same table out — a rule's tables are short lists
+          of values, and annotation headers plus an alternating body is enough
+          structure without tinting two things the same paper. `tbody tr`, or the
+          header row counts itself into the alternation. */}
+      <table className="border-border w-full border-collapse border text-xs [&_tbody_tr:nth-child(odd)]:bg-muted">
+        {children}
+      </table>
     </div>
   ),
+  // `.annotation` is what this system calls a column label, and it does the
+  // separating a header fill would otherwise have to do.
   th: ({ children }) => (
-    <th className="border-border/60 border px-2 py-1 text-left font-medium">{children}</th>
+    <th className="annotation border-border border px-2 py-1 text-left">{children}</th>
   ),
-  td: ({ children }) => <td className="border-border/60 border px-2 py-1 align-top">{children}</td>,
+  td: ({ children }) => <td className="border-border border px-2 py-1 align-top">{children}</td>,
 }
 
 /**

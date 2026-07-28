@@ -86,7 +86,12 @@ function Chip({ children, tone }: { children: ReactNode; tone?: 'amber' }) {
     <span
       className={cn(
         'annotation ml-1.5 rounded-sm border-[1.5px] px-1',
-        tone === 'amber' ? 'border-pen-amber text-pen-amber bg-pen-amber-tint' : 'border-ink-150',
+        // The pen and the wash carry "draft"; the word itself stays in ink.
+        // `--pen-amber` is #b07c1f, which measures 3.09:1 on its own tint — fine
+        // for a 1.5px stroke, which only owes 3:1 as a non-text mark, and not
+        // fine for the type inside it. Ink on the amber wash is 7.2:1 and the
+        // chip still reads as the one amber thing on the row.
+        tone === 'amber' ? 'border-pen-amber bg-pen-amber-tint text-ink' : 'border-ink-150',
       )}
     >
       {children}
@@ -691,9 +696,15 @@ function HideDoneToggle({
       type="button"
       aria-pressed={hideDone}
       onClick={() => onHideDoneChange(!hideDone)}
+      // Styled as `LayoutToggle`'s options are, for the reason above: these two
+      // controls sit on the same line and answer the same kind of question, so a
+      // pressed one should look pressed the same way. That means `rounded-sm`
+      // rather than bare `rounded`, which is the one step in the scale still
+      // mapped to a machine corner, and the teal wash rather than `bg-muted`,
+      // which reads as sunken on a control that has been chosen.
       className={cn(
-        'rounded px-1.5 py-0.5',
-        hideDone ? 'text-foreground bg-muted' : 'hover:text-foreground',
+        'rounded-sm px-1.5 py-0.5',
+        hideDone ? 'text-ink bg-accent' : 'hover:text-foreground',
       )}
     >
       Hide resolved

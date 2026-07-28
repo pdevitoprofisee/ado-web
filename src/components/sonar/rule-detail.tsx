@@ -73,7 +73,14 @@ export function RuleDetail({ rule }: { rule: SonarRule }) {
           // described once per framework arrives as several `how_to_fix`
           // sections distinguished only by `context`.
           <div key={`${section.key}-${section.context?.key ?? index}`} className="mb-3 last:mb-0">
-            <h4 className="text-muted-foreground mb-1 text-xs font-medium tracking-wide uppercase">
+            {/* `.annotation` is this system's column-and-section label and it is
+                what the four utilities here were spelling out by hand, one step
+                smaller: `--text-2xs` against the panel heading's own annotation,
+                which is right for a label three levels down. Secondary ink comes
+                with the class and stays — the panel's `<h2>` is the ink one on
+                this surface, and a section title inside an expanded rule inside
+                an expanded group is a caption, not structure. */}
+            <h4 className="annotation mb-1">
               {sectionTitle(section)}
             </h4>
             <RuleHtml>{section.content}</RuleHtml>

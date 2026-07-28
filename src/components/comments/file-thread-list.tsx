@@ -69,7 +69,13 @@ export function FileThreadList({
   if (shown.length === 0 && onNewThread === undefined) return null
 
   return (
-    <div className="border-border/60 flex flex-col gap-1 border-t px-2 py-1.5">
+    // No top border at all, where there used to be one. This list is rendered
+    // directly under `FileDiffPanel`'s `.sketch-rule`, so the old `border-t` put a
+    // 1px machine line hard against a 6px drawn one — two separators saying the
+    // same thing, one of them badly. The panel draws its break once, under the
+    // header; below this, the diff's sunken gutters are their own edge. Padding is
+    // what separates the list from both.
+    <div className="flex flex-col gap-1 px-2 py-1.5">
       {shown.length === 0 ? null : (
         <>
           {!all && threads !== null ? (

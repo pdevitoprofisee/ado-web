@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Check } from 'lucide-react'
 
 import { CommentView } from './comment'
 import { Composer } from './composer'
@@ -65,8 +66,14 @@ export function DoneStub({
   const first = threads[0]
   const comments = threads.reduce((total, thread) => total + thread.comments.length, 0)
   return (
+    // No sheet and no outline: the stub is one line of ink, and a tint band
+    // starting 48px in from the gutter would read as a row of the diff that had
+    // been coloured rather than as a conversation folded away.
+    //
+    // The tick is the only coloured mark on it, and it is the whole message — the
+    // words beside it stay in secondary ink so a column of stubs scans as quiet.
     <div className="text-muted-foreground flex items-center gap-2 px-2 py-0.5 text-xs">
-      <span aria-hidden="true">✓</span>
+      <Check className="text-pen-green size-3 shrink-0" aria-hidden />
       <span>
         {threads.length === 1
           ? statusLabel(first.status)
@@ -88,6 +95,35 @@ function kindBadge(thread: Thread): string | null {
   return null
 }
 
+/**
+ * How this thread is drawn, and the two axes are the point: **the sheet says who
+ * is talking, the outline says how much it wants from you.**
+ *
+ * A person's words sit on the raised card. A machine's — Sonar's, or ADO's own
+ * activity trail — sit on the sunken sheet, because neither is a conversation.
+ * On top of that, an unanswered question gets the brand pen at full weight, a
+ * settled one drops to the quiet line, and the activity trail gets no outline at
+ * all: a vote or a push is a log line, and boxing it in the same ink as a
+ * colleague's question puts the two on a footing they do not share.
+ *
+ * `bg-paper-1` rather than `bg-muted`, which is the one semantic token `.dark`
+ * re-points — `--muted` becomes `--paper-2` on a board, where it reads as lifted
+ * off the page. "Sunken" has to stay sunken in both themes or the axis says
+ * nothing.
+ *
+ * No `shadow-card` on any of them. A graphite lift is right for a sheet lying on
+ * the page and wrong for something wedged into a scrolling column of code: three
+ * of these inside one diff would read as floating over the file rather than as
+ * part of it.
+ */
+function shell(thread: Thread): string {
+  if (thread.kind === 'system') return 'bg-paper-1'
+  if (thread.kind === 'bot') return 'border-border border-[1.5px] bg-paper-1'
+  return thread.resolution === 'open'
+    ? 'border-ink border-[1.5px] bg-card'
+    : 'border-border border-[1.5px] bg-card'
+}
+
 function ThreadBody({ thread, actions }: { thread: Thread; actions?: ThreadActions }) {
   const [replying, setReplying] = useState(false)
   const onReply = actions?.onReply
@@ -96,17 +132,35 @@ function ThreadBody({ thread, actions }: { thread: Thread; actions?: ThreadActio
   const last = comments[comments.length - 1]
 
   return (
-    <div className="border-border/60 bg-card rounded-md border px-2 py-1">
+    // `rounded-lg`, because this is a panel and not a control — bare `rounded` is
+    // the one step of the scale the sketch radii are *not* mapped onto, so what
+    // used to be here was a mechanical 4px corner in the middle of a hand-drawn
+    // page. `px-2 py-1` survives the change: the widest corner of `sketch-md`
+    // eats about two horizontal pixels at the height the status buttons sit at,
+    // which the padding already covers, and this list can run to dozens.
+    <div className={cn('rounded-lg px-2 py-1', shell(thread))}>
       <div className="flex items-baseline gap-2">
         {kindBadge(thread) === null ? null : (
-          <span className="text-muted-foreground bg-muted rounded px-1 text-[0.65rem] uppercase">
+          // The same mark `pr-detail` gives the little words that qualify a row:
+          // `.annotation` inside a pen at construction weight. Deliberately not
+          // `.prof-badge` — a badge is ~22px against this header's 16px line box,
+          // and buying six pixels on every system thread for a word the sheet
+          // under it already implies is the wrong trade in a long list.
+          <span className="annotation rounded-sm border-[1.5px] border-ink-150 px-1">
             {kindBadge(thread)}
           </span>
         )}
         <ThreadStatusControl thread={thread} actions={actions} className="ml-auto" />
       </div>
 
-      <div className="divide-border/40 divide-y">
+      {/* Full strength, not the `/40` that was here: an alpha fraction tuned
+          against a dark app is nothing at all against warm paper. A drawn
+          `.sketch-rule` was the other option and is wrong twice over — it costs
+          6px per boundary, and only 3 of 56 sampled threads had a second comment
+          to divide, so the mark would be paying for a case that is rare and
+          quiet. Two comments in one conversation want a construction line, not a
+          chapter break. */}
+      <div className="divide-border divide-y">
         {comments.map((comment) => (
           <CommentView
             key={comment.id}
