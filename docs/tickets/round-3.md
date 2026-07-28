@@ -398,18 +398,17 @@ constructed, so the async constructor buys nothing and the sync one keeps `token
 being a promise chain around a promise chain. The criterion's intent — `shiki/core`, not the
 full bundle — is met; its literal wording is not, and the wording was left as it stood.
 
-**The code split is in the build config and unverified in this build.**
-`vite.config.ts:43` sets `worker: { format: 'es' }`, without which Vite's default `iife` cannot
-split and the dynamic imports in `bundle.ts` mean nothing. But nothing imported the highlighter
-when the bundle above was measured, so the whole module was tree-shaken out and the 70.2 kB
-figure is what the same code measured elsewhere, not what this build emits. It has to be
-re-measured when [T-020](#t-020--the-virtualized-diff-view) wires the worker into the view. If
-it comes back at 176.6, the `format` setting is not doing what it is there for.
-
-**Watch:** `src/lib/highlight/bundle.ts`'s header comment still describes the default `iife`,
-one-lump build as the current state and says `vite.config.ts` is not that ticket's to edit.
-`vite.config.ts` has since been edited. The comment is stale and will read as authoritative to
-the next person.
+**The code split was unverified when this was written, and has since been measured. It
+works.** The open question was whether `vite.config.ts:43`'s `worker: { format: 'es' }` was
+doing anything, since nothing imported the highlighter when the 70.2 kB figure was taken and
+the whole module had been tree-shaken out. [T-020](#t-020--the-virtualized-diff-view) wired the
+worker into the view, and the build now emits the split: **worker 53.1 kB gz, theme
+`github-dark` 2.5 kB gz, and one chunk per grammar** — typescript 15.9, tsx 16.2, javascript
+16.2, jsx 16.3, csharp 10.5, html 11.5, css 11.6, sql 7.3, shellscript 5.9, markdown 5.5, xml
+5.0, powershell 4.0, yaml 2.2, jsonc 0.8, json 0.8. So **71.5 kB gz to highlight a TypeScript
+file** against the research's predicted 70.2, and 176.6 is not what this build emits. The stale
+header in `src/lib/highlight/bundle.ts` that this ticket flagged has been rewritten around
+these numbers, and now says what the `format` line is load-bearing for.
 
 **Watch:** the pathological case is far worse than the ordinary one. TypeScript's own
 `typescript.js` — 8.7 MB, 201,040 lines — took **53.7 s** to tokenise. The worker handles one
@@ -430,7 +429,7 @@ how often that happens live.
 
 ## T-020 — The virtualized diff view
 
-**Type:** feature · **Status:** open · **Blocked by:** T-016, T-018, T-019
+**Type:** feature · **Status:** done, two criteria unverified · **Blocked by:** T-016, T-018, T-019
 
 **Success:**
 
@@ -447,11 +446,70 @@ how often that happens live.
 - Verified against a live pull request with a real spread of change kinds, including at least
   one delete and one rename, with what was actually looked at written down.
 
+### Resolution
+
+`src/components/diff/` — `diff-view.tsx` is the virtualized row list and the notice logic,
+`file-diff.tsx` one file's panel (header, counts, notices, viewed box), `changed-file.tsx` the
+panel plus the blob fetch behind it, `file-tree.tsx` the sidebar. The page they hang off is
+`src/components/pr-detail.tsx`; the route only grew the repository id it has to pass down.
+
+| Criterion | Evidence |
+|---|---|
+| Virtualized with TanStack Virtual | `diff-view.tsx:250–262` — `useVirtualizer` over the flat row array, `estimateSize: () => ROW_HEIGHT` (20 px, fixed, no `measureElement`), `overscan: 16`, and `getItemKey: (index) => rows[index].key`. Fixed height is what lets it skip measurement entirely: every row is one line of monospace at `leading-5`, so the estimate is not an estimate. |
+| 5,000-line scroll on the real page | **Not done.** See below. |
+| Opening a file does not refetch, closing does not discard | Three things together: `opened` in `changed-file.tsx` is monotonic, so collapsing a panel never unmounts the query; the key is `['file-blobs', repositoryId, path, objectId, originalObjectId]`, which addresses content rather than position, so the same bytes reached from combined and from update 3 are one cache entry; and it carries `staleTime: Infinity, gcTime: Infinity`, so nothing expires it. 12 tests in `changed-file.test.tsx`. |
+| Every non-text outcome renders as itself | `blobNotice` (`diff-view.tsx:48–78`), in precedence order: a failed side first, because it is the only one that means something went wrong; then `renamedOnly`, before the size and binary checks, because a pure rename is absent on both sides and "unchanged" is true of its bytes and false of the file; then binary; then too-large, with the byte count; then both-absent. An add and a delete are deliberately *not* notices — each has one real side and a real diff. `noNewlineNotice` renders `\ No newline at end of file`, and says which side when only one has it. 16 tests in `file-diff.test.tsx`. |
+| Details before the diff | The `details` tab is leftmost and is the default (`pr-detail.tsx`, `DetailTab = 'details' \| 'combined' \| 'update'`). The round-2 page was not moved aside for the diff; the diff was added as two more tabs beside it. |
+| Live verification with a delete and a rename | **Not done.** See below. |
+
+**The changes list is two views, not one, and the arithmetic behind that is worth keeping.**
+Combined is `iterations/{last}/changes`; by-update is the same call with `$compareTo` set to the
+previous iteration. Across 120 live pull requests, iterations run median 2, p90 5, p99 15, max
+39. On the worst of them (!24766, 39 iterations) combined is **294 files** and the per-update
+lists are 64, 34, 12, 3, 4, … — whose **union is 299**, five more than combined, because a file
+touched and then reverted appears in an update and not in the total. That gap is the reason both
+views exist rather than one being derived from the other. `$compareTo=999` on that pull request
+answers **200 with the full combined diff** rather than an error, which is why
+`iterationChangesRequest` validates `compareTo < iterationId` itself: the API fails open, and a
+view built on it would silently show the wrong thing.
+
+**Files are expanded by default, and the blobs are not.** Collapsed-by-default was the original
+build and it was wrong — a diff you have to click 294 times is a file list. But expanding 294
+panels eagerly is 588 blob calls, so `changed-file.tsx` gates the fetch on
+`useNearViewport` (`rootMargin: 800px`, one `IntersectionObserver` that disconnects once it has
+fired) and the panel renders its header, counts and change letter with no blob at all. What is
+open is the panel; what is fetched is what you are within a screen of.
+
+**The change-type grouping in the file list was replaced by path order.** The sidebar tree and
+the panel list now share one order (`treeFiles(nodes)`), because with both on screen a tree row
+and the panel it points at have to be the same row. The change type did not disappear — it is
+the letter on each tree row and, now that panels are open, the add and delete notices in the
+panel itself.
+
+**The diff list waits one tick for the viewed marks, and that is a real bug the tests caught.**
+`useViewedFiles` is a query, so on first paint its set is empty; rendering the list against that
+empty set seeds every `FileDiffPanel`'s `open` from `viewed === false` and the seed is owned
+from then on. A half-read pull request therefore reopened every file it had been told was read.
+`pr-detail.tsx:796` gates the whole list on `viewedPending` instead.
+
+**Not measured:** the 5,000-changed-line scroll. Every timing on the record is Node — T-019's
+tokeniser numbers — and nothing has profiled a frame. What is known is structural rather than
+measured: row count does not reach the DOM, `getItemKey` keeps React from re-keying on scroll,
+and the scroller is capped at `max-h-[70vh]` so the page around it does not reflow. Whether
+that holds at 5,000 rows in a real browser is untested.
+
+**Not measured:** none of this has been opened against a live pull request. The whole diff path —
+iterations, `$compareTo`, blobs, the local diff, the worker — is exercised only by the suite and
+by the read-only probes recorded in T-015 and T-016. The change kinds the criterion asks for are
+covered by fixtures built from probe output (16/16 deletes carry no `objectId`; `item.path` is
+literal `null` on a delete), not by having looked at one. This is the single largest gap in
+round 3 and it is a gap in confidence, not in code.
+
 ---
 
 ## T-021 — Viewed
 
-**Type:** feature · **Status:** open · **Blocked by:** T-016
+**Type:** feature · **Status:** done · **Blocked by:** T-016
 
 Reviewing 300 comments across 40 files means knowing which files you already read.
 
@@ -461,3 +519,109 @@ Reviewing 300 comments across 40 files means knowing which files you already rea
 - The mark is keyed to the **content**, not the path: a new push that changes the file
   un-views it, and a new push that does not, does not.
 - Progress is visible from the file list without opening anything.
+
+### Resolution
+
+`src/server/viewed.ts` (the store), `viewed-fn.ts` (the two server functions),
+`src/lib/viewed-key.ts` (the key format, shared because the file list needs it too),
+`src/lib/viewed.ts` (`useViewedFiles`). The `viewed_file` table is migration 3 in
+`src/server/db.ts`. 27 tests in `viewed.test.ts`.
+
+| Criterion | Evidence |
+|---|---|
+| Persists across a restart | A real SQLite table, `PRIMARY KEY (repository_id, pull_request_id, path, object_id) STRICT`, not a session cache. `viewed.test.ts:53` — *"survives a restart, which is the half a session cache could not do"* — closes and reopens the database and reads the mark back. |
+| Keyed to content, not path | `viewedKey(objectId, path)` over `contentId(file)`, which is `objectId ?? originalObjectId`. Nothing compares timestamps, iteration numbers or commit ids, and nothing invalidates — a sha cannot come to mean something else, so the requirement falls out instead of being enforced. Both halves are tested: a push that rewrites the file un-views it (`:87`), a push that touches something else leaves it marked (`:100`). |
+| Progress visible from the file list | `{read} of {changes.files.length} read` above the list (`pr-detail.tsx:583–591`), and per file three ways: the `Viewed` checkbox in the panel header, the muted filename, and `line-through` on the tree row (`file-tree.tsx:146`). One `listViewed` query per page, not one per file. |
+
+**The fallback to `originalObjectId` is not a nicety — without it a delete cannot be marked at
+all.** 16 of 16 deletes measured in T-015 carry no `objectId`, and a STRICT table makes every
+`PRIMARY KEY` column implicitly NOT NULL, so there is no row to write under a null sha. A delete
+is therefore marked against the content that is going away, which is also the content you read.
+`fileViewedKey` returns `null` for the one entry with a blob on neither side, and `isViewed`
+treats null as unviewed rather than throwing.
+
+**Un-viewing deletes the row rather than flipping a column**, so "not viewed" has exactly one
+representation and `listViewed` never filters. Rows written under a sha the current iteration no
+longer contains are still returned: they match nothing, cost a set entry, and are the record that
+the file *was* read before it changed. Pruning them would need to know which iteration is
+current, which is the one thing this store deliberately does not track — and it is why re-marking
+after a push leaves both rows, so going back to update 2 un-hides nothing.
+
+**A pure rename un-views the file, on purpose** (`viewed.test.ts:217`). The path is in the key,
+so moving a file you have read shows it as unread even though not a byte moved. The alternative —
+keying on the sha alone — would say a file you read at `src/a.ts` is read at `src/b.ts`, and in a
+refactor that moves thirty files that is the more expensive wrong answer. The same bound keeps
+two byte-identical files apart (`:122`), which the sha alone would merge.
+
+**Watch:** a failed mark leaves the box ticked. `useViewedFiles` is optimistic through
+`mutation.variables` and writes through with `client.setQueryData` on success; on error it does
+nothing at all, deliberately, because there is no message surface on this page and a checkbox
+that silently reverts is not obviously better than one that silently lies. Both are wrong. The
+honest fix is a place to say "could not save that", which the page does not have yet.
+
+---
+
+## Asked for while the round was open
+
+Two changes that came from using the thing rather than from a ticket. Recorded here because they
+touch the same surfaces and because both were decided on a measurement.
+
+### The query client's defaults are an Azure DevOps call budget
+
+`src/integrations/tanstack-query/root-provider.tsx`. Every query in this app is a server function
+that spends real calls — the pull request page is five of them — so a default is measured in calls,
+not in milliseconds. Two were wrong out of the box:
+
+- **`gcTime` 5 minutes → 60 minutes.** The immutable queries already said `staleTime: Infinity`,
+  which stops a refetch but does not stop the cache being emptied underneath them. Five minutes
+  meant inbox → another pull request → back re-bought answers that were still correct, because an
+  iteration's file list is keyed by a push and a blob by a content sha and neither can change.
+- **`retry` 3 → 1.** Three retries with backoff turns one refused call into four. What this app
+  actually sees is 401 on a rotated PAT and 404 on a repository the token cannot read, and neither
+  improves on the second ask. One is left for a dropped connection.
+
+`['pr-changes', …]` also gained `gcTime: Infinity` alongside its existing `staleTime`, for the
+gesture that prompted all of this: reading update 3, flipping to combined to check something,
+flipping back.
+
+Left alone deliberately. **`refetchOnWindowFocus` stays on** — `useCadence` stops polling entirely
+in a hidden tab, which is only safe because coming back to it catches up. **`staleTime` stays 0**
+globally, because every query that touches ADO sets its own, and the two polling surfaces set
+theirs to their own cadence so a remount cannot stack a fetch on top of a poll.
+
+**Surfaced, not done:** the 30-second poll of `['pull-request', …]` re-fetches the combined file
+list even when nothing was pushed. The honest fix is a commit-keyed server cache like the inbox's,
+and `pr_cache` cannot be it as it stands — one row per `pr_id`, shared with the hydration payload,
+and no shape validation on read, so a second payload type would clobber and mis-parse. That needs
+a schema migration, which is a different change from tuning a cache.
+
+### Descriptions render as markdown
+
+`src/components/markdown.tsx`, `react-markdown` 10 with `remark-gfm` and `remark-breaks`. The
+description was arriving as its source — `## Summary`, `-` bullets and backticked spans as literal
+characters in a `whitespace-pre-wrap` paragraph — which is the one section of the page the round-2
+work left unreadable.
+
+**`remark-breaks` is the load-bearing plugin, not GFM.** CommonMark folds a single newline into a
+space, which is right for prose and wrong for what people type in that box: a stack of one-line
+notes and an `AB#1234` footer, none of it indented, none of it a bullet. Without it,
+`Fixes the sink.\nRef: AB#1234` becomes one line — a visible regression against the
+`whitespace-pre-wrap` it replaces. With it, every line stays exactly where it was, so the change
+is purely additive. This is the rule GitHub applies to comment bodies for the same reason.
+
+**No `rehype-raw`, so a description can never become markup.** react-markdown escapes `html`
+nodes when it is absent — it does not drop them, which was worth learning: a description
+containing `<script>alert(1)</script>` shows those characters and no element of that name is ever
+created. Escaping is also the better of the two, since a description trying to say something in
+HTML still says it. `defaultUrlTransform` empties a `javascript:` href. Both are tested
+(`markdown.test.tsx`), and an anchor with an empty href has no `link` role, which is why that test
+goes through the DOM.
+
+The heading scale is flattened — `h1`/`h2` render as `h3` — because a description sits inside a
+section that already has a heading, and `## Summary` in an ADO description means "paragraph
+break", not "start a new document". GFM task lists render `disabled`: ticking one here would not
+reach Azure DevOps, and a checkbox that forgets is worse than one that never offered.
+
+**Bundle cost, measured by building both ways: +44.9 kB gz on the pull request route chunk (20.2 →
+65.1) and +0.0 on the eager entry, which is 92.1 kB gz either way.** The route is lazy, so nothing
+that is not a pull request page pays for it.

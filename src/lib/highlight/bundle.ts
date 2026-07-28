@@ -11,15 +11,14 @@
 // snippet uses the latter, but `@shikijs/langs` is a transitive dependency and
 // pnpm does not hoist it, so only Shiki's own re-exports resolve from here.
 //
-// **On demand is one config line away, and this file cannot set it.** Vite's
-// default `worker.format` is `iife`, which cannot code-split, so the production
-// build inlines all fifteen grammars into a single 176.6 kB gzip worker chunk —
-// still lazy, still off the main thread, but fetched whole on the first file.
-// Adding `worker: { format: 'es' }` to `vite.config.ts` splits the same build
-// into worker 52.4 kB gz + theme 2.5 kB gz + one chunk per grammar (TypeScript
-// 15.3 kB gz), i.e. 70.2 kB gz to highlight a `.ts` file, which is the research
-// number exactly. Both figures measured; `vite.config.ts` is not this ticket's
-// to edit.
+// **On demand only works because `vite.config.ts:43` sets `worker: { format:
+// 'es' }`.** Vite's default is `iife`, which cannot code-split, and under it the
+// dynamic imports below mean nothing: the build inlines all fifteen grammars
+// into one 176.6 kB gzip worker chunk, still lazy and still off the main thread
+// but fetched whole on the first file. Measured on the current build, with the
+// setting in place and the worker actually reached from the page: worker 53.1 kB
+// gz + theme 2.5 + typescript 15.9, one chunk per grammar, i.e. **71.5 kB gz to
+// highlight a `.ts` file**. Take that setting out and this list becomes a lie.
 
 /**
  * One theme, not two. The app renders `<html className="dark">`

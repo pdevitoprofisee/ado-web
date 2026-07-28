@@ -18,7 +18,7 @@ concurrent session skips it.
 |---|---|---|
 | **1** | Live API inventory · scaffold · hardening · secrets · ADO client · SQLite · inbox spine · command registry | **complete** — all ten tickets resolved |
 | **2** | PR detail shell: header, conflicts, policy checklist, votes, commits, file list | **complete** — all four tickets resolved, [round 2](./round-2.md) |
-| **3** | The diff: blob fetch, local diff, virtualized rows, Shiki workers, viewed flags, side-by-side | **in progress** — inventory resolved, [round 3](./round-3.md) |
+| **3** | The diff: blob fetch, local diff, virtualized rows, Shiki workers, viewed flags, side-by-side | **complete** — all seven tickets closed, [round 3](./round-3.md); nothing yet opened against a live PR |
 | 4 | Comments: inline threads, collapse-when-done, composer, mentions, likes, status setters | after 3 |
 | 5 | Checks: statuses, build timeline, failed step logs, failed tests, re-run actions | after 2 |
 | 6 | Sonar: findings from the Sonar API, grouped by rule, gate panel, rule detail | after 5 |
