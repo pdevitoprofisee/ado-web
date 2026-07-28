@@ -8,6 +8,7 @@ import { buildRows, expandGap, setHideDone, setLayout, setThreads } from '@/lib/
 import { fileAnchor } from '@/lib/file-anchor'
 import { sharedHighlighter } from '@/lib/highlight/shared'
 import { useNearViewport } from '@/lib/near-viewport'
+import { useTheme } from '@/lib/theme'
 import { fileBlobsQuery } from '@/server/blob-fn'
 
 import type { ThreadActions } from '@/components/comments/thread-actions'
@@ -140,6 +141,13 @@ export function ChangedFileDiff({
     after: HighlightedLines | null
   }>({ before: null, after: null })
 
+  // Re-runs on a theme change, which is the point: every colour in `tokens` was
+  // resolved out of one theme, so the sheet flipping under it makes the whole set
+  // wrong. Clearing to `null` first drops the file back to uncoloured text for
+  // the moment the worker takes to answer — the same moment every file already
+  // spends there on open, and the worker has the grammar loaded by now.
+  const theme = useTheme()
+
   useEffect(() => {
     if (blobs === null) return
 
@@ -150,8 +158,8 @@ export function ChangedFileDiff({
     setTokens({ before: null, after: null })
 
     void Promise.all([
-      highlighter.highlight(file.path, linesOf(blobs, 'before')),
-      highlighter.highlight(file.path, linesOf(blobs, 'after')),
+      highlighter.highlight(file.path, linesOf(blobs, 'before'), theme),
+      highlighter.highlight(file.path, linesOf(blobs, 'after'), theme),
     ]).then(([before, after]) => {
       // The file may have been closed, or another may have arrived first.
       // Dropping late tokens matters beyond tidiness: `LineText` would discard
@@ -163,7 +171,7 @@ export function ChangedFileDiff({
     return () => {
       live = false
     }
-  }, [blobs, file.path])
+  }, [blobs, file.path, theme])
 
   const failure =
     query.error !== null

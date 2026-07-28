@@ -39,7 +39,14 @@ function Onboarding() {
         {/* Decorative: the heading is this screen's accessible name, and a mark
             announced as "Prof" would only be one more thing to skip past.
             Nudged down to sit on the heading's cap height, not its line box. */}
-        <img src={logo} alt="" className="mt-1 size-9 shrink-0" />
+        {/* The mark is a raster, so it cannot follow the tokens: its navy dots
+            measure 1.84:1 on the dark board and three quarters of it disappears.
+            `brightness-0` then `invert` redraws the whole mark in white — chalk,
+            which is what dark mode is here. It costs the teal dot its accent
+            colour; a light plate behind the mark would keep it, but no `--paper-*`
+            token stays light under `.dark` and the component layer holds no
+            literal hex. */}
+        <img src={logo} alt="" className="mt-1 size-9 shrink-0 dark:brightness-0 dark:invert" />
         <div className="flex flex-col">
           <h1 className="text-2xl font-semibold tracking-tight">
             {/* `inline-block` so the drawn underline measures the word rather

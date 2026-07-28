@@ -2,8 +2,9 @@ import { createHighlighterCoreSync } from 'shiki/core'
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
 
 import type { HighlightedLines, HighlightToken } from '@/lib/diff-contract'
+import type { Theme } from '@/lib/theme'
 import { PLAIN_COLOR, plainLines } from './plain'
-import { loadGrammar, loadTheme, languageFor, THEME, type BundledLanguage } from './bundle'
+import { loadGrammar, loadTheme, languageFor, THEME_NAMES, type BundledLanguage } from './bundle'
 
 // The tokenising core. A plain module on purpose: `worker.ts` is a dozen lines
 // of message plumbing around this, so everything worth testing is testable
@@ -35,7 +36,7 @@ const MAX_CACHED_LINES = 20_000
 const MAX_LINE_LENGTH = 4_000
 
 export interface Tokeniser {
-  tokenise(path: string, lines: readonly string[]): Promise<HighlightedLines>
+  tokenise(path: string, lines: readonly string[], theme: Theme): Promise<HighlightedLines>
   /** Lines currently held. The bound is on this number. */
   readonly cachedLines: number
   dispose(): void
@@ -50,14 +51,18 @@ export function createTokeniser(maxCachedLines: number = MAX_CACHED_LINES): Toke
   // instead of re-fetching per file.
   let core: Promise<Core> | null = null
   const grammars = new Map<BundledLanguage, Promise<void>>()
+  const themes = new Map<Theme, Promise<void>>()
 
   const cache = new Map<string, HighlightedLines>()
   let cachedLines = 0
 
+  // Built with no themes and no grammars, and given both the same way: one core
+  // for the tab, so switching sheets does not stand up a second regex engine
+  // beside the first.
   const ensureCore = () =>
-    (core ??= loadTheme().then((theme) =>
+    (core ??= Promise.resolve(
       createHighlighterCoreSync({
-        themes: [theme],
+        themes: [],
         langs: [],
         engine: createJavaScriptRegexEngine(),
       }),
@@ -68,6 +73,15 @@ export function createTokeniser(maxCachedLines: number = MAX_CACHED_LINES): Toke
     if (!pending) {
       pending = loadGrammar(lang).then((grammar) => loaded.loadLanguageSync(grammar))
       grammars.set(lang, pending)
+    }
+    return pending
+  }
+
+  const ensureTheme = (loaded: Core, theme: Theme) => {
+    let pending = themes.get(theme)
+    if (!pending) {
+      pending = loadTheme(theme).then((registration) => loaded.loadThemeSync(registration))
+      themes.set(theme, pending)
     }
     return pending
   }
@@ -95,12 +109,15 @@ export function createTokeniser(maxCachedLines: number = MAX_CACHED_LINES): Toke
       return cachedLines
     },
 
-    async tokenise(path, lines) {
+    async tokenise(path, lines, theme) {
       const lang = languageFor(path)
-      if (!lang) return plainLines(lines)
+      if (!lang) return plainLines(lines, theme)
 
       const text = lines.join('\n')
-      const key = `${lang}:${lines.length}:${text.length}:${hash(text)}`
+      // The theme leads the key. Every colour in the value came out of it, so a
+      // hit under the other sheet would paint chalk onto paper — and a reviewer
+      // who switches mid-pass is looking at files that are all already cached.
+      const key = `${theme}:${lang}:${lines.length}:${text.length}:${hash(text)}`
 
       const hit = cache.get(key)
       if (hit) {
@@ -112,22 +129,22 @@ export function createTokeniser(maxCachedLines: number = MAX_CACHED_LINES): Toke
       let tokens
       try {
         const loaded = await ensureCore()
-        await ensureGrammar(loaded, lang)
+        await Promise.all([ensureGrammar(loaded, lang), ensureTheme(loaded, theme)])
         tokens = loaded.codeToTokensBase(text, {
           lang,
-          theme: THEME,
+          theme: THEME_NAMES[theme],
           tokenizeMaxLineLength: MAX_LINE_LENGTH,
         })
       } catch {
-        return plainLines(lines)
+        return plainLines(lines, theme)
       }
 
       // Shiki's outer dimension already is the lines, so there is nothing to
       // re-split — but a mismatch would silently paint every row below it with
       // the wrong line's colours, which is worse than no colour at all.
-      if (tokens.length !== lines.length) return plainLines(lines)
+      if (tokens.length !== lines.length) return plainLines(lines, theme)
 
-      const result = tokens.map((line) => line.map(narrow))
+      const result = tokens.map((line) => line.map((token) => narrow(token, theme)))
       store(key, result)
       return result
     },
@@ -136,6 +153,7 @@ export function createTokeniser(maxCachedLines: number = MAX_CACHED_LINES): Toke
       cache.clear()
       cachedLines = 0
       grammars.clear()
+      themes.clear()
       // Shiki's docs: a highlighter "can't be GC-ed automatically".
       void core?.then((loaded) => loaded.dispose()).catch(() => {})
       core = null
@@ -148,8 +166,11 @@ export function createTokeniser(maxCachedLines: number = MAX_CACHED_LINES): Toke
  * `None` (0) or `NotSet` (-1), which is nearly every token: each one crosses a
  * structured clone out of the worker, so an omitted field is real bandwidth.
  */
-function narrow(token: { content: string; color?: string; fontStyle?: number }): HighlightToken {
-  const color = token.color ?? PLAIN_COLOR
+function narrow(
+  token: { content: string; color?: string; fontStyle?: number },
+  theme: Theme,
+): HighlightToken {
+  const color = token.color ?? PLAIN_COLOR[theme]
   return token.fontStyle && token.fontStyle > 0
     ? { text: token.content, color, fontStyle: token.fontStyle }
     : { text: token.content, color }

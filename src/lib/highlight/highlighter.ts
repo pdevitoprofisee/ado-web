@@ -1,4 +1,5 @@
 import type { Highlighter, HighlightedLines } from '@/lib/diff-contract'
+import type { Theme } from '@/lib/theme'
 import { plainLines } from './plain'
 import type { HighlightReply, HighlightRequest } from './worker'
 
@@ -13,14 +14,19 @@ export function createHighlighter(): Highlighter {
 
   // The lines are kept beside the resolver so that a dying worker can still
   // settle everything it was holding — as plain text, never as a rejection. An
-  // unawaited `highlight()` must not become an unhandled rejection.
-  const pending = new Map<number, { resolve: (tokens: HighlightedLines) => void; lines: readonly string[] }>()
+  // unawaited `highlight()` must not become an unhandled rejection. The theme
+  // rides along for the same reason: plain text still has to be the right
+  // colour for the sheet the request was made on.
+  const pending = new Map<
+    number,
+    { resolve: (tokens: HighlightedLines) => void; lines: readonly string[]; theme: Theme }
+  >()
 
   const bury = () => {
     dead = true
     worker?.terminate()
     worker = null
-    for (const { resolve, lines } of pending.values()) resolve(plainLines(lines))
+    for (const { resolve, lines, theme } of pending.values()) resolve(plainLines(lines, theme))
     pending.clear()
   }
 
@@ -45,13 +51,15 @@ export function createHighlighter(): Highlighter {
   }
 
   return {
-    highlight(path, lines) {
+    highlight(path, lines, theme) {
       worker ??= start()
-      if (!worker) return Promise.resolve(plainLines(lines))
+      if (!worker) return Promise.resolve(plainLines(lines, theme))
 
       const id = nextId++
-      const posted = new Promise<HighlightedLines>((resolve) => pending.set(id, { resolve, lines }))
-      worker.postMessage({ id, path, lines } satisfies HighlightRequest)
+      const posted = new Promise<HighlightedLines>((resolve) =>
+        pending.set(id, { resolve, lines, theme }),
+      )
+      worker.postMessage({ id, path, lines, theme } satisfies HighlightRequest)
       return posted
     },
 

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { createHighlighterCoreSync } from 'shiki/core'
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
 
-import { languageFor, loadTheme, THEME } from './bundle'
+import { languageFor, loadTheme, THEME_NAMES } from './bundle'
 import { createHighlighter } from './highlighter'
 import { PLAIN_COLOR } from './plain'
 import { createTokeniser } from './tokenise'
@@ -36,14 +36,17 @@ describe('languageFor', () => {
   })
 })
 
-describe('the bundled theme', () => {
-  it('resolves to the foreground plain text is hard-coded to', async () => {
+describe('the bundled themes', () => {
+  // Both, because `plain.ts` hard-codes both foregrounds so that a file with no
+  // grammar costs no theme fetch. A repointed theme has to fail here rather than
+  // by rendering one file's plain lines in the other sheet's ink.
+  it.each(['light', 'dark'] as const)('%s resolves to the foreground plain text is hard-coded to', async (theme) => {
     const core = createHighlighterCoreSync({
-      themes: [await loadTheme()],
+      themes: [await loadTheme(theme)],
       langs: [],
       engine: createJavaScriptRegexEngine(),
     })
-    expect(core.getTheme(THEME).fg).toBe(PLAIN_COLOR)
+    expect(core.getTheme(THEME_NAMES[theme]).fg).toBe(PLAIN_COLOR[theme])
     core.dispose()
   })
 })
@@ -53,20 +56,20 @@ describe('tokenise', () => {
     const lines = read('../cadence.ts')
     expect(lines.length).toBeGreaterThan(50)
 
-    const tokens = await createTokeniser().tokenise('src/lib/cadence.ts', lines)
+    const tokens = await createTokeniser().tokenise('src/lib/cadence.ts', lines, 'light')
 
     expect(tokens.length).toBe(lines.length)
     expect(tokens.map((line) => line.map((token) => token.text).join(''))).toEqual(lines)
     // A grammar that loaded but matched nothing would give one colour for the
     // whole file, which is indistinguishable from plain text at a glance.
     expect(colors(tokens).size).toBeGreaterThan(3)
-    expect(colors(tokens).has(PLAIN_COLOR)).toBe(false)
+    expect(colors(tokens).has(PLAIN_COLOR.light)).toBe(false)
   })
 
   it('highlights a real JSON file', async () => {
     const lines = read('../../../package.json')
 
-    const tokens = await createTokeniser().tokenise('package.json', lines)
+    const tokens = await createTokeniser().tokenise('package.json', lines, 'light')
 
     expect(tokens.length).toBe(lines.length)
     expect(tokens.map((line) => line.map((token) => token.text).join(''))).toEqual(lines)
@@ -76,11 +79,11 @@ describe('tokenise', () => {
   it('renders an unbundled language as plain text rather than rejecting', async () => {
     const lines = ['(defun square (x) (* x x))', '']
 
-    const tokens = await createTokeniser().tokenise('src/util.lisp', lines)
+    const tokens = await createTokeniser().tokenise('src/util.lisp', lines, 'light')
 
     expect(tokens).toEqual([
-      [{ text: '(defun square (x) (* x x))', color: PLAIN_COLOR }],
-      [{ text: '', color: PLAIN_COLOR }],
+      [{ text: '(defun square (x) (* x x))', color: PLAIN_COLOR.light }],
+      [{ text: '', color: PLAIN_COLOR.light }],
     ])
   })
 
@@ -89,26 +92,38 @@ describe('tokenise', () => {
     // it. Line counts still match, and a CR renders as nothing anyway.
     const lines = ['const a = 1\r', 'const b = 2\r', '']
 
-    const tokens = await createTokeniser().tokenise('a.ts', lines)
+    const tokens = await createTokeniser().tokenise('a.ts', lines, 'light')
 
     expect(tokens.length).toBe(3)
     expect(tokens[0].map((token) => token.text).join('')).toBe('const a = 1')
   })
 
   it('handles an empty file', async () => {
-    expect(await createTokeniser().tokenise('a.ts', [])).toEqual([])
-    expect(await createTokeniser().tokenise('a.ts', [''])).toEqual([[]])
+    expect(await createTokeniser().tokenise('a.ts', [], 'light')).toEqual([])
+    expect(await createTokeniser().tokenise('a.ts', [''], 'light')).toEqual([[]])
   })
 
   it('returns the cached array on a second call and counts its lines', async () => {
     const tokeniser = createTokeniser()
     const lines = read('../cadence.ts')
 
-    const first = await tokeniser.tokenise('src/lib/cadence.ts', lines)
-    const second = await tokeniser.tokenise('somewhere/else.ts', lines)
+    const first = await tokeniser.tokenise('src/lib/cadence.ts', lines, 'light')
+    const second = await tokeniser.tokenise('somewhere/else.ts', lines, 'light')
 
     expect(second).toBe(first)
     expect(tokeniser.cachedLines).toBe(lines.length)
+  })
+
+  it('caches the two sheets apart, because the colours are the theme', async () => {
+    const tokeniser = createTokeniser()
+    const lines = ['const a = 1']
+
+    const paper = await tokeniser.tokenise('a.ts', lines, 'light')
+    const board = await tokeniser.tokenise('a.ts', lines, 'dark')
+
+    expect(board).not.toBe(paper)
+    expect(colors(board)).not.toEqual(colors(paper))
+    expect(tokeniser.cachedLines).toBe(2)
   })
 
   it('evicts least-recently-used once the line bound is passed', async () => {
@@ -117,15 +132,15 @@ describe('tokenise', () => {
     const b = ['const d = 4', 'const e = 5', 'const f = 6']
     const c = ['const g = 7']
 
-    const firstA = await tokeniser.tokenise('a.ts', a)
-    const firstB = await tokeniser.tokenise('b.ts', b)
+    const firstA = await tokeniser.tokenise('a.ts', a, 'light')
+    const firstB = await tokeniser.tokenise('b.ts', b, 'light')
     // Touching `a` makes `b` the oldest, so `b` is what the next store drops.
-    expect(await tokeniser.tokenise('a.ts', a)).toBe(firstA)
-    await tokeniser.tokenise('c.ts', c)
+    expect(await tokeniser.tokenise('a.ts', a, 'light')).toBe(firstA)
+    await tokeniser.tokenise('c.ts', c, 'light')
 
     expect(tokeniser.cachedLines).toBe(4)
-    expect(await tokeniser.tokenise('a.ts', a)).toBe(firstA)
-    expect(await tokeniser.tokenise('b.ts', b)).not.toBe(firstB)
+    expect(await tokeniser.tokenise('a.ts', a, 'light')).toBe(firstA)
+    expect(await tokeniser.tokenise('b.ts', b, 'light')).not.toBe(firstB)
   })
 
   // jsdom has no `Worker`, which makes this environment the prerender case too:
@@ -133,8 +148,8 @@ describe('tokenise', () => {
   it('falls back to plain text where there is no worker to send to', async () => {
     const highlighter = createHighlighter()
 
-    await expect(highlighter.highlight('a.ts', ['const a = 1'])).resolves.toEqual([
-      [{ text: 'const a = 1', color: PLAIN_COLOR }],
+    await expect(highlighter.highlight('a.ts', ['const a = 1'], 'light')).resolves.toEqual([
+      [{ text: 'const a = 1', color: PLAIN_COLOR.light }],
     ])
     highlighter.dispose()
   })
@@ -142,9 +157,9 @@ describe('tokenise', () => {
   it('does not cache a file larger than the whole cache', async () => {
     const tokeniser = createTokeniser(2)
 
-    const first = await tokeniser.tokenise('a.ts', ['const a = 1', 'const b = 2', 'const c = 3'])
+    const first = await tokeniser.tokenise('a.ts', ['const a = 1', 'const b = 2', 'const c = 3'], 'light')
 
     expect(tokeniser.cachedLines).toBe(0)
-    expect(await tokeniser.tokenise('a.ts', ['const a = 1', 'const b = 2', 'const c = 3'])).not.toBe(first)
+    expect(await tokeniser.tokenise('a.ts', ['const a = 1', 'const b = 2', 'const c = 3'], 'light')).not.toBe(first)
   })
 })

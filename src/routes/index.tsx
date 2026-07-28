@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { inboxQuery } from '@/server/inbox-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
+import { toggleTheme, useTheme } from '@/lib/theme'
 import { PullRequestSection, useInboxSelection } from '@/components/pr-list'
 import { useHydration } from '@/components/use-hydration'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -11,6 +12,36 @@ import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 
 export const Route = createFileRoute('/')({ component: Home })
+
+/**
+ * The visible half of dark mode, in the one line on the page that already
+ * collects app-level affordances.
+ *
+ * Here and not in `pr-detail`'s header, which is about the pull request: its
+ * toggles are statements about this reading pass, and which sheet the app is
+ * drawn on outlives every pull request. The `t` key is bound in the shell, so
+ * the diff is not stranded without it.
+ *
+ * Labelled with where it goes rather than where it is — the sheet you are
+ * looking at already tells you that — and drawn as the `connections` link
+ * beside it, because the two are the same kind of thing: quiet, textual and one
+ * click from the rest of the page.
+ */
+function ThemeToggle() {
+  const theme = useTheme()
+  const next = theme === 'dark' ? 'light' : 'dark'
+
+  return (
+    <button
+      type="button"
+      onClick={toggleTheme}
+      aria-label={`Switch to ${next} mode`}
+      className="text-ink hover:text-teal-600 underline underline-offset-4"
+    >
+      {next} mode
+    </button>
+  )
+}
 
 function Home() {
   const refetchInterval = useCadence(CADENCE.inbox)
@@ -64,6 +95,8 @@ function Home() {
           >
             connections
           </Link>
+          {' · '}
+          <ThemeToggle />
           {' · '}
           <Kbd>?</Kbd> for shortcuts
         </p>

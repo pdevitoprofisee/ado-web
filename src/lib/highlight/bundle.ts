@@ -19,20 +19,44 @@
 // setting in place and the worker actually reached from the page: worker 53.1 kB
 // gz + theme 2.5 + typescript 15.9, one chunk per grammar, i.e. **71.5 kB gz to
 // highlight a `.ts` file**. Take that setting out and this list becomes a lie.
+//
+// The two themes below are on the same footing: the sheet you are not reading on
+// costs nothing until you switch to it.
+
+import type { Theme } from '@/lib/theme'
 
 /**
- * One theme, not two. The app renders light (`src/routes/__root.tsx`), and
- * `HighlightToken.color` in the contract is a single resolved hex — dual-theme
- * output would need CSS variables the contract has no room for.
+ * One theme per sheet, fetched the same way a grammar is.
  *
  * `vitesse-light` over the more familiar `github-light` because Prof's paper is
  * warm (`--paper-0: #FAF6EF`): vitesse's palette is warm and muted, and its
  * `#393a34` foreground reads as ink on that stock where github-light's cool
  * `#24292e` and its blue/purple keywords read as a screen pasted onto paper.
+ * `vitesse-dark` is that same palette drawn for a board, which is what the pair
+ * is for — the diff should look like the same hand wrote it in chalk, not like a
+ * second highlighter was bolted on for the dark theme.
+ *
+ * The theme is a **parameter**, not two colours per token. `HighlightToken.color`
+ * stays a single resolved hex: emitting both would double what every token costs
+ * to clone out of the worker, on every file, to serve a switch that is pressed
+ * once a session. The price of the other choice is a re-tokenise on toggle, and
+ * that path already exists and is already gentle — the diff renders its text
+ * first and colours it when it arrives.
  */
-export const THEME = 'vitesse-light'
+export const THEME_NAMES: Record<Theme, string> = {
+  light: 'vitesse-light',
+  dark: 'vitesse-dark',
+}
 
-export const loadTheme = () => import('shiki/themes/vitesse-light.mjs').then((m) => m.default)
+// Unannotated for the reason `GRAMMARS` is: a `Record` of thunks would widen
+// the resolved registration to whatever the annotation says, and Shiki's core
+// wants the real shape. `satisfies` checks the keys and keeps the type.
+const THEMES = {
+  light: () => import('shiki/themes/vitesse-light.mjs'),
+  dark: () => import('shiki/themes/vitesse-dark.mjs'),
+} satisfies Record<Theme, () => Promise<unknown>>
+
+export const loadTheme = (theme: Theme) => THEMES[theme]().then((m) => m.default)
 
 const GRAMMARS = {
   typescript: () => import('shiki/langs/typescript.mjs'),

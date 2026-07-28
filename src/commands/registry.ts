@@ -11,7 +11,7 @@
 // entry each, added alongside the surface that implements them, because a key
 // whose meaning doesn't exist yet has no wording to print.
 
-export type CommandGroup = 'Navigation' | 'Help'
+export type CommandGroup = 'Navigation' | 'View' | 'Help'
 
 export interface Command {
   readonly id: string
@@ -34,6 +34,10 @@ export const COMMANDS = [
     label: 'Back',
     group: 'Navigation',
   },
+  // A shell command, so it works on the diff as well as the inbox — the visible
+  // control lives in the inbox header, and the diff is where you are when the
+  // room gets dark.
+  { id: 'view.theme', key: 't', label: 'Light or dark', group: 'View' },
   { id: 'help.shortcuts', key: '?', label: 'Keyboard shortcuts', group: 'Help' },
 ] as const satisfies ReadonlyArray<Command>
 

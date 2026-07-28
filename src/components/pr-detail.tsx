@@ -608,11 +608,11 @@ function TabStrip({
   onTabChange: (tab: DetailTab) => void
 }) {
   return (
-    // `.prof-tabs` brings the flex row and the hairline the strip sits on; the
-    // gap widens from 1 to 4 because the tabs no longer have 8px of padding
-    // either side to separate them. The drawn ink under the active tab is
-    // exactly as wide as its label now, which is the point of drawing it.
-    <div role="tablist" aria-label="Pull request" className="prof-tabs w-full items-baseline gap-4">
+    // `.prof-tabs` brings the flex row, the 24px gap and the hairline the strip
+    // sits on. The gap is the class's and not a `gap-*` here: Prof separates two
+    // tabs by `--space-5` and nothing else, because the ink under the active one
+    // is exactly as wide as its label, which is the point of drawing it.
+    <div role="tablist" aria-label="Pull request" className="prof-tabs w-full items-baseline">
       {tabs.map(({ id, label, count }) => (
         <button
           key={id}
@@ -646,13 +646,17 @@ function TabStrip({
           // the 2px bottom border it was cornering: Prof marks the active tab
           // with a stroke drawn underneath it instead, so the ink below is the
           // mark and there is nothing left to round. `.prof-tab` owns the
-          // padding, the type and the hover colour.
-          className={cn('prof-tab flex items-baseline gap-1.5', tab === id && 'prof-tab--active')}
+          // padding, the type and the hover colour, and no utility here adds to
+          // them — a `flex` on a tab makes it a block-level box, which is a
+          // vertical stack of labels the moment anything costs the strip its own
+          // `display`.
+          className={cn('prof-tab', tab === id && 'prof-tab--active')}
         >
           {label}
-          {count === undefined ? null : (
-            <span className="text-muted-foreground font-mono text-2xs tabular-nums">{count}</span>
-          )}
+          {/* `.prof-tab__count` rather than the mono utilities it replaces: the
+              count is part of the component in Prof, down to the 6px it sits
+              off the label. */}
+          {count === undefined ? null : <span className="prof-tab__count">{count}</span>}
           {/* Inside the button so it tracks the label's width, and `aria-hidden`
               because the tab already says which one it is through
               `aria-selected`. */}

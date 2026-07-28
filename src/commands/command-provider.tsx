@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { COMMANDS } from './registry'
 import { ShortcutSheet } from './shortcut-sheet'
 import { isTextEntry } from './text-entry'
+import { toggleTheme } from '@/lib/theme'
 
 import type { RefObject } from 'react'
 import type { CommandId } from './registry'
@@ -34,13 +35,16 @@ export function useCommand(id: CommandId, handler: () => void): void {
   useEffect(() => bind(id, ref), [bind, id])
 }
 
-/** The two shortcuts that belong to the shell rather than to any surface. */
+/** The shortcuts that belong to the shell rather than to any surface. */
 function ShellCommands({ onShowShortcuts }: { onShowShortcuts: () => void }) {
   useCommand('help.shortcuts', onShowShortcuts)
   // `window.history`, not `router.history`: TanStack Router drives the browser
   // history and listens to popstate, so this lands in the router either way,
   // and the command layer stays usable (and testable) without a router.
   useCommand('nav.back', () => window.history.back())
+  // `toggleTheme` and not `useTheme()`: this component renders in the prerendered
+  // shell, and the store is only read when the key is actually pressed.
+  useCommand('view.theme', toggleTheme)
   return null
 }
 

@@ -116,6 +116,13 @@
    1. Prof primitives — light (pen on warm paper)
    ============================================================ */
 :root {
+  /* The one thing the tokens cannot reach: scrollbars, the caret, a
+     `<select>`'s popup and the rest of the UA's own furniture. Without it a
+     dark board scrolls on a light scrollbar. Declared here and in `.dark`
+     rather than as `light dark` on both, because the class is authoritative —
+     a user reading in dark on a light desktop chose the board. */
+  color-scheme: light;
+
   /* Paper: four sheets, warm, brightening as a surface rises. */
   --paper-0: #faf6ef; /* app background */
   --paper-1: #f3ede2; /* sunken wells, table stripes */
@@ -316,6 +323,8 @@
    everything else above still holds.
    ============================================================ */
 .dark {
+  color-scheme: dark;
+
   --paper-0: #0d2230;
   --paper-1: #091a25;
   --paper-2: #12303f;
@@ -672,9 +681,15 @@
      `position: relative` and 10px of bottom padding. */
   .prof-tabs {
     display: flex;
+    /* Prof's `--space-5`. The gap belongs to the strip and not to the call
+       site: a tab is marked by ink exactly as wide as its label, so what
+       separates two labels is the only thing keeping two marks apart. */
+    gap: 1.5rem;
     border-bottom: var(--stroke-hair) solid var(--line-soft);
   }
   .prof-tab {
+    /* Prof resets `appearance`, `background` and `border` here; Preflight has
+       already done all three, so the port keeps only what it adds. */
     position: relative;
     margin-bottom: -1px;
     font: var(--type-label);
@@ -685,6 +700,15 @@
   .prof-tab:hover,
   .prof-tab--active {
     color: var(--text-heading);
+  }
+  /* A count beside the label, in the mono face figures are set in. Prof puts
+     it in `--text-muted`, which is `--ink-300` and measures 2.3:1 on paper —
+     and a file count is information, not decoration. Secondary ink at 4.9:1
+     is the same deviation the diff gutter's line numbers took. */
+  .prof-tab__count {
+    margin-left: 6px;
+    font: var(--weight-medium) var(--text-2xs) / 1 var(--font-mono);
+    color: var(--text-secondary);
   }
   .prof-tab__ink {
     position: absolute;

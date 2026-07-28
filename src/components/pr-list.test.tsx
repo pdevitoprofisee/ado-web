@@ -385,8 +385,15 @@ describe('useInboxSelection', () => {
     const bound = [...sheet.querySelectorAll('[data-slot="shortcut"][data-bound="true"] dt')].map(
       (entry) => entry.textContent,
     )
-    // Nothing dimmed: the shell's `?` plus the four this surface claims is the
-    // whole registry.
-    expect(bound).toEqual(['Next item', 'Previous item', 'Open', 'Back', 'Keyboard shortcuts'])
+    // Nothing dimmed: the shell's `?` and `t` plus the four this surface claims
+    // is the whole registry.
+    expect(bound).toEqual([
+      'Next item',
+      'Previous item',
+      'Open',
+      'Back',
+      'Light or dark',
+      'Keyboard shortcuts',
+    ])
   })
 })

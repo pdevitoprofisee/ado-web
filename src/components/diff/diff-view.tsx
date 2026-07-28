@@ -120,7 +120,9 @@ function Gutter({ line, className }: { line: number | null; className?: string }
         // Secondary ink, not `--ink-300`: placeholder ink on the sunken gutter
         // measures 2.1:1, and a line number you have to hunt for is the one
         // thing in a gutter that has a job. `--ink-500` clears 4.5:1 there and
-        // still sits well behind the code's `#393a34`.
+        // still sits behind the code beside it — 4.6 against the code's 9.9 on
+        // paper, 7.2 against 12.3 in chalk. Both numbers move with the theme;
+        // the ordering, which is the part that matters, does not.
         'text-ink-500 w-12 shrink-0 grow-0 basis-12 pr-2 text-right tabular-nums select-none',
         className,
       )}

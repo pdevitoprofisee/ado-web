@@ -1,4 +1,5 @@
 import type { ThreadRow } from './comment-contract'
+import type { Theme } from './theme'
 
 // The types phase 3 is built around, in one place because four otherwise
 // independent pieces meet here: the blob layer that fetches (T-016), the diff
@@ -170,10 +171,16 @@ export type HighlightedLines = readonly (readonly HighlightToken[])[]
 export interface Highlighter {
   /**
    * Batched per file, never per line. `path` chooses the grammar; a language
-   * that is not bundled resolves to plain text rather than rejecting.
+   * that is not bundled resolves to plain text rather than rejecting. `theme`
+   * chooses the palette, and every `color` in the answer came out of it — so a
+   * caller that switches sheets asks again rather than recolouring what it has.
    *
    * Async and non-blocking on purpose: the diff renders before this arrives.
    */
-  highlight(path: string, lines: readonly string[]): Promise<HighlightedLines>
+  highlight(
+    path: string,
+    lines: readonly string[],
+    theme: Theme,
+  ): Promise<HighlightedLines>
   dispose(): void
 }

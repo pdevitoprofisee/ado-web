@@ -167,7 +167,7 @@ From `src/styles.css`, `@layer components`:
 | `.hatch-navy` `.hatch-teal` `.hatch-red` `.hatch-amber` `.hatch-cross` | hatch tiles. Pair with a tint background: the tint carries the colour, the hatch makes it read as drawn |
 | `.annotation` | tiny uppercase mono label |
 | `.prof-badge` (+ `__dot`, `--teal` `--navy` `--red` `--amber`) | hand-drawn status pill |
-| `.prof-tabs` / `.prof-tab` (+ `--active`, `__ink`) | tabs marked by drawn ink underneath, not a border |
+| `.prof-tabs` / `.prof-tab` (+ `--active`, `__ink`, `__count`) | tabs marked by drawn ink underneath, not a border. The strip owns its 24px gap and the tab owns its padding — **don't add `flex`/`gap-*` at the call site**, a `flex` tab is a block-level box and stacks |
 | `.prof-avatar` | blob avatar with a pen outline |
 | `.prof-progress` (+ `__fill`, `--red` `--amber` `--navy`) | hatched fill in a drawn pill |
 
@@ -199,6 +199,23 @@ Light (paper) is the default. Dark (chalk on a board) lives behind `.dark` on
 source uses `[data-theme="dark"]`; this app keeps `.dark` so the variant keeps
 working.
 
+`src/lib/theme.ts` is who puts it there. It is a module-level store read through
+`useSyncExternalStore` — `useTheme()` to read, `toggleTheme()` to flip — and it
+follows the OS until someone presses the toggle, after which the choice is in
+`localStorage` under `ado-web.theme`. There is no third `system` value to cycle
+back to: following the OS is what an app does before it has been told anything.
+
+Three things hang off it:
+
+- `THEME_INIT_SCRIPT`, inlined in `__root.tsx`'s `<head>`. It restates those
+  four lines in ES5 because it has to run before the bundle exists — the class
+  must be on `<html>` before first paint, since here the theme *is* the
+  primitives. `<html>` carries `suppressHydrationWarning` for exactly that.
+- `color-scheme`, declared in both `:root` and `.dark`. It is the one thing the
+  tokens cannot reach: scrollbars, the caret, a `<select>`'s popup.
+- The visible control, in the inbox header, and the `t` key, bound in
+  `ShellCommands` so the diff has it too.
+
 Because the semantic layer is all indirection through the primitives, **you
 almost never need a `dark:` variant.** If you're writing one, first check
 whether the token you want already re-resolves. Reach for `dark:` only when the
@@ -216,9 +233,15 @@ inside an added row and red inside a removed one without knowing which it's in.
 **Don't break that indirection** — it's what lets `line-text.tsx` stay ignorant
 of row polarity.
 
-Syntax highlighting is `vitesse-light` (`src/lib/highlight/bundle.ts`), chosen
-for warmth against `--paper-0`. `PLAIN_COLOR` in `highlight/plain.ts` must
-always equal that theme's resolved foreground; `tokenise.test.ts` asserts it.
+Syntax highlighting is the `vitesse-light` / `vitesse-dark` pair
+(`THEME_NAMES` in `src/lib/highlight/bundle.ts`), chosen for warmth against
+`--paper-0` and for a board that isn't pure black. The theme is a **parameter**
+of `highlight(path, lines, theme)`, not a second colour on every token: a token
+carries one resolved hex, so the sheet you are not reading on costs nothing and
+switching re-tokenises instead of recolouring. `PLAIN_COLOR` in
+`highlight/plain.ts` holds both foregrounds and each must equal its theme's
+resolved foreground; `tokenise.test.ts` asserts both. Note dark's is
+`#dbd7caee` — eight digits, Shiki's own alpha byte, and legal in CSS.
 
 ## House style for the code
 
