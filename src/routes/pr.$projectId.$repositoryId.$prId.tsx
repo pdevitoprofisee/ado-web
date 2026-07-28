@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
@@ -8,6 +9,9 @@ import { useCommand } from '@/commands/command-provider'
 import { PullRequestDetailView } from '@/components/pr-detail'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Kbd } from '@/components/ui/kbd'
+import { cn } from '@/lib/utils'
+
+import type { DiffLayout } from '@/lib/diff-contract'
 
 // One pull request. Addressed by GUIDs rather than by the `Project/_git/Repo`
 // names ADO puts in its own URLs, because those are what the inbox row already
@@ -31,6 +35,11 @@ function PullRequestPage() {
   // stops rather than asking until morning.
   const refetchInterval = useCadence(CADENCE.pullRequest)
 
+  // Here rather than in the detail view because the page has to widen for it.
+  // Two 80-column halves do not fit in the 896px this page is set at, and
+  // shrinking the diff to fit is the one thing side-by-side cannot survive.
+  const [layout, setLayout] = useState<DiffLayout>('unified')
+
   // The URL is the one input nobody validated — it can be typed, pasted, or
   // stale. Checked here so a bad id is answered with a sentence instead of a
   // server round trip that throws.
@@ -52,7 +61,12 @@ function PullRequestPage() {
   const result = query.data
 
   return (
-    <main className="mx-auto flex max-w-4xl flex-col items-start gap-5 p-8">
+    <main
+      className={cn(
+        'mx-auto flex flex-col items-start gap-5 p-8',
+        layout === 'split' ? 'max-w-[1600px]' : 'max-w-4xl',
+      )}
+    >
       <header className="flex w-full items-baseline justify-between gap-4">
         <Link
           to="/"
@@ -115,7 +129,13 @@ function PullRequestPage() {
       ) : null}
 
       {result?.pullRequest ? (
-        <PullRequestDetailView pr={result.pullRequest} failed={result.failed} />
+        <PullRequestDetailView
+          pr={result.pullRequest}
+          prRef={{ projectId, repositoryId, id }}
+          failed={result.failed}
+          layout={layout}
+          onLayoutChange={setLayout}
+        />
       ) : null}
 
       {/* The same budget line the inbox carries, for the same reason: this page

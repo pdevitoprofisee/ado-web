@@ -1,9 +1,47 @@
-import { describe, expect, it } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { render as renderBare, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-import { PullRequestDetailView, voteWord } from './pr-detail'
+import { PullRequestDetailView as Detail, voteWord } from './pr-detail'
 
-import type { Commit, Policy, PullRequestDetail, Reviewer } from '@/server/pull-request'
+import type { ComponentProps, ReactElement, ReactNode } from 'react'
+import type {
+  Commit,
+  Policy,
+  PullRequestDetail,
+  PullRequestRef,
+  Reviewer,
+} from '@/server/pull-request'
+
+// Two things the view needs that none of these tests are about.
+//
+// A ref, because the file list addresses the blob call by GUID and the payload
+// carries only names — passed through here and never used, since every file
+// starts shut and a shut file fetches nothing. And a query client, because the
+// file rows became components that can fetch; the provider is what lets them
+// decide not to.
+const REF: PullRequestRef = {
+  projectId: '11111111-1111-1111-1111-111111111111',
+  repositoryId: '22222222-2222-2222-2222-222222222222',
+  id: 24698,
+}
+
+function PullRequestDetailView(props: Omit<ComponentProps<typeof Detail>, 'prRef'>) {
+  return <Detail prRef={REF} {...props} />
+}
+
+function Providers({ children }: { children: ReactNode }) {
+  return (
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      {children}
+    </QueryClientProvider>
+  )
+}
+
+function render(ui: ReactElement) {
+  return renderBare(ui, { wrapper: Providers })
+}
 
 const detail = (over: Partial<PullRequestDetail> = {}): PullRequestDetail => ({
   id: 24698,
@@ -450,6 +488,39 @@ describe('PullRequestDetailView files', () => {
     render(<PullRequestDetailView pr={detail({ files })} />)
 
     expect(screen.getByText(/only the first 3 files/)).toBeVisible()
+  })
+
+  it('shows how much has been read without anything being opened', async () => {
+    // The ticket's third success criterion for T-021, and the reason the
+    // checkbox lives on the header rather than inside the diff.
+    render(<PullRequestDetailView pr={detail({ files })} />)
+    expect(screen.getByText('0 of 3 read')).toBeVisible()
+
+    const [first] = screen.getAllByRole('checkbox', { name: 'Viewed' })
+    await userEvent.click(first as HTMLElement)
+
+    expect(screen.getByText('1 of 3 read')).toBeVisible()
+  })
+
+  it('offers one layout choice for the whole page, not one per file', async () => {
+    const onLayoutChange = vi.fn()
+    render(
+      <PullRequestDetailView
+        pr={detail({ files })}
+        layout="unified"
+        onLayoutChange={onLayoutChange}
+      />,
+    )
+
+    const group = screen.getByRole('group', { name: 'Diff layout' })
+    expect(within(group).getByRole('button', { name: 'Unified' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+
+    await userEvent.click(within(group).getByRole('button', { name: 'Side by side' }))
+
+    expect(onLayoutChange).toHaveBeenCalledWith('split')
   })
 
   it('tells the two empty file states apart', () => {

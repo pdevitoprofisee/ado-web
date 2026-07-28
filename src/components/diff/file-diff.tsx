@@ -19,6 +19,25 @@ import type {
 // PR mounts 300 of these headers and — until each is opened — zero virtualizers,
 // which is the only reason a PR that size is openable at all.
 
+/**
+ * `\ No newline at end of file`, naming the side when only one end lacks one.
+ *
+ * A footer rather than a row, and here rather than in the diff, because the
+ * contract has nowhere to put it: `noFinalNewline` is a property of a blob, the
+ * two blobs can disagree, and `DiffLine` has no idea which blob it came from.
+ * `git diff` prints the marker under whichever side is missing it; this panel
+ * is the lowest thing in the tree that still holds both sides, so it says it.
+ */
+function noNewlineNotice(blobs: FileBlobs): string | null {
+  const before = blobs.before.kind === 'text' && blobs.before.noFinalNewline
+  const after = blobs.after.kind === 'text' && blobs.after.noFinalNewline
+  if (!before && !after) return null
+
+  const marker = '\\ No newline at end of file'
+  if (before && after) return marker
+  return `${marker} (${before ? 'before' : 'after'})`
+}
+
 /** `+12 −3`, or nothing at all for a file whose bytes did not move. */
 function Counts({ added, removed }: { added: number; removed: number }) {
   if (added === 0 && removed === 0) return null
@@ -41,8 +60,13 @@ export function FileDiffPanel({
   rows,
   layout,
   originalPath = null,
+  conflicted = false,
   viewed = false,
+  defaultOpen,
   onViewedChange,
+  onOpenChange,
+  pending = false,
+  failure = null,
   before = null,
   after = null,
   onExpand,
@@ -58,9 +82,31 @@ export function FileDiffPanel({
    * without it a rename is a change with nothing on screen to show for it.
    */
   originalPath?: string | null
+  /** This file is one of the ones the merge cannot resolve. */
+  conflicted?: boolean
   viewed?: boolean
+  /**
+   * Whether the file starts open. Defaults to "open unless already read", which
+   * is right for a panel handed its bytes; a panel that has to *fetch* them
+   * passes `false`, because opening forty files at once is eighty ADO calls
+   * spent before anyone decided which file they cared about.
+   */
+  defaultOpen?: boolean
   /** Absent on a file whose viewed state nobody is keeping — the box goes away. */
   onViewedChange?: (viewed: boolean) => void
+  /**
+   * Told each time the file opens or shuts. Open stays owned here — the caller
+   * is not deciding, it is finding out, because the thing above this panel is
+   * what fetches the bytes and opening the file is the signal to start.
+   */
+  onOpenChange?: (open: boolean) => void
+  /** The bytes are on their way. Outranks every notice below except a failure. */
+  pending?: boolean
+  /**
+   * The fetch itself lost — as against `BlobSide.kind === 'failed'`, which is
+   * one side of an answer that did arrive.
+   */
+  failure?: string | null
   before?: HighlightedLines | null
   after?: HighlightedLines | null
   onExpand?: (row: Extract<DiffRow, { kind: 'gap' }>) => void
@@ -69,11 +115,28 @@ export function FileDiffPanel({
   // reopening it does not mark it unread. Those are two different statements —
   // "I have looked at this" and "I am looking at it now" — and tying them
   // together in one flag means one of the two is always being told wrong.
-  const [open, setOpen] = useState(!viewed)
+  const [open, setOpen] = useState(defaultOpen ?? !viewed)
 
-  const notice = diff.gaveUp
-    ? 'This file was too large or too tangled to diff in reasonable time.'
-    : blobNotice(blobs)
+  function show(next: boolean) {
+    setOpen(next)
+    onOpenChange?.(next)
+  }
+
+  // Order is precedence. A failed fetch outranks everything because it is the
+  // only one of these that means something went wrong; `pending` outranks the
+  // blob notices because the placeholder blobs a caller passes while waiting
+  // are absent on both sides, and "nothing to show for this file" is a wrong
+  // thing to say about a file that has not been fetched yet.
+  const notice =
+    failure !== null
+      ? failure
+      : pending
+        ? 'Loading…'
+        : diff.gaveUp
+          ? 'This file was too large or too tangled to diff in reasonable time.'
+          : blobNotice(blobs)
+
+  const noNewline = notice === null ? noNewlineNotice(blobs) : null
 
   const cut = blobs.path.lastIndexOf('/')
 
@@ -85,8 +148,9 @@ export function FileDiffPanel({
       <div className="flex items-baseline gap-2 px-2 py-1.5 font-mono text-xs">
         <button
           type="button"
-          onClick={() => setOpen((was) => !was)}
+          onClick={() => show(!open)}
           aria-expanded={open}
+          title={blobs.path}
           className="flex min-w-0 flex-1 items-baseline gap-1.5 text-left"
         >
           {open ? (
@@ -111,6 +175,8 @@ export function FileDiffPanel({
           )}
         </button>
 
+        {conflicted ? <span className="text-destructive shrink-0">conflict</span> : null}
+
         <Counts added={diff.added} removed={diff.removed} />
 
         {onViewedChange === undefined ? null : (
@@ -120,7 +186,7 @@ export function FileDiffPanel({
               checked={viewed}
               onChange={(event) => {
                 onViewedChange(event.target.checked)
-                setOpen(!event.target.checked)
+                show(!event.target.checked)
               }}
               className="size-3"
             />
@@ -134,14 +200,21 @@ export function FileDiffPanel({
           {notice}
         </p>
       ) : (
-        <DiffView
-          rows={rows}
-          layout={layout}
-          label={blobs.path}
-          before={before}
-          after={after}
-          onExpand={onExpand}
-        />
+        <>
+          <DiffView
+            rows={rows}
+            layout={layout}
+            label={blobs.path}
+            before={before}
+            after={after}
+            onExpand={onExpand}
+          />
+          {noNewline === null ? null : (
+            <p className="text-muted-foreground border-border/60 border-t px-2 py-1 font-mono text-xs">
+              {noNewline}
+            </p>
+          )}
+        </>
       )}
     </section>
   )

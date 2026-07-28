@@ -1,11 +1,14 @@
+import { useState } from 'react'
 import { Check, CircleHelp, Clock, Minus, TriangleAlert, X } from 'lucide-react'
 
 import type { ReactNode } from 'react'
 
 import { age } from './pr-list'
+import { ChangedFileDiff } from './diff/changed-file'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { cn } from '@/lib/utils'
 
+import type { DiffLayout } from '@/lib/diff-contract'
 import type {
   ChangedFile,
   Commit,
@@ -13,6 +16,7 @@ import type {
   Policy,
   PolicyStatus,
   PullRequestDetail,
+  PullRequestRef,
   Reviewer,
 } from '@/server/pull-request'
 
@@ -340,32 +344,71 @@ function CommitRow({ commit }: { commit: Commit }) {
   )
 }
 
-function FileRow({ file, conflicted }: { file: ChangedFile; conflicted: boolean }) {
-  const cut = file.path.lastIndexOf('/')
-
+/**
+ * Unified or side-by-side, for every file at once.
+ *
+ * One control for the whole page rather than one per file: the choice is about
+ * how you read, not about the file in front of you, and `setLayout` reprojects
+ * an already-expanded file rather than starting it over, so flipping it mid-read
+ * costs nothing and loses nothing.
+ */
+function LayoutToggle({
+  layout,
+  onLayoutChange,
+}: {
+  layout: DiffLayout
+  onLayoutChange: (layout: DiffLayout) => void
+}) {
   return (
-    <li
-      className="border-border/60 flex items-baseline border-b px-2 py-1 font-mono text-xs last:border-b-0"
-      title={file.path}
-    >
-      {/* The end of a 90-column monorepo path is the part that identifies the
-          file, so the directory is what gives way when the row runs out of
-          room — never the name. */}
-      <span className="text-muted-foreground truncate">{file.path.slice(0, cut + 1)}</span>
-      <span className="shrink-0">{file.path.slice(cut + 1)}</span>
-      {conflicted ? <span className="text-destructive shrink-0 pl-1.5">conflict</span> : null}
-    </li>
+    <div role="group" aria-label="Diff layout" className="flex items-baseline gap-2">
+      {(['unified', 'split'] as const).map((option) => (
+        <button
+          key={option}
+          type="button"
+          aria-pressed={layout === option}
+          onClick={() => onLayoutChange(option)}
+          className={cn(
+            'rounded px-1.5 py-0.5',
+            layout === option ? 'text-foreground bg-muted' : 'hover:text-foreground',
+          )}
+        >
+          {option === 'unified' ? 'Unified' : 'Side by side'}
+        </button>
+      ))}
+    </div>
   )
+}
+
+/**
+ * What a viewed flag is *about*, and the reason T-021 keys on it.
+ *
+ * The path alone would carry a stale mark across a push that rewrote the file;
+ * the content sha alone would lose the mark when a file is moved unchanged. The
+ * pair says "I have read these bytes, at this name", which is the statement a
+ * reviewer is actually making.
+ */
+function viewedKey(file: ChangedFile): string {
+  return `${file.path}\n${file.objectId ?? ''}`
 }
 
 function ChangedFiles({
   list,
+  ref,
   conflicted,
+  layout,
+  onLayoutChange,
+  viewed,
+  onViewedChange,
 }: {
   list: PullRequestDetail['files']
+  ref: PullRequestRef
   /** Conflict paths match `changeEntries[].item.path` exactly, so the banner's
       files can be found again in the list they actually live in. */
   conflicted: ReadonlySet<string>
+  layout: DiffLayout
+  onLayoutChange: (layout: DiffLayout) => void
+  viewed: ReadonlySet<string>
+  onViewedChange: (file: ChangedFile, viewed: boolean) => void
 }) {
   // `changeType` is a flag set, so "edit, rename" is its own kind of change and
   // is grouped as one rather than counted twice.
@@ -377,17 +420,43 @@ function ChangedFiles({
     else bucket.push(file)
   }
 
+  const read = list.files.filter((file) => viewed.has(viewedKey(file))).length
+
   return (
     <div className="flex w-full flex-col gap-3">
+      {/* Progress and layout on one line, above everything, because both are
+          answers you want without opening a file — which is the whole of the
+          ticket's third success criterion. */}
+      <div className="text-muted-foreground flex items-baseline justify-between gap-4 text-xs">
+        <span className="tabular-nums">
+          {read} of {list.files.length} read
+        </span>
+        <LayoutToggle layout={layout} onLayoutChange={onLayoutChange} />
+      </div>
+
       {[...groups].map(([key, files]) => (
         <div key={key}>
           <h3 className="text-muted-foreground mb-1 flex items-baseline gap-2 text-xs font-medium">
             {key}
             <span className="tabular-nums">{files.length}</span>
           </h3>
-          <ul aria-label={key} className="border-border/60 rounded-md border">
+          {/* A list of sections rather than a list of rows. Each file is its
+              own landmark once it opens, and `li > section` is the only way to
+              keep the group countable without wrapping the diff in one. */}
+          <ul aria-label={key} className="flex flex-col gap-1">
             {files.map((file) => (
-              <FileRow key={file.path} file={file} conflicted={conflicted.has(file.path)} />
+              <li key={file.path}>
+                <ChangedFileDiff
+                  projectId={ref.projectId}
+                  repositoryId={ref.repositoryId}
+                  id={ref.id}
+                  file={file}
+                  layout={layout}
+                  conflicted={conflicted.has(file.path)}
+                  viewed={viewed.has(viewedKey(file))}
+                  onViewedChange={(next) => onViewedChange(file, next)}
+                />
+              </li>
             ))}
           </ul>
         </div>
@@ -403,11 +472,37 @@ function ChangedFiles({
 
 export function PullRequestDetailView({
   pr,
+  prRef,
   failed = {},
+  layout = 'unified',
+  onLayoutChange = () => {},
 }: {
   pr: PullRequestDetail
+  /**
+   * The three GUIDs the route was addressed by. `PullRequestDetail` carries the
+   * project and repository *names* and not their ids, and the blob call needs
+   * ids, so this comes down from the route rather than out of the payload.
+   */
+  prRef: PullRequestRef
   failed?: FailedSections
+  /** Owned by the route, because the page widens for side-by-side. */
+  layout?: DiffLayout
+  onLayoutChange?: (layout: DiffLayout) => void
 }) {
+  // Local for now. T-021 replaces this with the persisted store; the shape it
+  // has to present is exactly this — a set of content keys and a setter — so
+  // swapping it is one line here and nothing anywhere below.
+  const [viewed, setViewed] = useState<ReadonlySet<string>>(() => new Set())
+
+  function markViewed(file: ChangedFile, next: boolean) {
+    setViewed((current) => {
+      const updated = new Set(current)
+      if (next) updated.add(viewedKey(file))
+      else updated.delete(viewedKey(file))
+      return updated
+    })
+  }
+
   return (
     <article className="flex w-full flex-col items-start gap-5">
       <header className="w-full">
@@ -500,7 +595,12 @@ export function PullRequestDetailView({
         ) : (
           <ChangedFiles
             list={pr.files}
+            ref={prRef}
             conflicted={new Set(pr.merge.conflicts.map((conflict) => conflict.path))}
+            layout={layout}
+            onLayoutChange={onLayoutChange}
+            viewed={viewed}
+            onViewedChange={markViewed}
           />
         )}
       </Section>

@@ -178,6 +178,89 @@ describe('FileDiffPanel', () => {
     expect(screen.queryByText(/←/)).toBeNull()
   })
 
+  it('starts shut when the caller says so, whatever the viewed flag says', () => {
+    // The panel that has to fetch its own bytes passes this. Opening is what
+    // spends the two ADO calls, so an unread file still starts closed.
+    render(<FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" defaultOpen={false} />)
+
+    expect(screen.queryByRole('region', { name: BLOBS.path })).toBeNull()
+  })
+
+  it('tells the caller each time it opens and shuts', async () => {
+    const onOpenChange = vi.fn()
+    render(
+      <FileDiffPanel
+        blobs={BLOBS}
+        diff={DIFF}
+        rows={ROWS}
+        layout="unified"
+        defaultOpen={false}
+        onOpenChange={onOpenChange}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /pull-request\.ts/ }))
+    await userEvent.click(screen.getByRole('button', { name: /pull-request\.ts/ }))
+
+    expect(onOpenChange.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('ranks a failure above pending, and pending above the blob notices', () => {
+    // The three can all be true at once while a refetch is in flight, and only
+    // one of them is worth saying.
+    const nothing: FileBlobs = { ...BLOBS, before: { kind: 'absent' }, after: { kind: 'absent' } }
+    const { rerender } = render(
+      <FileDiffPanel blobs={nothing} diff={DIFF} rows={[]} layout="unified" pending failure="lost" />,
+    )
+    expect(screen.getByText('lost')).toBeVisible()
+
+    rerender(<FileDiffPanel blobs={nothing} diff={DIFF} rows={[]} layout="unified" pending />)
+    expect(screen.getByText('Loading…')).toBeVisible()
+
+    rerender(<FileDiffPanel blobs={nothing} diff={DIFF} rows={[]} layout="unified" />)
+    expect(screen.getByText('Nothing to show for this file.')).toBeVisible()
+  })
+
+  it('prints the missing-newline marker, and names the side when only one is missing', () => {
+    // `noFinalNewline` is a property of a blob and the two blobs can disagree,
+    // so there is nowhere in `FileDiff` for it to live — this panel is the
+    // lowest thing in the tree that still holds both sides.
+    const oneSide: FileBlobs = {
+      ...BLOBS,
+      after: { kind: 'text', lines: ['is here'], bytes: 7, noFinalNewline: true },
+    }
+    const { rerender } = render(
+      <FileDiffPanel blobs={oneSide} diff={DIFF} rows={ROWS} layout="unified" />,
+    )
+    expect(screen.getByText('\\ No newline at end of file (after)')).toBeVisible()
+
+    rerender(
+      <FileDiffPanel
+        blobs={{
+          ...oneSide,
+          before: { kind: 'text', lines: ['was here'], bytes: 8, noFinalNewline: true },
+        }}
+        diff={DIFF}
+        rows={ROWS}
+        layout="unified"
+      />,
+    )
+    expect(screen.getByText('\\ No newline at end of file')).toBeVisible()
+
+    rerender(<FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" />)
+    expect(screen.queryByText(/No newline/)).toBeNull()
+  })
+
+  it('says a file is one the merge could not resolve', () => {
+    const { rerender } = render(
+      <FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" conflicted />,
+    )
+    expect(screen.getByText('conflict')).toBeVisible()
+
+    rerender(<FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" />)
+    expect(screen.queryByText('conflict')).toBeNull()
+  })
+
   it('counts both directions, and neither when nothing moved', () => {
     const { rerender } = render(
       <FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" />,
