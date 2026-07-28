@@ -34,7 +34,7 @@ describe('database location', () => {
 })
 
 describe('migrations', () => {
-  it('creates the round-1 schema and records the version', () => {
+  it('creates every shipped table and records each version', () => {
     const db = openDatabase(join(dir, 'app.db'))
 
     const tables = db
@@ -42,12 +42,32 @@ describe('migrations', () => {
       .all()
       .map((row) => row.name)
 
-    // Round-1 tables only. Empty tables for later phases are not schema, they
+    // Shipped tables only. Empty tables for later phases are not schema, they
     // are guesses; the phase that needs one adds it.
-    expect(tables).toEqual(['pr_cache', 'schema_migrations'])
+    expect(tables).toEqual(['blob_cache', 'pr_cache', 'schema_migrations'])
     expect(db.prepare('SELECT version, name FROM schema_migrations').all()).toEqual([
       { version: 1, name: 'pr-cache' },
+      { version: 2, name: 'blob-cache' },
     ])
+
+    db.close()
+  })
+
+  it('lets blob_cache hold a NULL body, which is how a refusal is stored', () => {
+    // STRICT tables reject a type mismatch outright, so this is worth pinning:
+    // `bytes` is the one nullable column, and a row with no bytes is the cached
+    // "too large to render" answer rather than missing data.
+    const db = openDatabase(join(dir, 'app.db'))
+
+    db.prepare('INSERT INTO blob_cache (object_id, size, bytes, fetched_at) VALUES (?, ?, ?, ?)').run(
+      'a'.repeat(40),
+      4_238_334,
+      null,
+      Date.now(),
+    )
+    const row = db.prepare('SELECT size, bytes FROM blob_cache').get()
+
+    expect(row).toEqual({ size: 4_238_334, bytes: null })
 
     db.close()
   })
@@ -61,7 +81,7 @@ describe('migrations', () => {
     const second = openDatabase(path)
     migrate(second) // and again, in-process, for good measure
 
-    expect(second.prepare('SELECT count(*) c FROM schema_migrations').get()?.c).toBe(1)
+    expect(second.prepare('SELECT count(*) c FROM schema_migrations').get()?.c).toBe(2)
     expect(readPrCache(7, 'a'.repeat(40), second)).toEqual({ checks: 'green' })
 
     second.close()

@@ -62,6 +62,25 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
            fetched_at INTEGER NOT NULL
          ) STRICT`,
   },
+  {
+    version: 2,
+    name: 'blob-cache',
+    // The one table here with no validity token, and deliberately: `object_id`
+    // is the sha *of the content*, so a row can never be stale. Nothing
+    // invalidates it, nothing needs to. See src/server/blob.ts.
+    //
+    // `bytes` is NULL for a blob refused over the size ceiling — the refusal is
+    // cached too, so re-opening a 4 MB file costs no calls either. `size` is
+    // kept beside it so that refusal stays re-checkable: raise the ceiling and
+    // the row stops being an answer, rather than refusing a file we would now
+    // render.
+    up: `CREATE TABLE blob_cache (
+           object_id  TEXT PRIMARY KEY,
+           size       INTEGER NOT NULL,
+           bytes      BLOB,
+           fetched_at INTEGER NOT NULL
+         ) STRICT`,
+  },
 ]
 
 /**
