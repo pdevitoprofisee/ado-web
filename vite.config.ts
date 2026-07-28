@@ -34,6 +34,13 @@ const config = defineConfig({
   // `rollupOptions.external` is the production build. Missing any one of them
   // fails only on the command that uses it, so change all three together.
   optimizeDeps: { exclude: [KEYRING] },
+  // Vite's default worker format is `iife`, which cannot code-split, so every
+  // grammar the highlighter can reach gets inlined into one chunk whether the
+  // file being read needs it or not. Measured on this build: 176.6 kB gzip as
+  // one lump, against 70.2 kB to open a TypeScript file once the same code is
+  // split (worker 52.4, theme 2.5, typescript 15.3). The dynamic imports in
+  // `src/lib/highlight/bundle.ts` only mean something with this set.
+  worker: { format: 'es' },
   environments: {
     nitro: {
       optimizeDeps: { exclude: [KEYRING] },

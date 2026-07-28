@@ -71,6 +71,24 @@ describe('segment', () => {
     ])
   })
 
+  it('keeps the colour on a CRLF line, whose tokens are one character short', () => {
+    // T-016 keeps the `\r` because the diff has to see it; Shiki splits on
+    // /\r?\n/ and never does. Most files in the repos this reviews are CRLF, so
+    // reading that gap as staleness would drop the highlighting for nearly
+    // every line of nearly every file.
+    expect(segment('const x\r', [token('const', '#569'), token(' x', '#eee')])).toEqual([
+      { text: 'const', color: '#569', fontStyle: 0, edited: false },
+      { text: ' x', color: '#eee', fontStyle: 0, edited: false },
+      { text: '\r', color: '#eee', fontStyle: 0, edited: false },
+    ])
+  })
+
+  it('still discards tokens one character short of a line that has no CR', () => {
+    expect(segment('const xy', [token('const', '#569'), token(' x', '#eee')])).toEqual([
+      { text: 'const xy', color: null, fontStyle: 0, edited: false },
+    ])
+  })
+
   it('clamps an edit range that runs off the end instead of dropping the line', () => {
     expect(segment('abc', null, [[1, 99]])).toEqual([
       { text: 'a', color: null, fontStyle: 0, edited: false },

@@ -34,7 +34,18 @@ export type BlobSide =
    * header carries no signal at all.
    */
   | { readonly kind: 'binary'; readonly bytes: number }
-  /** Refused before the body was read, on `Content-Length`. `bytes` is declared, not counted. */
+  /**
+   * Refused for its size. `bytes` is what was counted.
+   *
+   * **Corrected in T-016.** This said "refused before the body was read, on
+   * `Content-Length`", and that is not achievable here: ADO declares a length
+   * only below ~256 KiB and goes `Transfer-Encoding: chunked` above it, with no
+   * overlap between the two ranges across 705 live blobs. Every blob big enough
+   * to refuse is exactly the one that arrives with no declared size, so the
+   * length check has an empty live domain and the count on bytes-in-hand is
+   * what actually refuses. Refusing unread would mean aborting the stream from
+   * inside `ado-client.ts`.
+   */
   | { readonly kind: 'too-large'; readonly bytes: number }
   /** No such side: the before of an add, the after of a delete. */
   | { readonly kind: 'absent' }
@@ -43,6 +54,13 @@ export type BlobSide =
 
 /** Both sides of one changed file, as the server hands them over. */
 export interface FileBlobs {
+  /**
+   * Where the file is now. One path, not two, so an `edit, rename` cannot say
+   * here what it used to be called — the old name is on
+   * `ChangedFile.originalPath` and the view reads it from there. Kept as one
+   * field deliberately: this type exists to carry bytes, and the file list is
+   * already the thing that knows about names.
+   */
   readonly path: string
   readonly before: BlobSide
   readonly after: BlobSide

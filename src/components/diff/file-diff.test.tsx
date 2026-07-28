@@ -148,6 +148,36 @@ describe('FileDiffPanel', () => {
     expect(screen.getByText(/too large or too tangled to diff/)).toBeInTheDocument()
   })
 
+  it('shows where a renamed file came from', () => {
+    // `FileBlobs` only knows where the file is now, so without this a rename is
+    // a change with nothing on screen to show for it.
+    render(
+      <FileDiffPanel
+        blobs={BLOBS}
+        diff={DIFF}
+        rows={ROWS}
+        layout="unified"
+        originalPath="src/server/pr.ts"
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: /← src\/server\/pr\.ts/ })).toBeInTheDocument()
+  })
+
+  it('says nothing about an origin that is where the file already is', () => {
+    render(
+      <FileDiffPanel
+        blobs={BLOBS}
+        diff={DIFF}
+        rows={ROWS}
+        layout="unified"
+        originalPath={BLOBS.path}
+      />,
+    )
+
+    expect(screen.queryByText(/←/)).toBeNull()
+  })
+
   it('counts both directions, and neither when nothing moved', () => {
     const { rerender } = render(
       <FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" />,

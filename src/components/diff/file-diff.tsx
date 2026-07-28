@@ -40,6 +40,7 @@ export function FileDiffPanel({
   diff,
   rows,
   layout,
+  originalPath = null,
   viewed = false,
   onViewedChange,
   before = null,
@@ -51,6 +52,12 @@ export function FileDiffPanel({
   /** T-018's flattening of `diff`, passed in rather than recomputed here. */
   rows: readonly DiffRow[]
   layout: DiffLayout
+  /**
+   * `ChangedFile.originalPath` — the name the file had before, on a rename.
+   * `FileBlobs` carries only where the file is now, so this arrives separately;
+   * without it a rename is a change with nothing on screen to show for it.
+   */
+  originalPath?: string | null
   viewed?: boolean
   /** Absent on a file whose viewed state nobody is keeping — the box goes away. */
   onViewedChange?: (viewed: boolean) => void
@@ -94,6 +101,14 @@ export function FileDiffPanel({
           <span className={cn('shrink-0', viewed && 'text-muted-foreground')}>
             {blobs.path.slice(cut + 1)}
           </span>
+          {originalPath === null || originalPath === blobs.path ? null : (
+            // Whole old path, not just its last segment: a rename that only
+            // moved the file between directories has the same name at both
+            // ends, and the truncated version would read as saying nothing.
+            <span className="text-muted-foreground min-w-0 truncate">
+              ← {originalPath}
+            </span>
+          )}
         </button>
 
         <Counts added={diff.added} removed={diff.removed} />

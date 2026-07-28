@@ -41,10 +41,16 @@ export function segment(
   // reachable because highlighting is async and the diff is not. Colouring by
   // offset would paint the wrong characters, so drop the colour and keep the
   // text. Losing colour is a worse-looking line; keeping it is a wrong one.
+  //
+  // One character short is not stale, though: T-016 keeps the `\r` on a CRLF
+  // line because the diff has to see it, and Shiki splits on /\r?\n/ and so
+  // never sees it. Most files in the repos this reviews are CRLF, so treating
+  // that as a mismatch would mean throwing away the highlighting for nearly
+  // every line of nearly every file. The `\r` renders as nothing and takes the
+  // colour of the token it trails.
+  const total = tokens === null ? -1 : tokens.reduce((sum, token) => sum + token.text.length, 0)
   const usable =
-    tokens !== null && tokens.reduce((total, token) => total + token.text.length, 0) === text.length
-      ? tokens
-      : null
+    total === text.length || (total === text.length - 1 && text.endsWith('\r')) ? tokens : null
 
   const bounds = new Set<number>([0, text.length])
   if (usable !== null) {
