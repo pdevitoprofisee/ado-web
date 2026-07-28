@@ -7,10 +7,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { PullRequestDetailView as Detail, voteWord } from './pr-detail'
 import { viewedKey } from '@/lib/viewed-key'
 import { iterationChangesQuery } from '@/server/pull-request-fn'
+import { startThread, threadsQuery } from '@/server/threads-fn'
 import { markViewed, viewedQuery } from '@/server/viewed-fn'
 
 import type { ComponentProps, ReactElement, ReactNode } from 'react'
 import type { DetailTab } from './pr-detail'
+import type { Comment, Thread } from '@/lib/comment-contract'
+import type { SonarReportResult } from '@/server/sonar-fn'
+import type { ThreadsResult } from '@/server/threads-fn'
 import type {
   Commit,
   Iteration,
@@ -57,6 +61,39 @@ vi.mock('@/server/pull-request-fn', () => ({
     error: null,
   })),
 }))
+
+// The conversation, which the page now reads for itself. Mocked to the empty
+// answer so the tests above it — none of which are about comments — see the page
+// they were written against; the ones below override the read per test.
+//
+// Every write is mocked too, and not because anything here calls one: `useConversation`
+// closes over all five, so an unmocked module would drag the real server functions
+// into a jsdom bundle that has no fetch to send them with.
+vi.mock('@/server/threads-fn', () => ({
+  threadsQuery: vi.fn(async () => ({
+    threads: { threads: [], openCount: 0, doneCount: 0, systemCount: 0, botCount: 0 },
+    error: null,
+    connected: true,
+    notFound: false,
+    rateLimit: null,
+  })),
+  startThread: vi.fn(async () => ok()),
+  replyToThread: vi.fn(async () => ok()),
+  changeThreadStatus: vi.fn(async () => ok()),
+  editThreadComment: vi.fn(async () => ok()),
+  deleteThreadComment: vi.fn(async () => ok()),
+}))
+
+/**
+ * What a write answers with when it worked.
+ *
+ * A `function` and not a `const`: the factory above runs on the first import of
+ * the mocked module, which is before this file's own bindings are initialised, so
+ * an arrow assigned to a const would be in its temporal dead zone.
+ */
+function ok() {
+  return { ok: true, error: null, connected: true, rateLimit: null }
+}
 
 // Two things the view needs that none of these tests are about.
 //
@@ -893,5 +930,355 @@ describe('PullRequestDetailView changes views', () => {
 
     expect(await screen.findByText(/This update changed no files\./)).toBeVisible()
     expect(screen.queryByText('No files changed.')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+// The panel is `sonar/panel.test.tsx`'s subject. What these are about is the one
+// thing it cannot do for itself: it sits on the details tab and the files it
+// points at are on another one, so the tab strip has to move for a click on a
+// finding to land anywhere.
+describe('PullRequestDetailView Sonar', () => {
+  const SONAR_FILES = {
+    iterationId: 2,
+    iterations: ITERATIONS,
+    truncated: false,
+    files: [
+      { path: '/src/log.ts', changeType: ['edit'], originalPath: null, objectId: 'aa', originalObjectId: 'bb' },
+    ],
+  }
+
+  const result = (over: Partial<SonarReportResult> = {}): SonarReportResult => ({
+    report: {
+      projects: [
+        {
+          projectKey: 'Profisee_utilities',
+          pullRequest: '24698',
+          dashboardUrl: 'https://sonarcloud.io/dashboard?id=Profisee_utilities&pullRequest=24698',
+        },
+      ],
+      groups: [
+        {
+          rule: 'javascript:S4036',
+          name: 'Searching OS commands in PATH is security-sensitive',
+          severity: 'MEDIUM',
+          findings: [
+            {
+              key: 'AY-1',
+              rule: 'javascript:S4036',
+              message: 'Make sure the "PATH" variable only contains fixed, unwriteable directories.',
+              path: '/src/log.ts',
+              textRange: { startLine: 12, endLine: 12, startOffset: 2, endOffset: 30 },
+              status: 'OPEN',
+              impacts: [{ softwareQuality: 'SECURITY', severity: 'MEDIUM' }],
+              cleanCodeAttributeCategory: 'RESPONSIBLE',
+              effort: '20min',
+              tags: ['cwe'],
+              url: 'https://sonarcloud.io/project/issues?id=Profisee_utilities&open=AY-1',
+            },
+          ],
+        },
+      ],
+      gate: { status: 'OK', conditions: [] },
+      failed: [],
+    },
+    rules: [],
+    error: null,
+    connected: true,
+    rateLimit: null,
+    ...over,
+  })
+
+  // jsdom implements no scrolling at all, so the panel optional-chains this and a
+  // spy is the only way to see that the jump happened.
+  let scrolled: Element['scrollIntoView'] & ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    scrolled = vi.fn<Element['scrollIntoView']>()
+    Element.prototype.scrollIntoView = scrolled
+  })
+
+  it('shows nothing while the route has not answered', () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    expect(screen.queryByRole('region', { name: 'Sonar' })).toBeNull()
+  })
+
+  it('shows nothing on a pull request with no SonarCloud status', () => {
+    render(
+      <PullRequestDetailView
+        pr={detail()}
+        sonar={result({ report: { projects: [], groups: [], gate: null, failed: [] } })}
+      />,
+    )
+
+    expect(screen.queryByRole('region', { name: 'Sonar' })).toBeNull()
+  })
+
+  // The one state only this side can name: the server reads no token until the
+  // pull request has been shown to have a Sonar project, so `connected: false`
+  // means this pull request is analysed and the credential is missing.
+  it('names the missing credential rather than the findings', () => {
+    render(
+      <PullRequestDetailView
+        pr={detail()}
+        sonar={result({ report: null, connected: false, error: 'No SonarCloud token yet.' })}
+      />,
+    )
+
+    expect(screen.getByText(/Add a token in connections/)).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Sonar' })).toBeNull()
+  })
+
+  it('says so when Sonar could not be read', () => {
+    render(
+      <PullRequestDetailView pr={detail()} sonar={result({ report: null, error: 'SonarCloud answered 503.' })} />,
+    )
+
+    expect(screen.getByText(/SonarCloud answered 503\./)).toBeVisible()
+  })
+
+  it('crosses to the diff when a finding is clicked', async () => {
+    render(<PullRequestDetailView pr={detail({ files: SONAR_FILES })} sonar={result()} />)
+
+    await userEvent.click(screen.getByRole('button', { name: /Searching OS commands/ }))
+    await userEvent.click(screen.getByRole('button', { name: '/src/log.ts:12' }))
+
+    // The tab moved, and the scroll waited for the file list rather than firing
+    // into a panel that did not exist yet.
+    expect(await screen.findByRole('list', { name: 'Changed files' })).toBeVisible()
+    expect(scrolled).toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+// The cards, the composer and the row model are their own tests. What this is
+// about is the page: one read for both tabs, the threads ADO anchors to nothing
+// having somewhere to live, and a write leaving with the context of whatever diff
+// the reviewer was looking at when they wrote it.
+describe('PullRequestDetailView conversation', () => {
+  const comment = (over: Partial<Comment> = {}): Comment => ({
+    id: 1,
+    parentCommentId: null,
+    author: {
+      id: 'reviewer-1',
+      displayName: 'Naveen Angali',
+      uniqueName: 'naveen.angali@profisee.com',
+      imageUrl: null,
+    },
+    content: 'this needs a null check',
+    publishedDate: '2026-07-22T00:00:00Z',
+    lastUpdatedDate: null,
+    lastContentUpdatedDate: null,
+    isDeleted: false,
+    commentType: 'text',
+    likedBy: [],
+    ...over,
+  })
+
+  const thread = (over: Partial<Thread> = {}): Thread => ({
+    id: 100,
+    status: 'active',
+    resolution: 'open',
+    kind: 'human',
+    publishedDate: '2026-07-22T00:00:00Z',
+    lastUpdatedDate: null,
+    isDeleted: false,
+    context: null,
+    iterationContext: null,
+    comments: [comment()],
+    properties: {},
+    ...over,
+  })
+
+  const said = (threads: readonly Thread[], over: Partial<ThreadsResult> = {}): ThreadsResult => ({
+    threads: {
+      threads,
+      openCount: threads.filter((entry) => entry.resolution === 'open').length,
+      doneCount: threads.filter((entry) => entry.resolution === 'done').length,
+      systemCount: 0,
+      botCount: 0,
+    },
+    error: null,
+    connected: true,
+    notFound: false,
+    rateLimit: null,
+    ...over,
+  })
+
+  const files = {
+    iterationId: 2,
+    iterations: ITERATIONS,
+    truncated: false,
+    files: [
+      { path: '/src/log.ts', changeType: ['edit'], originalPath: null, objectId: 'aa', originalObjectId: 'bb' },
+    ],
+  }
+
+  const wrote = () => vi.mocked(startThread).mock.lastCall?.[0]?.data
+
+  beforeEach(() => {
+    // `mockResolvedValue` and not `…Once`: the read is polled, and a second tick
+    // finding an undefined answer would empty the conversation mid-test.
+    vi.mocked(threadsQuery).mockResolvedValue(said([]))
+    // Nothing in this file resets the mocks, so every render above this describe
+    // has already asked for the conversation; the count below needs a clean slate.
+    vi.mocked(threadsQuery).mockClear()
+    vi.mocked(startThread).mockClear()
+  })
+
+  it('reads the conversation once for the whole page', async () => {
+    render(<PullRequestDetailView pr={detail({ files })} />)
+
+    expect(await screen.findByText('Nothing has been said about this pull request yet.')).toBeVisible()
+    // One call for a page with a details tab and 1 file, and it would be one for
+    // 294: the grouping by path happens on this side of the boundary.
+    expect(vi.mocked(threadsQuery)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(threadsQuery).mock.lastCall?.[0]?.data).toEqual(REF)
+  })
+
+  it('renders the threads Azure DevOps anchors to nothing', async () => {
+    vi.mocked(threadsQuery).mockResolvedValue(said([thread()]))
+    render(<PullRequestDetailView pr={detail({ files })} />)
+
+    // 44 of 56 sampled threads were these. `fileThreads` cannot place one, so
+    // this section is the difference between reading them and losing them.
+    expect(await screen.findByText('this needs a null check')).toBeVisible()
+    expect(screen.getByText('Naveen Angali')).toBeVisible()
+  })
+
+  it('counts the threads that belong on a line instead of repeating them here', async () => {
+    vi.mocked(threadsQuery).mockResolvedValue(
+      said([
+        thread(),
+        thread({
+          id: 101,
+          context: {
+            filePath: '/src/log.ts',
+            rightStart: { line: 12, offset: 1 },
+            rightEnd: { line: 12, offset: 30 },
+            leftStart: null,
+            leftEnd: null,
+          },
+          comments: [comment({ id: 2, content: 'this loop is quadratic' })],
+        }),
+      ]),
+    )
+    render(<PullRequestDetailView pr={detail({ files })} />)
+
+    expect(await screen.findByText('1 more thread on lines in the diff.')).toBeVisible()
+    // The place to read a comment about line 12 is line 12.
+    expect(screen.queryByText('this loop is quadratic')).toBeNull()
+  })
+
+  it('says what it left out rather than dropping it silently', async () => {
+    vi.mocked(threadsQuery).mockResolvedValue({
+      ...said([]),
+      threads: { threads: [], openCount: 0, doneCount: 0, systemCount: 32, botCount: 3 },
+    })
+    render(<PullRequestDetailView pr={detail({ files })} />)
+
+    // 32 of 56 on the sampled pull request were ADO's own activity trail. Hidden,
+    // because a vote and a push are not a conversation — but counted, because
+    // "no comments" beside 35 threads is the wrong answer.
+    expect(
+      await screen.findByText(/32 Azure DevOps status updates and 3 from SonarCloud hidden\./),
+    ).toBeVisible()
+  })
+
+  it('starts a thread on the pull request with no file and no iteration', async () => {
+    render(<PullRequestDetailView pr={detail({ files })} />)
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Comment on this pull request' }),
+    )
+    await userEvent.type(
+      screen.getByLabelText('New comment on this pull request'),
+      'the migration needs a rollback note',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Comment' }))
+
+    expect(wrote()).toEqual({
+      ...REF,
+      content: 'the migration needs a rollback note',
+      // Both null on purpose: this is about the pull request, and either field
+      // would anchor it to a file it is not about.
+      context: null,
+      iterationContext: null,
+    })
+  })
+
+  it('writes a new file thread against the update being read', async () => {
+    render(<PullRequestDetailView pr={detail({ files })} initialTab="update" />)
+    // Two waits, as `drawDiff` does one: the viewed marks gate the list, and this
+    // tab's files are a request of their own.
+    await screen.findByRole('list', { name: 'Changed files' })
+
+    // The update tab lands on the latest, so the pair is 1→2 — the same two
+    // iterations `useChanges` asked ADO to diff. Without it the comment lands
+    // against the latest iteration, and line 40 of update 2 is not line 40 of 5.
+    await userEvent.click(
+      await list().findByRole('button', { name: 'Comment on this file' }),
+    )
+    await userEvent.type(
+      screen.getByLabelText('New comment on /src/only-in-update.ts'),
+      'this file is new to this push',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Comment' }))
+
+    expect(wrote()).toEqual({
+      ...REF,
+      content: 'this file is new to this push',
+      context: {
+        filePath: '/src/only-in-update.ts',
+        rightStart: null,
+        rightEnd: null,
+        leftStart: null,
+        leftEnd: null,
+      },
+      iterationContext: {
+        firstComparingIteration: 1,
+        secondComparingIteration: 2,
+        changeTrackingId: null,
+      },
+    })
+  })
+
+  it('hides resolved threads and says the list is not empty', async () => {
+    vi.mocked(threadsQuery).mockResolvedValue(
+      said([thread({ status: 'closed', resolution: 'done' })]),
+    )
+    render(<PullRequestDetailView pr={detail({ files })} />)
+
+    // Stubbed rather than rendered, which is `ThreadCard`'s own rule: a resolved
+    // thread stays where it is, one line tall, until somebody asks for it.
+    expect(await screen.findByText(/Closed · 1 comment/)).toBeVisible()
+    expect(screen.queryByText('this needs a null check')).toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Hide resolved' }))
+
+    expect(screen.queryByText(/Closed · 1 comment/)).toBeNull()
+    // Not "nothing has been said": the difference between a quiet pull request
+    // and one whose conversation you have just hidden.
+    expect(screen.getByText('Every thread on this pull request is resolved.')).toBeVisible()
+  })
+
+  it('costs the conversation and nothing else when the read fails', async () => {
+    vi.mocked(threadsQuery).mockResolvedValue({
+      threads: null,
+      error: 'TF400813: The user is not authorized to access this resource.',
+      connected: true,
+      notFound: false,
+      rateLimit: null,
+    })
+    await drawDiff({ pr: detail({ files }) })
+
+    // T-023's third criterion, on the tab where it matters: the diff is still
+    // there and still readable, with one sentence saying why it has no comments.
+    expect(await screen.findByText(/Comments could not be read/)).toBeVisible()
+    expect(list().getByTitle('/src/log.ts')).toBeVisible()
+    expect(screen.getByText('0 of 1 read')).toBeVisible()
   })
 })

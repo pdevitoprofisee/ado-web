@@ -171,7 +171,19 @@ rewrite. Evidence in [`docs/research/`](./research/).
 - Reviewer votes: `10` approved · `5` approved w/ suggestions · `0` none ·
   `−5` waiting for author · `−10` rejected. **`isContainer` + `votedFor[]`** are what
   surface PRs assigned to a group you belong to.
-- `threads` **ignores `$top`** `[LIVE]` and has no pagination — you always get all.
+- `threads` **ignores every parameter you can give it** `[LIVE]` — `$top`, `$skip`,
+  `$expand=none`, `iteration`+`baseIteration`, and three api-versions including omitting it
+  altogether, all returned the identical 9 threads. No paging, no filtering, no projection:
+  one call gets everything and the selection is yours.
+- **Most threads are not a conversation** `[LIVE]`: 32 of 56 sampled threads were
+  `commentType: 'system'` — ADO's own vote/push/policy trail — and those are exactly the 32
+  with **no `status` field**. 44 of 56 had **no `threadContext`**, so they hang on the PR and
+  not on a line. Classify before rendering.
+- **A soft-deleted comment has no `content` key at all** `[LIVE]` (7/59), and threads do have
+  replies (3/56), so dropping a deleted parent orphans its children. Render a tombstone.
+- Anchored threads were **right-side only** in every live sample (12/12), `filePath` always
+  leading-slash, and `offset` is **not always 1**. `properties` values are all
+  `{"$type", "$value"}` wrappers — and `SupportsMarkdown` arrives as a `System.Int32`.
 - **Org-wide `/{org}/_apis/git/pullrequests` is genuinely cross-project** `[LIVE]` — 164
   active PRs spanning two projects, matching per-project enumeration over all six exactly.
   **There is no per-project fan-out**; one call covers the org.
@@ -242,6 +254,9 @@ line text — useful only to make our hunk boundaries match theirs. It's preview
 - The **MQR / Clean Code taxonomy is authoritative** (`impacts[]`,
   `cleanCodeAttribute`, `issueStatus`). Legacy `type`/`severity` are unreliable.
 - Param is `componentKeys`, not `components`, on Cloud.
+- **`api/rules/*` requires `organization` on Cloud** `[LIVE]` — without it every request,
+  `show` and `search` alike, answers 400 `The 'organization' parameter is missing`. This
+  made the whole endpoint look dead for a probe pass; see T-022.
 - **Rule descriptions are served to any authenticated token** `[LIVE]` — `rules/show`
   returned `htmlDesc`, `mdDesc` and `descriptionSections` for all three probe rules
   (3.0–12.8 KB, against 1101 metadata-only bytes unauthenticated) with an empty
@@ -250,9 +265,36 @@ line text — useful only to make our hunk boundaries match theirs. It's preview
 - **Batch rule lookups with `rule_keys`, plural** `[LIVE]`. `rule_key=a,b,c` is not an
   error — it silently returns `total: 0`, so the wrong parameter reads as "no such rules"
   rather than as a mistake. `rule_keys=a,b,c` with `f=name,htmlDesc` returns all three
-  with descriptions: one request warms every rule in a PR.
-- `api/qualitygates` was deprecated 2025-09-16 with no v2 replacement — prefer
-  `measures/component` for the numbers we actually display.
+  with descriptions: one request warms every rule in a PR (measured: 3 rules, 28.0 KB,
+  392 ms). **`f=` must not contain `type`** — the field is gone, and an illegal `f` entry
+  400s the entire request instead of being ignored.
+- **A rule can be undescribable.** `external_roslyn:*` keys are requested and simply not
+  returned — externally-imported analyser rules are not in Sonar's repository — and
+  unknown keys are skipped rather than erroring, so an undescribable rule and a typo look
+  identical. Fall back to the bare rule key.
+- **`descriptionSections` arrive in an unstable order** `[LIVE]`: the same rule, twice in
+  one run, gave `root_cause, how_to_fix, resources, introduction` then
+  `resources, introduction, root_cause, how_to_fix`. Impose your own order. The content is
+  HTML, and `mdDesc` was byte-identical to `htmlDesc` — there is no markdown path.
+- **`issues/search` returns resolved issues by default** `[LIVE]`. A PR answering `total: 3`
+  had three `FIXED` issues and zero open ones. Say
+  `issueStatuses=OPEN,CONFIRMED,ACCEPTED` when you mean open. `ps` is capped at 500
+  (`ps=501` → 400).
+- **Anchor a finding on `textRange.startLine`, not `line`** `[LIVE]`. `line` was present on
+  4/4 open issues (and equal to `startLine`) and **absent on 3/3 fixed** ones; `textRange`
+  was present on all 7.
+- `api/qualitygates` was deprecated 2025-09-16 with no v2 replacement, and **still answers
+  200** `[LIVE]` with per-condition `metricKey`/`comparator`/`errorThreshold`/`actualValue`.
+  Prefer it anyway for the gate panel: `measures/component` is the documented replacement
+  but the metric names in this note's earlier draft **404** on Cloud, `new_*` values hide
+  under `periods[0].value` rather than `value`, and `quality_gate_details` is a JSON
+  *string*.
+- **SonarCloud sends no rate-limit headers at all** `[LIVE]` — 19 response headers, none
+  mentioning a limit, retry or quota. A bare 429 is the whole signal, so back off in
+  minutes and do not look for a `Retry-After`.
+- A repository can map to **several** Sonar projects `[LIVE]`: `context.name` on the ADO
+  status is either `quality gate` or `quality_gate_<projectKey>`, and multi-project repos
+  post one status each. Query all of them.
 
 ### Security constraints (localhost is not a security boundary)
 
@@ -361,9 +403,11 @@ Settled by T-001 against the live `Profisee` org. Raw responses:
 
 1. **Org-wide cross-project PR listing — YES.** The per-project fan-out is deleted.
 2. **SonarCloud rule descriptions to an authenticated user — YES.** Rule detail renders
-   in-app; no scraping fallback.
+   in-app; no scraping fallback. *Re-confirmed by T-022, which also found what T-001's
+   working call had and a later one lacked: `organization` is mandatory on `api/rules/*`.*
 3. **Sonar `statuses` `genre` / `name` — confirmed:** genre `SonarCloud`, name
-   `quality gate`.
+   `quality gate` — *or* `quality_gate_<projectKey>`, one status per Sonar project, on a
+   repository that has more than one (T-022).
 4. **Comment likes: the route exists and reads** (200 authenticated, 401 anonymous, 404
    for an invented path). **Writability is still unproven** — the only proof is a real
    PUT against a real person's comment, which nobody has authorised. Until then treat

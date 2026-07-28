@@ -64,6 +64,7 @@ function fakeClient(replies: Record<string, unknown>): AdoClient & { calls: Call
       return reply as never
     },
     getBytes: () => Promise.reject(new Error('this fixture serves JSON only')),
+    write: () => Promise.reject(new Error('this fixture is read-only')),
     async fanOut(items, task) {
       return Promise.all(items.map(task))
     },

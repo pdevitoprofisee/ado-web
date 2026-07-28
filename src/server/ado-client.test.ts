@@ -328,3 +328,121 @@ describe('getBytes', () => {
     expect(client.rateLimit().calls).toBe(1)
   })
 })
+
+describe('write', () => {
+  const THREAD = 'P/_apis/git/repositories/R/pullRequests/24794/threads/312114'
+
+  it('sends the verb and a JSON body through the same chokepoint as a read', async () => {
+    const calls = stubFetch(() => json({ id: 3 }))
+    const client = createAdoClient(CREDENTIAL)
+
+    expect(await client.write('POST', `${THREAD}/comments`, { content: 'ok' })).toEqual({ id: 3 })
+
+    const { url, init } = calls[0]
+    const headers = init.headers as Record<string, string>
+    expect(url).toBe(`https://dev.azure.com/Contoso/${THREAD}/comments?api-version=7.1`)
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe('{"content":"ok"}')
+    expect(headers['Content-Type']).toBe('application/json')
+    // Everything a read gets, because a write that skipped these would fail the
+    // way note 4 describes: a 302 to a sign-in page, read as success.
+    expect(headers.Authorization).toBe(`Basic ${Buffer.from(`:${PAT}`).toString('base64')}`)
+    expect(headers['X-TFS-FedAuthRedirect']).toBe('Suppress')
+    expect(init.redirect).toBe('manual')
+  })
+
+  it('sends a DELETE with no body and no Content-Type', async () => {
+    // `null`, not `''`: a 204 is a null-body status and the Response constructor
+    // refuses any body at all for one.
+    const calls = stubFetch(() => new Response(null, { status: 204 }))
+    const client = createAdoClient(CREDENTIAL)
+
+    // 204, so there is nothing to parse — and `JSON.parse('')` would turn a
+    // successful delete into an error.
+    expect(await client.write('DELETE', `${THREAD}/comments/2`)).toBeNull()
+
+    const headers = calls[0].init.headers as Record<string, string>
+    expect(calls[0].init.method).toBe('DELETE')
+    expect(calls[0].init.body).toBeUndefined()
+    // A DELETE with a body is a different request to a DELETE without one.
+    expect(headers['Content-Type']).toBeUndefined()
+  })
+
+  it('reads an empty 200 as no body rather than as broken JSON', async () => {
+    stubFetch(() => new Response('', { status: 200 }))
+    const client = createAdoClient(CREDENTIAL)
+
+    expect(await client.write('PATCH', THREAD, { status: 'fixed' })).toBeNull()
+  })
+
+  it('never retries a write — note 2', async () => {
+    vi.useFakeTimers()
+    const calls = stubFetch(() => new Response('', { status: 429, headers: { 'Retry-After': '1' } }))
+    const client = createAdoClient(CREDENTIAL)
+
+    const result = client.write('POST', `${THREAD}/comments`, { content: 'ok' })
+    const settled = expect(result).rejects.toBeInstanceOf(AdoError)
+    await vi.advanceTimersByTimeAsync(10_000)
+    await settled
+
+    // A read retries three times; a retried POST is a second comment on a
+    // colleague's pull request. One attempt, and the failure is reported.
+    expect(calls).toHaveLength(1)
+  })
+
+  it('does not retry a write that failed in transport, because that case is ambiguous', async () => {
+    vi.useFakeTimers()
+    let attempts = 0
+    vi.stubGlobal('fetch', () => {
+      attempts += 1
+
+      return Promise.reject(new Error('socket hang up'))
+    })
+    const client = createAdoClient(CREDENTIAL)
+
+    const result = client.write('POST', `${THREAD}/comments`, { content: 'ok' })
+    const settled = expect(result).rejects.toThrow('socket hang up')
+    await vi.advanceTimersByTimeAsync(10_000)
+    await settled
+
+    // A timed-out POST may already have been applied. "Probably not" is not a
+    // basis for sending it again.
+    expect(attempts).toBe(1)
+  })
+
+  it('still slows the next call when a write comes back throttled', async () => {
+    vi.useFakeTimers()
+    const calls = stubFetch((call) =>
+      call === 0 ? json({ id: 3 }, { headers: { 'Retry-After': '5' } }) : json({ id: 4 }),
+    )
+    const client = createAdoClient(CREDENTIAL)
+
+    // The write succeeded — a throttled response is a slow 200, not a rejection.
+    // What it costs is the *next* request, which is the whole shape of note 2.
+    expect(await client.write('POST', `${THREAD}/comments`, { content: 'ok' })).toEqual({ id: 3 })
+    expect(client.rateLimit().throttled).toBe(true)
+
+    const next = client.write('POST', `${THREAD}/comments`, { content: 'again' })
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(calls).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await next).toEqual({ id: 4 })
+  })
+
+  it('reads a redirect on a write as the auth failure it is — note 4', async () => {
+    stubFetch(() => new Response('', { status: 302, headers: { location: 'https://login/' } }))
+    const client = createAdoClient(CREDENTIAL)
+
+    await expect(client.write('PATCH', THREAD, { status: 'fixed' })).rejects.toThrow(/sign-in page/)
+  })
+
+  it('never lets the credential reach a failed write’s message', async () => {
+    stubFetch(() => json({ message: `Rejected token ${PAT}` }, { status: 400 }))
+    const client = createAdoClient(CREDENTIAL)
+
+    await expect(client.write('POST', `${THREAD}/comments`, { content: 'ok' })).rejects.toThrow(
+      /^Azure DevOps answered 400\.$/,
+    )
+  })
+})

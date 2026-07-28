@@ -2,8 +2,11 @@ import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 
 import { DiffView, blobNotice } from './diff-view'
+import { FileThreadList } from '@/components/comments/file-thread-list'
 import { cn } from '@/lib/utils'
 
+import type { FileThreads, IterationContext } from '@/lib/comment-contract'
+import type { ThreadActions } from '@/components/comments/thread-actions'
 import type {
   DiffLayout,
   DiffRow,
@@ -70,6 +73,10 @@ export function FileDiffPanel({
   before = null,
   after = null,
   onExpand,
+  threads = null,
+  threadActions,
+  hideDone = false,
+  iterationContext = null,
 }: {
   blobs: FileBlobs
   diff: FileDiff
@@ -110,6 +117,21 @@ export function FileDiffPanel({
   before?: HighlightedLines | null
   after?: HighlightedLines | null
   onExpand?: (row: Extract<DiffRow, { kind: 'gap' }>) => void
+  /**
+   * This file's conversations. The anchored ones are already in `rows` — the
+   * caller built those with `buildRows(…, threads)` — and this is passed as well
+   * for the ones no row can hold, and for the case where there are no rows.
+   */
+  threads?: FileThreads | null
+  threadActions?: ThreadActions
+  /**
+   * The same flag the caller passed to `buildRows`. Passed on so the list above
+   * the diff hides the same threads the diff does; the panel does not filter
+   * `rows` itself, because a hidden thread must not be a measured row.
+   */
+  hideDone?: boolean
+  /** Which iterations a new thread on this file is written against. */
+  iterationContext?: IterationContext | null
 }) {
   // Seeded from `viewed` and then owned here: a file marked read closes, and
   // reopening it does not mark it unread. Those are two different statements —
@@ -196,11 +218,33 @@ export function FileDiffPanel({
       </div>
 
       {!open ? null : notice !== null ? (
-        <p className="text-muted-foreground border-border/60 border-t px-2 py-1.5 text-xs">
-          {notice}
-        </p>
+        <>
+          <p className="text-muted-foreground border-border/60 border-t px-2 py-1.5 text-xs">
+            {notice}
+          </p>
+          {/* `all`, because there is no diff for an anchored thread to sit in.
+              A comment on a binary file is still a comment. */}
+          <FileThreadList
+            path={blobs.path}
+            threads={threads}
+            actions={threadActions}
+            hideDone={hideDone}
+            all
+            iterationContext={iterationContext}
+          />
+        </>
       ) : (
         <>
+          {/* Above the diff rather than below it: these are the threads that
+              have no line, and the bottom of a 70vh scroller is where a comment
+              goes to be missed. */}
+          <FileThreadList
+            path={blobs.path}
+            threads={threads}
+            actions={threadActions}
+            hideDone={hideDone}
+            iterationContext={iterationContext}
+          />
           <DiffView
             rows={rows}
             layout={layout}
@@ -208,6 +252,7 @@ export function FileDiffPanel({
             before={before}
             after={after}
             onExpand={onExpand}
+            threadActions={threadActions}
           />
           {noNewline === null ? null : (
             <p className="text-muted-foreground border-border/60 border-t px-2 py-1 font-mono text-xs">

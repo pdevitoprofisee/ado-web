@@ -3,13 +3,15 @@ import { useQuery } from '@tanstack/react-query'
 
 import { FileDiffPanel } from './file-diff'
 import { diffFile } from '@/lib/diff'
-import { buildRows, expandGap, setLayout } from '@/lib/diff-rows'
+import { buildRows, expandGap, setHideDone, setLayout, setThreads } from '@/lib/diff-rows'
 import { fileAnchor } from '@/lib/file-anchor'
 import { sharedHighlighter } from '@/lib/highlight/shared'
 import { useNearViewport } from '@/lib/near-viewport'
 import { fileBlobsQuery } from '@/server/blob-fn'
 
+import type { ThreadActions } from '@/components/comments/thread-actions'
 import type { RowModel } from '@/lib/diff-rows'
+import type { FileThreads, IterationContext } from '@/lib/comment-contract'
 import type { DiffLayout, FileBlobs, HighlightedLines } from '@/lib/diff-contract'
 import type { ChangedFile } from '@/server/pull-request'
 
@@ -39,6 +41,10 @@ export function ChangedFileDiff({
   conflicted = false,
   viewed = false,
   onViewedChange,
+  threads = null,
+  threadActions,
+  hideDone = false,
+  iterationContext = null,
 }: {
   projectId: string
   repositoryId: string
@@ -48,6 +54,14 @@ export function ChangedFileDiff({
   conflicted?: boolean
   viewed?: boolean
   onViewedChange?: (viewed: boolean) => void
+  /** This file's threads, or `null` while the conversation is still arriving. */
+  threads?: FileThreads | null
+  /** Absent on a page that reads the conversation without being able to write it. */
+  threadActions?: ThreadActions
+  /** The per-PR toggle. A row-model input, so a hidden thread occupies no measured row. */
+  hideDone?: boolean
+  /** Which iterations a thread started here is written against. */
+  iterationContext?: IterationContext | null
 }) {
   // Monotonic on purpose — "has been opened", not "is open". Closing a file
   // should not throw away what it cost two calls to fetch, and the query cache
@@ -100,12 +114,24 @@ export function ChangedFileDiff({
     setModel(
       blobs === null
         ? null
-        : buildRows(diffFile(linesOf(blobs, 'before'), linesOf(blobs, 'after')), linesOf(blobs, 'after'), layout),
+        : buildRows(
+            diffFile(linesOf(blobs, 'before'), linesOf(blobs, 'after')),
+            linesOf(blobs, 'after'),
+            layout,
+            threads,
+            hideDone,
+          ),
     )
-  } else if (model !== null && model.layout !== layout) {
+  } else if (model !== null) {
     // Switching sides keeps the expansions: `setLayout` reprojects the same
-    // reveals rather than starting the file over.
-    setModel(setLayout(model, layout))
+    // reveals rather than starting the file over. The other two arrive later than
+    // the bytes do — threads come from a poll — and each returns the same model
+    // when its input has not moved, so this settles to a no-op on every render
+    // that changed none of the three.
+    const relaid = model.layout === layout ? model : setLayout(model, layout)
+    const next = setHideDone(setThreads(relaid, threads), hideDone)
+
+    if (next !== model) setModel(next)
   }
 
   const [tokens, setTokens] = useState<{
@@ -187,6 +213,14 @@ export function ChangedFileDiff({
         onExpand={(row) =>
           setModel((current) => (current === null ? current : expandGap(current, row.key, 'all')))
         }
+        // The same two the rows were built from. The panel does not filter — it
+        // renders the rows it is given and puts the unplaceable threads above
+        // them — so handing it a different `hideDone` than the row model got
+        // would show a resolved thread in one place and not the other.
+        threads={threads}
+        threadActions={threadActions}
+        hideDone={hideDone}
+        iterationContext={iterationContext}
       />
     </div>
   )

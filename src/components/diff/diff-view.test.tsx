@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DiffView, blobNotice } from './diff-view'
 
+import type { Comment, Thread } from '@/lib/comment-contract'
 import type { BlobSide, DiffLine, DiffRow, FileBlobs } from '@/lib/diff-contract'
 
 // jsdom lays nothing out and has no ResizeObserver, so a virtualizer left to
@@ -112,6 +113,167 @@ describe('DiffView', () => {
     render(<DiffView rows={ROWS} layout="unified" label="/src/app.ts" />)
 
     expect(screen.getByRole('button', { name: /Expand 40 hidden lines/ })).toBeDisabled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Threads in the diff (T-025).
+// ---------------------------------------------------------------------------
+
+const comment = (id: number, content: string | null): Comment => ({
+  id,
+  parentCommentId: null,
+  author: { id: 'writer', displayName: 'Ada Lovelace', uniqueName: null, imageUrl: null },
+  content,
+  publishedDate: '2026-07-01T00:00:00Z',
+  lastUpdatedDate: null,
+  lastContentUpdatedDate: null,
+  isDeleted: content === null,
+  commentType: 'text',
+  likedBy: [],
+})
+
+const thread = (
+  id: number,
+  resolution: Thread['resolution'],
+  comments: readonly Comment[],
+): Thread => ({
+  id,
+  status: resolution === 'open' ? 'active' : 'fixed',
+  resolution,
+  kind: 'human',
+  publishedDate: '2026-07-01T00:00:00Z',
+  lastUpdatedDate: null,
+  isDeleted: false,
+  context: null,
+  iterationContext: null,
+  comments,
+  properties: {},
+})
+
+const withThread = (one: Thread): readonly DiffRow[] => [
+  ...ROWS.slice(0, 2),
+  { kind: 'thread', key: `!${one.id}`, threads: [one], line: 1 },
+  ...ROWS.slice(2),
+]
+
+describe('a thread row', () => {
+  it('renders the conversation under the line it is about', () => {
+    const rows = withThread(thread(7, 'open', [comment(1, 'This allocates on every keystroke.')]))
+    render(<DiffView rows={rows} layout="unified" label="/src/app.ts" />)
+
+    expect(screen.getByText('This allocates on every keystroke.')).toBeInTheDocument()
+    expect(screen.getByText('Ada Lovelace')).toBeInTheDocument()
+  })
+
+  it('renders a done thread as a stub that keeps its place', () => {
+    // In place rather than gone: the line it hangs on is why it exists. "Hide
+    // done" is what removes it, and that happens in the row model.
+    const rows = withThread(thread(9, 'done', [comment(1, 'Fixed in the last push.')]))
+    render(<DiffView rows={rows} layout="unified" label="/src/app.ts" />)
+
+    expect(screen.queryByText('Fixed in the last push.')).not.toBeInTheDocument()
+    expect(screen.getByText(/Resolved/)).toBeInTheDocument()
+    expect(screen.getByText(/1 comment/)).toBeInTheDocument()
+
+    return userEvent.click(screen.getByRole('button', { name: 'Show' })).then(() => {
+      expect(screen.getByText('Fixed in the last push.')).toBeInTheDocument()
+    })
+  })
+
+  it('is the only row the virtualizer is allowed to measure', () => {
+    // The measurement policy the whole component rests on. `measureElement` needs
+    // `data-index` to know which row it measured, so the attribute is the tell:
+    // exactly one row carries it, and it is the thread.
+    const rows = withThread(thread(7, 'open', [comment(1, 'Long prose wraps and cannot be guessed.')]))
+    const { container } = render(<DiffView rows={rows} layout="unified" label="/src/app.ts" />)
+
+    const rendered = [...container.querySelectorAll('[style*="translateY"]')]
+    const measured = rendered.filter((element) => element.hasAttribute('data-index'))
+
+    expect(rendered.length).toBe(rows.length)
+    expect(measured).toHaveLength(1)
+    expect(measured[0]).toHaveTextContent('Long prose wraps and cannot be guessed.')
+    // And a measured row is not given a fixed height, or it would measure the
+    // estimate straight back and never converge.
+    expect((measured[0] as HTMLElement).style.height).toBe('')
+    for (const element of rendered.filter((one) => !one.hasAttribute('data-index'))) {
+      expect((element as HTMLElement).style.height).toBe('20px')
+    }
+  })
+
+  it('spans both columns side by side, because it is one conversation', () => {
+    const rows = withThread(thread(7, 'open', [comment(1, 'One conversation, not two halves.')]))
+    const { container } = render(<DiffView rows={rows} layout="split" label="/src/app.ts" />)
+
+    const measured = container.querySelector('[data-index]')
+    expect(measured).toHaveTextContent('One conversation, not two halves.')
+    expect(measured).toHaveClass('w-full')
+    // Not `w-max`: a wrapped paragraph must not widen the file's sideways scroll.
+    expect(measured).not.toHaveClass('w-max')
+  })
+
+  it('renders a deleted comment as a tombstone with its replies still under it', () => {
+    // ADO soft-deletes, and 3 of 56 sampled threads had replies. Dropping a
+    // deleted parent orphans whatever was said under it.
+    const rows = withThread(
+      thread(7, 'open', [
+        comment(1, null),
+        { ...comment(2, 'Agreed, and here is why.'), parentCommentId: 1 },
+      ]),
+    )
+    render(<DiffView rows={rows} layout="unified" label="/src/app.ts" />)
+
+    expect(screen.getByText('Ada Lovelace deleted this comment.')).toBeInTheDocument()
+    expect(screen.getByText('Agreed, and here is why.')).toBeInTheDocument()
+  })
+
+  it('offers nothing to write with when no actions were passed', () => {
+    // The diff renders a conversation read-only until the server layer is wired.
+    const rows = withThread(thread(7, 'open', [comment(1, 'Read only.')]))
+    render(<DiffView rows={rows} layout="unified" label="/src/app.ts" />)
+
+    expect(screen.queryByRole('button', { name: 'Reply' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resolve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+  })
+
+  it('offers reply, resolve and edit once it has somewhere to send them', async () => {
+    const onReply = vi.fn().mockResolvedValue(undefined)
+    const rows = withThread(thread(7, 'open', [comment(1, 'Mine to edit.')]))
+    render(
+      <DiffView
+        rows={rows}
+        layout="unified"
+        label="/src/app.ts"
+        threadActions={{ viewerId: 'writer', onReply, onStatusChange: vi.fn(), onEdit: vi.fn() }}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Resolve' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reply' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'Reply to thread 7' }), 'Will do.')
+    await userEvent.click(screen.getByRole('button', { name: 'Reply' }))
+
+    // Threaded under the last comment, which is what ADO orders a thread on.
+    expect(onReply).toHaveBeenCalledWith({ threadId: 7, parentCommentId: 1, content: 'Will do.' })
+  })
+
+  it('does not offer edit or delete on a comment that is not yours', () => {
+    const rows = withThread(thread(7, 'open', [comment(1, 'Not yours.')]))
+    render(
+      <DiffView
+        rows={rows}
+        layout="unified"
+        label="/src/app.ts"
+        threadActions={{ viewerId: 'someone-else', onEdit: vi.fn(), onDelete: vi.fn() }}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
   })
 })
 

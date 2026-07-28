@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import { diffFile } from './diff'
-import { buildRows, expandGap, setLayout } from './diff-rows'
+import { buildRows, expandGap, setHideDone, setLayout, setThreads } from './diff-rows'
+import type { FileThreads, Thread } from './comment-contract'
 import type { DiffLine, DiffRow } from './diff-contract'
 
 // A hundred numbered lines with two inserted near the top and one line rewritten
@@ -236,5 +237,184 @@ describe('row identity across an expansion', () => {
       expect(keys(expanded.rows)).toEqual(expect.arrayContaining(kept))
       expect(new Set(keys(expanded.rows)).size).toBe(expanded.rows.length)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Threads (T-025).
+// ---------------------------------------------------------------------------
+
+const thread = (id: number, resolution: Thread['resolution'] = 'open'): Thread => ({
+  id,
+  status: resolution === 'open' ? 'active' : 'fixed',
+  resolution,
+  kind: 'human',
+  publishedDate: '2026-07-01T00:00:00Z',
+  lastUpdatedDate: null,
+  isDeleted: false,
+  context: null,
+  iterationContext: null,
+  comments: [],
+  properties: {},
+})
+
+const fileThreads = (
+  byRightLine: Record<number, readonly Thread[]>,
+  unanchored: readonly Thread[] = [],
+): FileThreads => ({
+  path: '/src/app.ts',
+  byRightLine: new Map(Object.entries(byRightLine).map(([line, list]) => [Number(line), list])),
+  unanchored,
+})
+
+/** The row a thread row sits directly under, by key. */
+function under(rows: readonly DiffRow[], key: string): string | undefined {
+  const at = rows.findIndex((row) => row.key === key)
+  return at < 1 ? undefined : rows[at - 1].key
+}
+
+describe('thread rows', () => {
+  // Line 20 of the new file is a context line inside the first hunk, so it is
+  // rendered in both layouts and under the same key in each.
+  const threads = fileThreads({ 20: [thread(7)] })
+
+  it('sits under its right-side line, in unified and in split alike', () => {
+    // Same row, both layouts: a conversation about a line is one conversation,
+    // not two halves of one, so there is nothing here for the projection to do.
+    for (const layout of ['unified', 'split'] as const) {
+      const { rows } = buildRows(DIFF, AFTER, layout, threads)
+
+      expect(under(rows, '!7')).toBe('20/20')
+      expect(rows.filter((row) => row.kind === 'thread')).toEqual([
+        { kind: 'thread', key: '!7', threads: [thread(7)], line: 20 },
+      ])
+    }
+  })
+
+  it('groups every thread on one line into one row to measure', () => {
+    // Two people on one line is one row, keyed on the older thread — the id that
+    // does not change when the second one arrives.
+    const { rows } = buildRows(DIFF, AFTER, 'unified', fileThreads({ 20: [thread(7), thread(9)] }))
+    const rendered = rows.filter((row) => row.kind === 'thread')
+
+    expect(rendered).toHaveLength(1)
+    expect(rendered[0].key).toBe('!7')
+    expect(rendered[0].kind === 'thread' && rendered[0].threads.map((one) => one.id)).toEqual([7, 9])
+  })
+
+  it('leaves the rows of a file with no threads exactly as they were', () => {
+    // Most files in a pull request have no comments, and none of them should
+    // come out of this looking any different from round 3.
+    const plain = buildRows(DIFF, AFTER, 'unified')
+
+    expect(buildRows(DIFF, AFTER, 'unified', fileThreads({})).rows).toEqual(plain.rows)
+    expect(buildRows(DIFF, AFTER, 'unified', null).rows).toEqual(plain.rows)
+    // And nothing is rebuilt at all when the threads did not change.
+    expect(setThreads(plain, null)).toBe(plain)
+  })
+
+  it('has nowhere to put one when the file has no rows', () => {
+    // No hunks means no rows and nothing for a thread to hang under. The panel
+    // renders all of them next to its notice instead.
+    const unchanged = buildRows(diffFile(BEFORE, BEFORE), BEFORE, 'unified', threads)
+
+    expect(unchanged.rows).toEqual([])
+  })
+})
+
+describe('a thread the diff cannot place on a visible line', () => {
+  it('hangs under the gap that is hiding its line', () => {
+    // New line 5 is inside the leading gap. Somewhere beats nowhere: a comment
+    // behind a collapsed run of context is still a comment on this file.
+    const { rows } = buildRows(DIFF, AFTER, 'unified', fileThreads({ 5: [thread(7)] }))
+
+    expect(under(rows, '!7')).toBe('~1,1')
+  })
+
+  it('moves onto its real line when that gap is opened, without being remounted', () => {
+    // The key is the thread's id and nothing about position, so the virtualizer
+    // sees the same row move rather than one row unmount and another appear.
+    const model = buildRows(DIFF, AFTER, 'unified', fileThreads({ 5: [thread(7)] }))
+    const opened = expandGap(model, '~1,1', 'all')
+
+    expect(under(model.rows, '!7')).toBe('~1,1')
+    expect(under(opened.rows, '!7')).toBe('5/5')
+    expect(opened.rows.filter((row) => row.kind === 'thread').map((row) => row.key)).toEqual(['!7'])
+  })
+
+  it('keeps its key when a gap above it is expanded', () => {
+    // The invariant round 3 established, now with a thread in it: expanding a gap
+    // anywhere above must not re-key anything, or every row below the click
+    // remounts for a click that changed nothing about them.
+    const model = buildRows(DIFF, AFTER, 'unified', fileThreads({ 20: [thread(7)] }))
+    const expanded = expandGap(model, '~1,1', 'top', 6)
+
+    expect(under(expanded.rows, '!7')).toBe('20/20')
+    expect(keys(expanded.rows)).toEqual(expect.arrayContaining(keys(model.rows).filter((key) => key !== '~1,1')))
+  })
+
+  it('lands at the bottom rather than nowhere when its line is past the diff', () => {
+    // The server is meant to have put this in `unanchored`. If one slips through,
+    // the end of the file is a worse place for it than its line and a far better
+    // one than gone.
+    const { rows } = buildRows(DIFF, AFTER, 'unified', fileThreads({ 9_000: [thread(7)] }))
+
+    expect(rows[rows.length - 1]).toEqual({ kind: 'thread', key: '!7', threads: [thread(7)], line: 9_000 })
+  })
+
+  it('leaves `unanchored` out of the rows entirely', () => {
+    // A left-side anchor has no right-side line to sit under, so it is not a row
+    // at all — `FileThreadList` renders it above the diff. Not lost, just not here.
+    const { rows } = buildRows(DIFF, AFTER, 'unified', fileThreads({}, [thread(7)]))
+
+    expect(rows.filter((row) => row.kind === 'thread')).toEqual([])
+    expect(rows).toEqual(buildRows(DIFF, AFTER, 'unified').rows)
+  })
+})
+
+describe('hide done', () => {
+  const threads = fileThreads({ 20: [thread(7)], 24: [thread(9, 'done')] })
+
+  it('takes the done thread out of the model, not out of the styling', () => {
+    // An input to the row model rather than a class on a rendered row: a hidden
+    // thread that still occupies a row is a row the virtualizer still measures,
+    // and a measured row is the expensive kind.
+    const shown = buildRows(DIFF, AFTER, 'unified', threads)
+    const hidden = buildRows(DIFF, AFTER, 'unified', threads, true)
+
+    expect(shown.rows.filter((row) => row.kind === 'thread').map((row) => row.key)).toEqual(['!7', '!9'])
+    expect(hidden.rows.filter((row) => row.kind === 'thread').map((row) => row.key)).toEqual(['!7'])
+    expect(hidden.rows).toHaveLength(shown.rows.length - 1)
+  })
+
+  it('drops the row when every thread on the line is done', () => {
+    const hidden = buildRows(DIFF, AFTER, 'unified', fileThreads({ 20: [thread(9, 'done')] }), true)
+
+    expect(hidden.rows).toEqual(buildRows(DIFF, AFTER, 'unified').rows)
+  })
+
+  it('toggles without disturbing the expansions or the layout', () => {
+    const model = expandGap(buildRows(DIFF, AFTER, 'split', threads), '~54,56', 'top', 4)
+    const hidden = setHideDone(model, true)
+
+    expect(hidden.revealed).toEqual(model.revealed)
+    expect(hidden.layout).toBe('split')
+    // Nothing to rebuild when the flag is the one already in force.
+    expect(setHideDone(hidden, true)).toBe(hidden)
+  })
+})
+
+describe('setThreads', () => {
+  it('keeps the expansions when threads arrive after the bytes', () => {
+    // Threads come from a poll: they land after the diff and again every thirty
+    // seconds. A reply must not close a gap somebody opened to read the code the
+    // reply is about.
+    const model = expandGap(buildRows(DIFF, AFTER, 'unified'), '~24,26', 'top', 5)
+    const withThreads = setThreads(model, fileThreads({ 20: [thread(7)] }))
+
+    expect(withThreads.revealed).toEqual(model.revealed)
+    expect(under(withThreads.rows, '!7')).toBe('20/20')
+    // And the same thread row survives the next poll unchanged.
+    expect(setThreads(withThreads, withThreads.threads)).toBe(withThreads)
   })
 })

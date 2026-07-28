@@ -1,21 +1,31 @@
 import { Check, CircleHelp, Clock, Minus, TriangleAlert, X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import type { ReactNode } from 'react'
 
 import { age } from './pr-list'
 import { Markdown } from './markdown'
+import { Composer } from './comments/composer'
+import { ThreadCard } from './comments/thread-card'
 import { ChangedFileDiff } from './diff/changed-file'
 import { FileTree } from './diff/file-tree'
+import { SonarPanel, scrollToFinding } from './sonar/panel'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { COMBINED, useChanges } from '@/lib/changes'
+import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
 import { cn } from '@/lib/utils'
 import { useViewedFiles } from '@/lib/viewed'
 import { fileViewedKey } from '@/lib/viewed-key'
 
+import type { ThreadActions } from './comments/thread-actions'
+import type { SonarJump } from './sonar/panel'
 import type { ChangeView } from '@/lib/changes'
+import type { FileThreads, IterationContext } from '@/lib/comment-contract'
+import type { Conversation } from '@/lib/conversation'
 import type { DiffLayout } from '@/lib/diff-contract'
+import type { SonarReportResult } from '@/server/sonar-fn'
 import type {
   ChangeSet,
   ChangedFile,
@@ -535,6 +545,36 @@ function isViewed(viewed: ReadonlySet<string>, file: ChangedFile): boolean {
   return key !== null && viewed.has(key)
 }
 
+/**
+ * Whether resolved conversations are out of the way.
+ *
+ * Beside the layout toggle and not inside a file, for the reason `LayoutToggle`
+ * is: it is a statement about how you are reading this pass, not about the file
+ * in front of you. A row-model input on the way down, so a hidden thread costs
+ * no measured row — see `setHideDone`.
+ */
+function HideDoneToggle({
+  hideDone,
+  onHideDoneChange,
+}: {
+  hideDone: boolean
+  onHideDoneChange: (hideDone: boolean) => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={hideDone}
+      onClick={() => onHideDoneChange(!hideDone)}
+      className={cn(
+        'rounded px-1.5 py-0.5',
+        hideDone ? 'text-foreground bg-muted' : 'hover:text-foreground',
+      )}
+    >
+      Hide resolved
+    </button>
+  )
+}
+
 function ChangedFiles({
   changes,
   update,
@@ -546,6 +586,12 @@ function ChangedFiles({
   onLayoutChange,
   viewed,
   onViewedChange,
+  threads,
+  threadActions,
+  threadError,
+  hideDone,
+  onHideDoneChange,
+  iterationContext,
 }: {
   /** The selected view's files — the combined diff, or one update's. */
   changes: ChangeSet
@@ -561,6 +607,25 @@ function ChangedFiles({
   onLayoutChange: (layout: DiffLayout) => void
   viewed: ReadonlySet<string>
   onViewedChange: (file: ChangedFile, viewed: boolean) => void
+  /**
+   * Anchored threads by path, grouped once by the page rather than once per
+   * panel: a 294-file pull request would otherwise walk the thread list 294
+   * times to find the handful of files that have comments on them.
+   */
+  threads: ReadonlyMap<string, FileThreads>
+  /** Absent while the conversation cannot be written — nothing here is disabled, it is not offered. */
+  threadActions?: ThreadActions
+  /**
+   * Why there are no comments, when the reason is a failed call rather than an
+   * empty conversation. Said quietly and beside the diff rather than instead of
+   * it: T-023's whole point is that a failing threads read costs the
+   * conversation and nothing else.
+   */
+  threadError: string | null
+  hideDone: boolean
+  onHideDoneChange: (hideDone: boolean) => void
+  /** Which iterations a thread started on this diff is written against. */
+  iterationContext: IterationContext | null
 }) {
   const nodes = useMemo(() => buildFileTree(changes.files), [changes.files])
 
@@ -587,8 +652,19 @@ function ChangedFiles({
           </span>
           {update}
         </span>
-        <LayoutToggle layout={layout} onLayoutChange={onLayoutChange} />
+        <span className="flex items-baseline gap-3">
+          <HideDoneToggle hideDone={hideDone} onHideDoneChange={onHideDoneChange} />
+          <LayoutToggle layout={layout} onLayoutChange={onLayoutChange} />
+        </span>
       </div>
+
+      {/* Not a `Failed`: the diff below this line is fine and is what the tab is
+          for. Saying it once here beats a notice on each of 294 panels. */}
+      {threadError === null ? null : (
+        <p className="text-muted-foreground text-xs">
+          Comments could not be read, so none are shown on these files. {threadError}
+        </p>
+      )}
 
       {/* An update that failed or is still arriving renders no rows at all, so
           these say which of the two it is. Falling back to the combined list
@@ -623,6 +699,13 @@ function ChangedFiles({
                 conflicted={conflicted.has(file.path)}
                 viewed={isRead(file)}
                 onViewedChange={(next) => onViewedChange(file, next)}
+                // `null` for a file nobody has commented on, which is most of
+                // them, and the same `null` the panel gets while the read is
+                // still in flight. Both mean "no conversation to place here".
+                threads={threads.get(file.path) ?? null}
+                threadActions={threadActions}
+                hideDone={hideDone}
+                iterationContext={iterationContext}
               />
             </li>
           ))}
@@ -638,10 +721,128 @@ function ChangedFiles({
   )
 }
 
+/**
+ * The conversation that is about the pull request rather than about a line.
+ *
+ * It needs somewhere of its own because nothing else can hold it: `fileThreads`
+ * keys on a path and these threads have none, and 44 of the 56 threads T-022
+ * sampled were exactly this. A page that only rendered comments inside diff rows
+ * would be hiding most of what was said.
+ */
+function PullRequestConversation({
+  conversation,
+  hideDone,
+  onHideDoneChange,
+}: {
+  conversation: Conversation
+  /** The page's flag, shared with the diff — one answer to "am I hiding resolved threads". */
+  hideDone: boolean
+  onHideDoneChange: (hideDone: boolean) => void
+}) {
+  const [composing, setComposing] = useState(false)
+
+  const { onPullRequest, threads } = conversation
+
+  // Same gate the diff's panels get: with no credential the handlers are dropped
+  // rather than disabled, because "not offered" is how this seam spells a write
+  // that cannot land. `viewerId` stays either way — it is what "your comment"
+  // means, and it came down from the page, not from the token.
+  const actions: ThreadActions = conversation.connected
+    ? conversation.actions
+    : { viewerId: conversation.actions.viewerId }
+  const onNewThread = actions.onNewThread
+
+  const shown = hideDone
+    ? onPullRequest.filter((thread) => thread.resolution === 'open')
+    : onPullRequest
+
+  // Everything else is anchored, so it is on the other tab. Counted rather than
+  // repeated here: the place to read a comment about line 40 is line 40.
+  const onFiles = threads.length - onPullRequest.length
+
+  return (
+    <div className="flex w-full flex-col gap-2">
+      {/* The same control as the one above the diff and the same state behind it,
+          offered here because this is the other place threads are rendered and the
+          two tabs are never on screen together. Only when there is something to
+          hide: a button that does nothing visible is a button that reads as broken. */}
+      {onPullRequest.some((thread) => thread.resolution !== 'open') ? (
+        <div className="text-muted-foreground flex justify-end text-xs">
+          <HideDoneToggle hideDone={hideDone} onHideDoneChange={onHideDoneChange} />
+        </div>
+      ) : null}
+
+      {shown.length === 0 ? (
+        <Empty>
+          {onPullRequest.length === 0
+            ? 'Nothing has been said about this pull request yet.'
+            : 'Every thread on this pull request is resolved.'}
+        </Empty>
+      ) : (
+        // One card per thread and not one for the lot: they are not replies to
+        // each other, and stacking them into a single card would say they were.
+        shown.map((thread) => (
+          <ThreadCard key={thread.id} threads={[thread]} actions={actions} className="pl-0" />
+        ))
+      )}
+
+      {/* Both said out loud, because both are threads that exist in ADO and are
+          not on this page. "No comments" while eleven sit in the diff, or while
+          Sonar has written thirty, is the wrong answer to "has anyone looked at
+          this". */}
+      {onFiles === 0 ? null : (
+        <p className="text-muted-foreground text-xs">
+          {onFiles} more {onFiles === 1 ? 'thread' : 'threads'} on lines in the diff.
+        </p>
+      )}
+      {conversation.systemCount === 0 && conversation.botCount === 0 ? null : (
+        <p className="text-muted-foreground text-xs">
+          {[
+            conversation.systemCount === 0
+              ? null
+              : `${conversation.systemCount} Azure DevOps status ${conversation.systemCount === 1 ? 'update' : 'updates'}`,
+            conversation.botCount === 0 ? null : `${conversation.botCount} from SonarCloud`,
+          ]
+            .filter((part) => part !== null)
+            .join(' and ')}{' '}
+          hidden. The quality gate above is the readable form of the second.
+        </p>
+      )}
+
+      {onNewThread === undefined ? null : composing ? (
+        <Composer
+          label="New comment on this pull request"
+          autoFocus
+          onSubmit={async (content) => {
+            // No context and no iteration: this is a comment about the pull
+            // request, and giving it either would anchor it to a file it is not
+            // about.
+            await onNewThread({
+              content,
+              context: null,
+              iterationContext: null,
+              status: 'active',
+            })
+            setComposing(false)
+          }}
+          onCancel={() => setComposing(false)}
+        />
+      ) : (
+        <div>
+          <Button variant="ghost" size="xs" onPress={() => setComposing(true)}>
+            Comment on this pull request
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function PullRequestDetailView({
   pr,
   prRef,
   failed = {},
+  sonar = null,
   layout = 'unified',
   onLayoutChange = () => {},
   tab = 'details',
@@ -655,6 +856,14 @@ export function PullRequestDetailView({
    */
   prRef: PullRequestRef
   failed?: FailedSections
+  /**
+   * `sonarReport({...})` from the route, or `null` while it is still in flight —
+   * which is also what a test that does not care about Sonar passes. Fetched
+   * there rather than here because this component's other dependency on a server
+   * function is the one the route already owns, and because a second service that
+   * can be rate-limited for minutes must not be able to hold up this page.
+   */
+  sonar?: SonarReportResult | null
   /** Owned by the route, because the page widens for side-by-side. */
   layout?: DiffLayout
   onLayoutChange?: (layout: DiffLayout) => void
@@ -665,6 +874,18 @@ export function PullRequestDetailView({
   // Persisted, so closing the tab halfway through a 40-file review does not
   // start it over. Read once per page and written through on each tick.
   const { keys: viewed, pending: viewedPending, setViewed } = useViewedFiles(prRef)
+
+  // One read for the page, polled, and the only thing on it that changes while
+  // you are looking at it. Held here rather than in the route — unlike the tab
+  // and the layout it changes nothing about the page's shape — and here rather
+  // than in `ChangedFiles` because the details tab needs the same answer.
+  const conversation = useConversation(prRef, pr.viewerId)
+
+  // Per pull request and per visit, not persisted: "hide resolved" is a thing you
+  // do on a second pass through a diff somebody has already reviewed, and coming
+  // back tomorrow to a page that is quietly hiding half the conversation is a
+  // worse default than one click.
+  const [hideDone, setHideDone] = useState(false)
 
   const iterations = pr.files.iterations
   const latest = iterations[iterations.length - 1]
@@ -692,6 +913,44 @@ export function PullRequestDetailView({
 
   const view: ChangeView = update === null ? COMBINED : { kind: 'update', iterationId: update }
   const changes = useChanges(prRef, view, pr.files)
+
+  // Which iterations a thread started on the diff in front of us is written
+  // against — the thing that makes "line 40" mean something, since line 40 of
+  // update 2 is not line 40 of update 5.
+  //
+  // `null` on the combined diff, deliberately: ADO anchors a thread with no
+  // iteration context against the latest iteration, which is exactly what the
+  // combined view's line numbers are. An update's diff is the pair `useChanges`
+  // asked ADO for, `compareTo` and all.
+  const iterationContext = useMemo<IterationContext | null>(
+    () =>
+      update === null
+        ? null
+        : {
+            firstComparingIteration: update - 1,
+            secondComparingIteration: update,
+            // ADO's own way of following a line across iterations, and it was on
+            // 5 of the 12 anchored threads sampled. We have no way to compute one
+            // from a change entry, so it is left out rather than guessed.
+            changeTrackingId: null,
+          },
+    [update],
+  )
+
+  // A Sonar finding sits on the details tab and points at a file in the diff, so
+  // its click has to cross a tab. Held as state rather than acted on, because the
+  // panel it scrolls to does not exist yet: the tab has to render *and* its file
+  // list has to arrive, and neither has happened by the time the click returns.
+  const [jump, setJump] = useState<SonarJump | null>(null)
+
+  useEffect(() => {
+    if (jump === null || active !== 'combined' || changes.pending) return
+
+    scrollToFinding(jump)
+    // Once, not on every later render: a stale jump would drag the page back
+    // the next time this file list changed underneath it.
+    setJump(null)
+  }, [jump, active, changes.pending])
 
   return (
     <article className="flex w-full flex-col items-start gap-5">
@@ -745,6 +1004,64 @@ export function PullRequestDetailView({
               <Empty>No branch policies apply to this pull request.</Empty>
             ) : (
               <PolicyChecklist policies={pr.policies} />
+            )}
+          </Section>
+
+          {/* Second, and for the same reason the policies are first: a failing
+              quality gate is one of the things stopping this from merging. The
+              panel renders nothing at all on a pull request with no SonarCloud
+              status, which is most of them, so this costs those pages a `null`.
+
+              Its failures are named here rather than inside it. "No token yet" is
+              a fact about this app's setup and not about the findings, and only
+              this side knows that a missing credential is reachable — `connected`
+              can only be false once the pull request has been shown to have a
+              Sonar project, because the server reads no token before that. */}
+          {sonar === null ? null : !sonar.connected ? (
+            <p className="text-muted-foreground text-xs">
+              This pull request is analysed by SonarCloud. Add a token in connections and the
+              findings will appear here.
+            </p>
+          ) : sonar.error !== null ? (
+            <Failed>Could not read Sonar for this pull request. {sonar.error}</Failed>
+          ) : (
+            <SonarPanel
+              report={sonar.report}
+              rules={sonar.rules}
+              // ADO's own spelling, leading slash and all, on both sides — the
+              // server normalised the Sonar half to it, so this is set membership.
+              changedPaths={new Set(pr.files.files.map((file) => file.path))}
+              onJump={(next) => {
+                setJump(next)
+                onTabChange('combined')
+              }}
+            />
+          )}
+
+          {/* After the two gates and before the people, which is where it sits in
+              the order this page is read in: what is blocking the merge, then what
+              has been said about it, then who was asked.
+
+              Its own failure, again named here and not inside it — and it is a
+              notice rather than a missing section, because the conversation is the
+              one part of this page a failed call can take without taking the
+              review with it. */}
+          <Section
+            title="Conversation"
+            count={conversation.error !== null ? undefined : conversation.onPullRequest.length}
+          >
+            {conversation.error !== null ? (
+              <Failed>
+                Could not read the comments on this pull request. {conversation.error}
+              </Failed>
+            ) : conversation.pending ? (
+              <p className="text-muted-foreground text-xs">Loading the conversation…</p>
+            ) : (
+              <PullRequestConversation
+                conversation={conversation}
+                hideDone={hideDone}
+                onHideDoneChange={setHideDone}
+              />
             )}
           </Section>
 
@@ -815,6 +1132,15 @@ export function PullRequestDetailView({
               onLayoutChange={onLayoutChange}
               viewed={viewed}
               onViewedChange={setViewed}
+              threads={conversation.files}
+              // Offered only when the write can actually go out. `connected` is
+              // false when there is no credential, and a composer that can only
+              // fail is worse than no composer.
+              threadActions={conversation.connected ? conversation.actions : undefined}
+              threadError={conversation.error}
+              hideDone={hideDone}
+              onHideDoneChange={setHideDone}
+              iterationContext={iterationContext}
             />
           )}
         </div>

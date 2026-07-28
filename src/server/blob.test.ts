@@ -59,6 +59,7 @@ function fakeClient(blobs: Record<string, Fixture>) {
   const client: AdoClient = {
     org: 'Profisee',
     get: () => Promise.reject(new Error('this fixture serves blobs only')),
+    write: () => Promise.reject(new Error('this fixture is read-only')),
     getBytes(
       path: string,
       params: Record<string, QueryValue> = {},

@@ -1,3 +1,4 @@
+import type { FileThreads } from './comment-contract'
 import type { DiffHunk, DiffLayout, DiffLine, DiffRow, FileDiff } from './diff-contract'
 import { formatHunkHeader } from './diff'
 
@@ -10,11 +11,16 @@ import { formatHunkHeader } from './diff'
 // revealed, what each row is called — is computed once.
 //
 // Expansion is modelled as a set of revealed line ranges rather than as an edit
-// to the row array. Rows are then a pure function of (diff, reveals, layout),
-// which is what makes the two hard cases fall out instead of being handled:
-// expanding the top and the bottom of one gap until the two reveals meet is
-// just a union of adjacent ranges, and a row's key never depends on where the
-// row sits, so nothing above the click is re-keyed.
+// to the row array. Rows are then a pure function of (diff, reveals, layout,
+// threads, hideDone), which is what makes the two hard cases fall out instead of
+// being handled: expanding the top and the bottom of one gap until the two
+// reveals meet is just a union of adjacent ranges, and a row's key never
+// depends on where the row sits, so nothing above the click is re-keyed.
+//
+// T-025 added the last two inputs, and "hide done" is one of them rather than a
+// class on a rendered row for the same reason the reveals are inputs: a hidden
+// thread that still occupies a row is a row the virtualizer still measures, and
+// a measured row is the expensive kind.
 
 /** Lines revealed by one click, matching what GitHub's expander shows. */
 export const GAP_EXPAND_LINES = 20
@@ -39,20 +45,44 @@ export interface RowModel {
    */
   readonly lines: readonly string[]
   readonly revealed: readonly Span[]
+  /** This file's conversations, or `null` for a file nobody has commented on. */
+  readonly threads: FileThreads | null
+  readonly hideDone: boolean
 }
 
 export function buildRows(
   diff: FileDiff,
   lines: readonly string[],
   layout: DiffLayout,
+  threads: FileThreads | null = null,
+  hideDone: boolean = false,
 ): RowModel {
-  return rebuild(diff, lines, layout, [])
+  return rebuild(diff, lines, layout, [], threads, hideDone)
 }
 
 /** The same diff and the same expansions, projected the other way. */
 export function setLayout(model: RowModel, layout: DiffLayout): RowModel {
   if (layout === model.layout) return model
-  return rebuild(model.diff, model.lines, layout, model.revealed)
+  return rebuild(model.diff, model.lines, layout, model.revealed, model.threads, model.hideDone)
+}
+
+/**
+ * The threads arrived, or changed under the file.
+ *
+ * A separate entry point rather than a rebuild from scratch because threads come
+ * from a poll: they land after the bytes, and again every thirty seconds. The
+ * expansions and the layout have to survive that, and a reply must not close a
+ * gap somebody opened to read the code the reply is about.
+ */
+export function setThreads(model: RowModel, threads: FileThreads | null): RowModel {
+  if (threads === model.threads) return model
+  return rebuild(model.diff, model.lines, model.layout, model.revealed, threads, model.hideDone)
+}
+
+/** Toggle the per-PR "hide done" flag for this file's rows. */
+export function setHideDone(model: RowModel, hideDone: boolean): RowModel {
+  if (hideDone === model.hideDone) return model
+  return rebuild(model.diff, model.lines, model.layout, model.revealed, model.threads, hideDone)
 }
 
 /**
@@ -81,7 +111,14 @@ export function expandGap(
         ? { start: from, end: from + take }
         : { start: to - take, end: to }
 
-  return rebuild(model.diff, model.lines, model.layout, union(model.revealed, span))
+  return rebuild(
+    model.diff,
+    model.lines,
+    model.layout,
+    union(model.revealed, span),
+    model.threads,
+    model.hideDone,
+  )
 }
 
 function rebuild(
@@ -89,8 +126,18 @@ function rebuild(
   lines: readonly string[],
   layout: DiffLayout,
   revealed: readonly Span[],
+  threads: FileThreads | null,
+  hideDone: boolean,
 ): RowModel {
-  return { rows: project(flatten(diff, lines, revealed), layout), layout, diff, lines, revealed }
+  return {
+    rows: attach(project(flatten(diff, lines, revealed), layout), threads, hideDone),
+    layout,
+    diff,
+    lines,
+    revealed,
+    threads,
+    hideDone,
+  }
 }
 
 /** Ranges are kept sorted, disjoint and non-touching, so a gap that closes disappears. */
@@ -276,4 +323,74 @@ function split(rows: DiffRow[], run: readonly DiffLine[]): void {
  */
 function row(left: DiffLine | null, right: DiffLine | null): DiffRow {
   return { kind: 'line', key: `${left?.oldLine ?? '-'}/${right?.newLine ?? '-'}`, left, right }
+}
+
+// ---------------------------------------------------------------------------
+// Threads.
+// ---------------------------------------------------------------------------
+
+/**
+ * Thread rows, under the lines they hang on. Layout-independent on purpose: in
+ * side-by-side a conversation is one row spanning both columns, because it is
+ * one conversation and not two halves of one.
+ *
+ * Placement is by right-side line and only by right-side line, because that is
+ * the only anchor live data has: all 12 anchored threads in the census were
+ * right-side, `FileThreads.byRightLine` is keyed that way, and a left-side
+ * anchor is in `unanchored` before it reaches this function. One row per line
+ * rather than one per thread — `ThreadRow.threads` is a list, and two people
+ * commenting on the same line is one row to measure instead of two.
+ *
+ * A thread whose line is inside a collapsed gap attaches to the gap that hides
+ * it, so it is somewhere rather than nowhere. Expanding that gap moves it onto
+ * its real line without remounting it, because its key is the thread's id and
+ * nothing about where the row sits.
+ */
+function attach(
+  rows: readonly DiffRow[],
+  threads: FileThreads | null,
+  hideDone: boolean,
+): readonly DiffRow[] {
+  // The same array back, not a copy, for the file nobody has commented on —
+  // which is most of them. A file with no threads pays nothing.
+  if (threads === null || threads.byRightLine.size === 0) return rows
+  // No hunks means no rows, and a thread has nothing to sit under; the panel
+  // renders every one of them next to its notice instead. See `FileThreadList`.
+  if (rows.length === 0) return rows
+
+  const byLine = threads.byRightLine
+  const anchors = [...byLine.keys()].sort((a, b) => a - b)
+  const out: DiffRow[] = []
+  let at = 0
+
+  function emitBelow(end: number): void {
+    for (; at < anchors.length && anchors[at] < end; at++) {
+      const line = anchors[at]
+      const all = byLine.get(line) ?? []
+      const shown = hideDone ? all.filter((thread) => thread.resolution === 'open') : all
+      if (shown.length === 0) continue
+      // First thread's id, which is the oldest: `byRightLine` is chronological,
+      // so a new reply or a second thread on the line appends and the key holds.
+      out.push({ kind: 'thread', key: `!${shown[0].id}`, threads: shown, line })
+    }
+  }
+
+  // Right-side line numbers only ever increase down the file, so one cursor over
+  // the sorted anchors is enough — no lookup per row, and 5,000 rows cost 5,000
+  // comparisons rather than 5,000 map probes.
+  for (const item of rows) {
+    out.push(item)
+    if (item.kind === 'line') {
+      if (item.right?.newLine != null) emitBelow(item.right.newLine + 1)
+    } else if (item.kind === 'gap') {
+      emitBelow(item.newStart + item.hiddenLines)
+    }
+  }
+
+  // Anything left anchors past the last line the diff renders. The server is
+  // meant to have put those in `unanchored`; if one slips through, the bottom of
+  // the file is a worse place for it than its line and a better one than nowhere.
+  emitBelow(Number.POSITIVE_INFINITY)
+
+  return out
 }

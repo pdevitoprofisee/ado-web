@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 
 import { pullRequestQuery } from '@/server/pull-request-fn'
+import { sonarReportQuery } from '@/server/sonar-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
 import { useCommand } from '@/commands/command-provider'
 import { PullRequestDetailView } from '@/components/pr-detail'
@@ -58,6 +59,17 @@ function PullRequestPage() {
     queryFn: () => pullRequestQuery({ data: { projectId, repositoryId, id } }),
     enabled: addressable,
     refetchInterval,
+    staleTime: CADENCE.pullRequest,
+  })
+
+  // Its own query, and deliberately not polled. This is one ADO call plus three
+  // to five SonarCloud ones, and findings only move when a new analysis lands —
+  // which the page's own poll is already what tells you about. Sonar publishes no
+  // rate-limit budget at all, so the cheapest thing to do with it is ask less.
+  const sonar = useQuery({
+    queryKey: ['sonar', projectId, repositoryId, id],
+    queryFn: () => sonarReportQuery({ data: { projectId, repositoryId, id } }),
+    enabled: addressable,
     staleTime: CADENCE.pullRequest,
   })
 
@@ -143,6 +155,7 @@ function PullRequestPage() {
           pr={result.pullRequest}
           prRef={{ projectId, repositoryId, id }}
           failed={result.failed}
+          sonar={sonar.data ?? null}
           layout={layout}
           onLayoutChange={setLayout}
           tab={tab}

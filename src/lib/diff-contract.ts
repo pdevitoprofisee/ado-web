@@ -1,3 +1,5 @@
+import type { ThreadRow } from './comment-contract'
+
 // The types phase 3 is built around, in one place because four otherwise
 // independent pieces meet here: the blob layer that fetches (T-016), the diff
 // that computes (T-017), the row model that flattens (T-018), and the view that
@@ -141,6 +143,13 @@ export type DiffRow =
       readonly oldStart: number
       readonly newStart: number
     }
+  /**
+   * A conversation, under the line it is about. Added in T-025 and the only
+   * addition this union takes — the shape is frozen in `comment-contract.ts`
+   * because four workstreams read it, and it is the one row kind that is not
+   * `ROW_HEIGHT` tall.
+   */
+  | ThreadRow
 
 export type DiffLayout = 'unified' | 'split'
 

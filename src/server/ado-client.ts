@@ -118,6 +118,14 @@ export interface AdoBytesOptions {
   readonly maxBytes?: number
 }
 
+/**
+ * The verbs that change something. `GET` is deliberately not in here: a write
+ * goes down a different path through `send` — one attempt, no retry — and
+ * letting a caller say `write('GET', …)` would be a way to lose the retry on a
+ * read by accident.
+ */
+export type AdoWriteMethod = 'POST' | 'PATCH' | 'PUT' | 'DELETE'
+
 export interface AdoClient {
   /** Not a secret, and callers that build `dev.azure.com` links need it. */
   readonly org: string
@@ -138,6 +146,31 @@ export interface AdoClient {
     params?: Record<string, QueryValue>,
     options?: AdoBytesOptions,
   ): Promise<AdoBytes>
+  /**
+   * The one verb in this app that changes anything in Azure DevOps.
+   *
+   * It shares everything with `get` that matters — `buildUrl`, the auth header,
+   * `absorb`, the throttle gate, `redirect: 'manual'` and `demand` — because a
+   * write that follows a 302 to a sign-in page and reads the HTML back as
+   * success is note 4 with a body, and a write outside the gate is a write that
+   * ignores a `Retry-After` the reads are already respecting.
+   *
+   * **It does not retry, and that is the difference.** `get` retries a 429 and
+   * a 503 because asking twice for the same list is free. Asking twice to post
+   * a comment is a second comment — and note 2 means the ambiguous case is the
+   * common one: ADO throttles by *delaying* a complete 200, and a request that
+   * times out on the way back may well have been applied. Every failure here is
+   * reported to the caller, never repeated.
+   *
+   * `null` rather than `T` when there is no body to parse: a `DELETE` answers
+   * 204, and `JSON.parse('')` would turn a successful delete into an error.
+   */
+  write<T>(
+    method: AdoWriteMethod,
+    path: string,
+    body?: unknown,
+    params?: Record<string, QueryValue>,
+  ): Promise<T | null>
   /** Runs `task` over `items` at most `concurrency` at a time, results in order. */
   fanOut<I, O>(items: readonly I[], task: (item: I) => Promise<O>): Promise<O[]>
   rateLimit(): RateLimit
@@ -145,6 +178,17 @@ export interface AdoClient {
 
 export interface AdoClientOptions {
   readonly concurrency?: number
+}
+
+/**
+ * `retry` defaults to true so that every read keeps the behaviour it had before
+ * writes existed; only `write` turns it off. Both flavours share the gate and
+ * `absorb`, which is the whole point of there being one `send`.
+ */
+interface SendOptions {
+  readonly method?: 'GET' | AdoWriteMethod
+  readonly body?: string
+  readonly retry?: boolean
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -255,28 +299,42 @@ export function createAdoClient(
     if (wait > 0) await sleep(Math.min(wait, MAX_WAIT_MS))
   }
 
-  async function send(url: string): Promise<Response> {
+  async function send(url: string, options: SendOptions = {}): Promise<Response> {
+    const { method = 'GET', body, retry = true } = options
+    const headers =
+      body === undefined
+        ? adoAuthHeaders(credential.pat)
+        : { ...adoAuthHeaders(credential.pat), 'Content-Type': 'application/json' }
+
     for (let attempt = 1; ; attempt++) {
       await gate()
 
       let response: Response
       try {
+        // The init is rebuilt per attempt because `AbortSignal.timeout` starts
+        // counting when it is created: hoisted, one 30s budget would cover the
+        // retries and the sleeps between them rather than each attempt.
         response = await fetch(url, {
-          headers: adoAuthHeaders(credential.pat),
+          method,
+          headers,
+          body,
           // A redirect is note 4's auth failure, and following one would forward
           // the Authorization header to a sign-in host we did not choose.
           redirect: 'manual',
           signal: AbortSignal.timeout(TIMEOUT_MS),
         })
       } catch (cause) {
-        if (attempt >= MAX_ATTEMPTS) throw cause
+        // A transport failure on a write is the ambiguous case, not the safe
+        // one: a timed-out POST may already have been applied, so it is
+        // reported rather than sent again.
+        if (!retry || attempt >= MAX_ATTEMPTS) throw cause
         await sleep(attempt * 500)
         continue
       }
 
       absorb(response)
 
-      if ((response.status === 429 || response.status === 503) && attempt < MAX_ATTEMPTS) {
+      if (retry && (response.status === 429 || response.status === 503) && attempt < MAX_ATTEMPTS) {
         // Usually `absorb` has already closed the gate. A 429 without a
         // `Retry-After` would otherwise spin.
         if (!state.throttled) await sleep(attempt * 500)
@@ -335,6 +393,31 @@ export function createAdoClient(
     return { bytes: new Uint8Array(await response.arrayBuffer()), size, contentType }
   }
 
+  async function write<T>(
+    method: AdoWriteMethod,
+    path: string,
+    body?: unknown,
+    params: Record<string, QueryValue> = {},
+  ): Promise<T | null> {
+    const response = await demand(
+      await send(buildUrl(credential.org, path, params, 'core'), {
+        method,
+        // `undefined`, not `'null'`: a DELETE with a body is a different request
+        // to a DELETE without one, and `JSON.stringify(undefined)` is not a
+        // string at all.
+        body: body === undefined ? undefined : JSON.stringify(body),
+        retry: false,
+      }),
+    )
+
+    // 204 on a delete. The text check covers the empty 200 as well, because
+    // "no body" is a service decision we do not get to insist about.
+    if (response.status === 204) return null
+    const raw = await response.text()
+
+    return raw === '' ? null : (JSON.parse(raw) as T)
+  }
+
   async function fanOut<I, O>(
     items: readonly I[],
     task: (item: I) => Promise<O>,
@@ -358,6 +441,7 @@ export function createAdoClient(
     org: credential.org,
     get,
     getBytes,
+    write,
     fanOut,
     rateLimit: () => ({ ...state, throttled: (state.throttledUntil ?? 0) > Date.now() }),
   }

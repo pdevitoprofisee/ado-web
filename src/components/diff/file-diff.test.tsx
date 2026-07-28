@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { FileDiffPanel } from './file-diff'
 
+import type { FileThreads, Thread } from '@/lib/comment-contract'
 import type { DiffRow, FileBlobs, FileDiff } from '@/lib/diff-contract'
 
 // Same reason as diff-view.test.tsx: virtual-core's `getRect` reads
@@ -276,5 +277,71 @@ describe('FileDiffPanel', () => {
       />,
     )
     expect(screen.queryByLabelText(/added/)).toBeNull()
+  })
+})
+
+describe('a file with conversations on it', () => {
+  const thread = (id: number, body: string): Thread => ({
+    id,
+    status: 'active',
+    resolution: 'open',
+    kind: 'human',
+    publishedDate: '2026-07-01T00:00:00Z',
+    lastUpdatedDate: null,
+    isDeleted: false,
+    context: null,
+    iterationContext: null,
+    comments: [
+      {
+        id,
+        parentCommentId: null,
+        author: { id: 'writer', displayName: 'Ada Lovelace', uniqueName: null, imageUrl: null },
+        content: body,
+        publishedDate: '2026-07-01T00:00:00Z',
+        lastUpdatedDate: null,
+        lastContentUpdatedDate: null,
+        isDeleted: false,
+        commentType: 'text',
+        likedBy: [],
+      },
+    ],
+    properties: {},
+  })
+  // The two buckets are disjoint: `unanchored` is what no visible line could hold.
+  const threads: FileThreads = {
+    path: BLOBS.path,
+    byRightLine: new Map([[1, [thread(7, 'A comment on line one.')]]]),
+    unanchored: [thread(8, 'A comment with no line to sit on.')],
+  }
+
+  it('puts the ones no row could hold above the diff, not below it', () => {
+    render(
+      <FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" threads={threads} />,
+    )
+
+    const body = screen.getByText('A comment with no line to sit on.')
+    const region = screen.getByRole('region', { name: BLOBS.path })
+
+    // The bottom of a 70vh scroller is where a comment goes to be missed.
+    expect(body.compareDocumentPosition(region) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The anchored one belongs to the rows the caller built, not to this list.
+    expect(screen.queryByText('A comment on line one.')).toBeNull()
+  })
+
+  it('still shows every one of them on a file it cannot render a diff for', () => {
+    // A comment on a binary file is still a comment.
+    render(
+      <FileDiffPanel
+        blobs={{ ...BLOBS, after: { kind: 'binary', bytes: 588 } }}
+        diff={DIFF}
+        rows={[]}
+        layout="unified"
+        threads={threads}
+      />,
+    )
+
+    expect(screen.getByText(/Binary file/)).toBeInTheDocument()
+    expect(screen.getByText('A comment with no line to sit on.')).toBeInTheDocument()
+    expect(screen.getByText('A comment on line one.')).toBeInTheDocument()
   })
 })
