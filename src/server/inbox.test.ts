@@ -50,6 +50,7 @@ function fakeClient(replies: Record<string, Reply>) {
 
       return (reply[index] ?? { value: [] }) as T
     },
+    getBytes: () => Promise.reject(new Error('this fixture serves JSON only')),
     fanOut: async (items, task) => Promise.all(items.map(task)),
     rateLimit: () => ({
       remaining: null,

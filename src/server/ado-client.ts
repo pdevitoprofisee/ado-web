@@ -97,11 +97,47 @@ export class AdoError extends Error {
   }
 }
 
+/**
+ * A response body that is not JSON. Blobs are the only such body we ask for.
+ *
+ * `size` is `Content-Length`, and on blobs it is exact — measured against
+ * `$format=json`'s `size` field and against the byte count, all three 11309 on
+ * the same object. It is readable *before* the body, which is what makes
+ * `maxBytes` cost nothing: the too-large case is a cancelled stream, not a
+ * download we then throw away.
+ */
+export interface AdoBytes {
+  /** `null` only when `maxBytes` was given and `size` exceeded it. */
+  readonly bytes: Uint8Array | null
+  readonly size: number | null
+  readonly contentType: string | null
+}
+
+export interface AdoBytesOptions {
+  /** Above this declared size, don't read the body. */
+  readonly maxBytes?: number
+}
+
 export interface AdoClient {
   /** Not a secret, and callers that build `dev.azure.com` links need it. */
   readonly org: string
   /** `path` is org-relative: `_apis/git/pullrequests`, `Products/_apis/…`. */
   get<T>(path: string, params?: Record<string, QueryValue>, host?: AdoHost): Promise<T>
+  /**
+   * The same request, kept as bytes. For blobs, which have no JSON form worth
+   * having: `$format=json` returns metadata, not content.
+   *
+   * Bytes rather than a string on purpose. A blob is whatever was committed —
+   * live, a `.png` fetched with `$format=text` comes back as intact PNG bytes
+   * with its first NUL at index 8, and decoding it as UTF-8 produced 204
+   * replacement characters. Deciding *whether* this is text is the caller's
+   * job, and it cannot be done after a lossy decode.
+   */
+  getBytes(
+    path: string,
+    params?: Record<string, QueryValue>,
+    options?: AdoBytesOptions,
+  ): Promise<AdoBytes>
   /** Runs `task` over `items` at most `concurrency` at a time, results in order. */
   fanOut<I, O>(items: readonly I[], task: (item: I) => Promise<O>): Promise<O[]>
   rateLimit(): RateLimit
@@ -251,13 +287,8 @@ export function createAdoClient(
     }
   }
 
-  async function get<T>(
-    path: string,
-    params: Record<string, QueryValue> = {},
-    host: AdoHost = 'core',
-  ): Promise<T> {
-    const response = await send(buildUrl(credential.org, path, params, host))
-
+  /** Turns everything that is not a usable response into an `AdoError`. */
+  async function demand(response: Response): Promise<Response> {
     if (response.status >= 300 && response.status < 400) {
       throw new AdoError(
         response.status,
@@ -272,7 +303,36 @@ export function createAdoClient(
       )
     }
 
+    return response
+  }
+
+  async function get<T>(
+    path: string,
+    params: Record<string, QueryValue> = {},
+    host: AdoHost = 'core',
+  ): Promise<T> {
+    const response = await demand(await send(buildUrl(credential.org, path, params, host)))
+
     return (await response.json()) as T
+  }
+
+  async function getBytes(
+    path: string,
+    params: Record<string, QueryValue> = {},
+    { maxBytes }: AdoBytesOptions = {},
+  ): Promise<AdoBytes> {
+    const response = await demand(await send(buildUrl(credential.org, path, params, 'core')))
+    const size = header(response, 'Content-Length')
+    const contentType = response.headers.get('Content-Type')
+
+    if (maxBytes !== undefined && size !== null && size > maxBytes) {
+      // Leaving a body unread holds the connection open until it is collected.
+      await response.body?.cancel()
+
+      return { bytes: null, size, contentType }
+    }
+
+    return { bytes: new Uint8Array(await response.arrayBuffer()), size, contentType }
   }
 
   async function fanOut<I, O>(
@@ -297,6 +357,7 @@ export function createAdoClient(
   return {
     org: credential.org,
     get,
+    getBytes,
     fanOut,
     rateLimit: () => ({ ...state, throttled: (state.throttledUntil ?? 0) > Date.now() }),
   }

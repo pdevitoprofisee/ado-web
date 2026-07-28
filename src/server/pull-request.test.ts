@@ -43,6 +43,9 @@ function fakeClient(replies: Record<string, Reply>) {
 
       return Promise.resolve((typeof reply === 'function' ? reply(params) : reply) as T)
     },
+    // Nothing under test here fetches a blob; a call would be a mistake, not a
+    // case to cover.
+    getBytes: () => Promise.reject(new Error('this fixture serves JSON only')),
     fanOut: (items, task) => Promise.all(items.map(task)),
     rateLimit: () => ({
       remaining: null,

@@ -231,3 +231,100 @@ describe('fanOut', () => {
     expect(await client.fanOut([], async () => 1)).toEqual([])
   })
 })
+
+describe('getBytes', () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01])
+
+  const blob = (body: BodyInit, headers: Record<string, string> = {}) =>
+    new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/plain', ...headers },
+    })
+
+  it('hands back the bytes as committed, without a decode in the way', async () => {
+    // Live, `$format=text` on a `.png` returns intact PNG bytes; decoding them
+    // as UTF-8 produced 204 replacement characters. A string return type would
+    // make binary detection impossible after the fact.
+    stubFetch(() => blob(PNG, { 'content-length': String(PNG.length) }))
+    const client = createAdoClient(CREDENTIAL)
+    const result = await client.getBytes('P/_apis/git/repositories/R/blobs/abc', {
+      $format: 'text',
+    })
+
+    expect(result.bytes).toEqual(PNG)
+    expect(result.size).toBe(10)
+    expect(result.contentType).toBe('text/plain')
+  })
+
+  it('refuses a body bigger than the caller asked for, without reading it', async () => {
+    // `Content-Length` is exact on blobs and arrives before the body, so this
+    // costs no extra call — the point is that the stream is cancelled, not that
+    // a downloaded buffer is discarded.
+    let cancelled = false
+    stubFetch(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(64))
+            },
+            cancel() {
+              cancelled = true
+            },
+          }),
+          { status: 200, headers: { 'content-length': '9000000' } },
+        ),
+    )
+    const client = createAdoClient(CREDENTIAL)
+    const result = await client.getBytes('P/_apis/git/repositories/R/blobs/abc', {}, {
+      maxBytes: 1_000_000,
+    })
+
+    expect(result.bytes).toBeNull()
+    expect(result.size).toBe(9_000_000)
+    expect(cancelled).toBe(true)
+  })
+
+  it('reads a body whose size it cannot know', async () => {
+    stubFetch(() => blob('hello'))
+    const client = createAdoClient(CREDENTIAL)
+    const result = await client.getBytes('P/_apis/git/repositories/R/blobs/abc', {}, {
+      maxBytes: 1,
+    })
+
+    // No `Content-Length` means no basis to refuse. Guessing "probably huge"
+    // would drop small files for a header the service simply did not send.
+    expect(result.size).toBeNull()
+    expect(new TextDecoder().decode(result.bytes!)).toBe('hello')
+  })
+
+  it('reports a missing blob as the 400 that ADO actually answers', async () => {
+    // Live: an absent-but-well-formed sha is `TF401035 … does not exist`, a 400,
+    // not a 404. Anything keying recovery off 404 would never fire.
+    stubFetch(
+      () =>
+        new Response(JSON.stringify({ message: "TF401035: The object '000…' does not exist." }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        }),
+    )
+    const client = createAdoClient(CREDENTIAL)
+
+    await expect(
+      client.getBytes('P/_apis/git/repositories/R/blobs/' + '0'.repeat(40)),
+    ).rejects.toMatchObject({ name: 'AdoError', status: 400 })
+  })
+
+  it('goes through the same throttle gate as get', async () => {
+    stubFetch((call) =>
+      call === 0
+        ? new Response('x', { status: 200, headers: { 'Retry-After': '30' } })
+        : new Response('y', { status: 200 }),
+    )
+    const client = createAdoClient(CREDENTIAL)
+    await client.getBytes('P/_apis/git/repositories/R/blobs/abc')
+
+    expect(client.rateLimit().throttled).toBe(true)
+    expect(client.rateLimit().calls).toBe(1)
+  })
+})
