@@ -464,11 +464,14 @@ describe('the file list', () => {
     expect(changeFlags(undefined)).toEqual([])
   })
 
-  it('keeps a rename whole, including the sha that did not move', async () => {
+  it('keeps a rename whole, including the sha that did not move and the name that did', async () => {
     const pr = await load({
       '/changes': {
         changeEntries: [
-          change('/src/new.ts', 'edit, rename', { originalObjectId: 'a'.repeat(40) }),
+          {
+            ...change('/src/new.ts', 'edit, rename', { originalObjectId: 'a'.repeat(40) }),
+            originalPath: '/src/old.ts',
+          },
           change('/src/added.ts', 'add'),
           { changeType: 'add', item: { path: '/src/', isFolder: true } },
         ],
@@ -479,18 +482,52 @@ describe('the file list', () => {
       {
         path: '/src/new.ts',
         changeType: ['edit', 'rename'],
+        originalPath: '/src/old.ts',
         objectId: 'a'.repeat(40),
         originalObjectId: 'a'.repeat(40),
       },
       {
         path: '/src/added.ts',
         changeType: ['add'],
+        originalPath: null,
         objectId: 'a'.repeat(40),
         originalObjectId: null,
       },
     ])
     expect(pr.files.iterationId).toBe(2)
     expect(pr.files.truncated).toBe(false)
+  })
+
+  /**
+   * This exact payload shape shipped a crash: `item.path` is `null` — not
+   * absent — so an `=== undefined` guard let it through and the file list
+   * called `lastIndexOf` on it. 16 of 294 files in live !24766 were deletes.
+   */
+  it('finds a deleted file its path on the entry, where ADO left it', async () => {
+    const pr = await load({
+      '/changes': {
+        changeEntries: [
+          {
+            changeType: 'delete',
+            originalPath: '/src/gone.ts',
+            item: { path: null, originalObjectId: 'b'.repeat(40) },
+          },
+          // No path anywhere is still a skip, not a null-named row.
+          { changeType: 'delete', item: { path: null } },
+        ],
+      },
+    }).loading
+
+    expect(pr.files.files).toEqual([
+      {
+        path: '/src/gone.ts',
+        changeType: ['delete'],
+        // Spent on `path` — a delete has no second name to show.
+        originalPath: null,
+        objectId: null,
+        originalObjectId: 'b'.repeat(40),
+      },
+    ])
   })
 
   it('asks the latest iteration explicitly and ignores nextTop', async () => {

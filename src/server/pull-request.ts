@@ -165,8 +165,21 @@ export interface Commit {
  * Live: `edit` 2578, `add` 588, `delete` 77, `edit, rename` 40, `rename` 5.
  */
 export interface ChangedFile {
+  /**
+   * Where the file is *now* — except on a delete, where there is no now and this
+   * is where it was. Not simply `item.path`: on a delete ADO sends `item.path`
+   * as literal `null` and puts the real path on the entry (see
+   * `AdoChangeEntry`).
+   */
   readonly path: string
   readonly changeType: readonly string[]
+  /**
+   * Where the file was, when that differs from `path` — so, a rename's old name.
+   * `null` on an edit, an add, and a delete, because ADO sends the entry-level
+   * path only on a delete and a rename and a delete has already spent it on
+   * `path`.
+   */
+  readonly originalPath: string | null
   /** Blob sha *after* the change — works directly as a blob id (map: the diff pipeline). */
   readonly objectId: string | null
   /**
@@ -307,13 +320,22 @@ interface AdoCommit {
 /**
  * The placement is a trap: `originalPath` sits on the *entry* while
  * `originalObjectId` sits on the *item*, so the two halves of a rename are not
- * next to each other. Only the sha is needed here; the entry-level path is left
- * where it is until phase 3 wants it.
+ * next to each other.
+ *
+ * An earlier revision of this comment said the entry-level path could wait for
+ * phase 3. That was wrong, and it shipped a crash: on a **delete**, `item.path`
+ * is literal `null` and `originalPath` is the only path in the payload. See
+ * T-015.
+ *
+ * `path` is therefore `string | null`, not `string | undefined` — the
+ * difference is the whole bug.
  */
 interface AdoChangeEntry {
   readonly changeType?: string
+  /** Present only on a delete and a rename. Absent — not null — otherwise. */
+  readonly originalPath?: string
   readonly item?: {
-    readonly path?: string
+    readonly path?: string | null
     readonly objectId?: string
     readonly originalObjectId?: string
     readonly isFolder?: boolean
@@ -598,14 +620,21 @@ async function loadFiles(client: AdoClient, base: string): Promise<FileList> {
   const files: ChangedFile[] = []
 
   for (const entry of entries) {
-    const path = entry.item?.path
+    // `?? null` and not `??`-into-the-guard: `item.path` is null on a delete,
+    // so falling through to `originalPath` is the normal path for one change
+    // kind in five, not a defensive flourish.
+    const now = entry.item?.path ?? null
+    const path = now ?? entry.originalPath ?? null
     // Never seen live (0 of 3288), but a folder entry has no blob to diff and
     // would render as a file that changed by nothing.
-    if (path === undefined || entry.item?.isFolder === true) continue
+    if (path === null || entry.item?.isFolder === true) continue
 
     files.push({
       path,
       changeType: changeFlags(entry.changeType),
+      // Only a rename has somewhere else to have been: a delete's old path is
+      // already `path`, and an edit or an add never sends one.
+      originalPath: now !== null && entry.originalPath !== undefined ? entry.originalPath : null,
       objectId: entry.item?.objectId ?? null,
       originalObjectId: entry.item?.originalObjectId ?? null,
     })

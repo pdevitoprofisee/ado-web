@@ -145,8 +145,8 @@ describe('PullRequestDetailView merge state', () => {
             iterationId: 2,
             truncated: false,
             files: [
-              { path: '/src/log.ts', changeType: ['edit'], objectId: 'aa', originalObjectId: 'bb' },
-              { path: '/src/ok.ts', changeType: ['edit'], objectId: 'cc', originalObjectId: 'dd' },
+              { path: '/src/log.ts', changeType: ['edit'], originalPath: null, objectId: 'aa', originalObjectId: 'bb' },
+              { path: '/src/ok.ts', changeType: ['edit'], originalPath: null, objectId: 'cc', originalObjectId: 'dd' },
             ],
           },
         })}
@@ -415,9 +415,15 @@ describe('PullRequestDetailView files', () => {
     iterationId: 2,
     truncated: true,
     files: [
-      { path: '/src/log.ts', changeType: ['edit'], objectId: 'aa', originalObjectId: 'bb' },
-      { path: '/src/sink.ts', changeType: ['edit', 'rename'], objectId: 'cc', originalObjectId: 'dd' },
-      { path: '/src/new.ts', changeType: ['add'], objectId: 'ee', originalObjectId: null },
+      { path: '/src/log.ts', changeType: ['edit'], originalPath: null, objectId: 'aa', originalObjectId: 'bb' },
+      {
+        path: '/src/sink.ts',
+        changeType: ['edit', 'rename'],
+        originalPath: '/src/drain.ts',
+        objectId: 'cc',
+        originalObjectId: 'dd',
+      },
+      { path: '/src/new.ts', changeType: ['add'], originalPath: null, objectId: 'ee', originalObjectId: null },
     ],
   }
 
