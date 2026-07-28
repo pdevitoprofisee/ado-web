@@ -4,103 +4,442 @@
 
 @custom-variant dark (&:is(.dark *));
 
-:root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+/* ============================================================
+   Prof — the design system this app is drawn in.
 
-  /* The rest of this palette is deliberately greyscale; a diff is the one place
-     that cannot be. The row tints stay pale enough for syntax colour to survive
-     on top of them, and the word tints are the same hue two steps stronger, so
-     an intra-line edit reads against its own row rather than against the page. */
-  --diff-add: oklch(0.95 0.04 150);
-  --diff-add-word: oklch(0.87 0.11 150);
-  --diff-delete: oklch(0.95 0.04 25);
-  --diff-delete-word: oklch(0.88 0.1 25);
-  --diff-word: transparent;
-  /* Not the word tints reused. Those are backgrounds and sit near the page's
-     lightness by design; the same colour set as text on the page would be
-     unreadable. Same hues, taken far enough the other way to be legible. */
-  --diff-add-fg: oklch(0.52 0.13 150);
-  --diff-delete-fg: oklch(0.52 0.17 25);
+   Ink on paper. Light is a pen on warm stock; dark is chalk on a
+   deep board. The signature is linework: organic corner radii,
+   1.5px pen strokes, SVG hatch fills, drifted rules, paper grain,
+   and shadows that read as graphite rather than gloss.
+
+   Three layers below, in order:
+     1. Prof primitives   — the design system's own vocabulary
+     2. shadcn semantics  — remapped onto those primitives, so the
+                            ~150 existing `text-muted-foreground` /
+                            `border-border/60` call sites reskin
+                            without being touched
+     3. @theme            — what Tailwind is allowed to generate
+   ============================================================ */
+
+/* ---------- Typefaces ----------
+   Both faces are variable and vendored (this app runs on localhost
+   with no network egress by design, so Google's CDN is not an
+   option). latin + latin-ext only: the content is code, filenames,
+   and English prose, and anything outside those ranges falls back
+   to the system stack rather than shipping subsets we never paint. */
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/HankenGrotesk-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/HankenGrotesk-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/HankenGrotesk-italic-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/HankenGrotesk-italic-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Spline Sans Mono';
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('./fonts/SplineSansMono-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Spline Sans Mono';
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('./fonts/SplineSansMono-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Spline Sans Mono';
+  font-style: italic;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('./fonts/SplineSansMono-italic-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Spline Sans Mono';
+  font-style: italic;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('./fonts/SplineSansMono-italic-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+/* ============================================================
+   1. Prof primitives — light (pen on warm paper)
+   ============================================================ */
+:root {
+  /* Paper: four sheets, warm, brightening as a surface rises. */
+  --paper-0: #faf6ef; /* app background */
+  --paper-1: #f3ede2; /* sunken wells, table stripes */
+  --paper-2: #fefcf8; /* raised card */
+  --paper-3: #ffffff; /* inputs, popovers — brightest sheet */
 
-  --diff-add: oklch(0.32 0.05 150);
-  --diff-add-word: oklch(0.45 0.11 150);
-  --diff-delete: oklch(0.32 0.05 25);
-  --diff-delete-word: oklch(0.45 0.12 25);
+  /* Ink: one navy family. --ink-700 is the brand navy and is what
+     every deliberate pen stroke is drawn in. */
+  --ink-900: #0c2836;
+  --ink-700: #105270;
+  --ink-500: #51707d;
+  --ink-300: #92a8af;
+  --ink-150: #c8d2d2;
+
+  /* Teal: the one non-ink brand colour. */
+  --teal-600: #00897a;
+  --teal-500: #00a694;
+  --teal-300: #6fccbf;
+  --teal-100: #d9f0ea;
+
+  /* Coloured pens, each with the wash it lays down. */
+  --pen-red: #bc4b33;
+  --pen-red-tint: #f7e4dd;
+  --pen-amber: #b07c1f;
+  --pen-amber-tint: #f6ebd3;
+  --pen-green: #00897a;
+  --pen-green-tint: #d9f0ea;
+
+  /* Three line weights by intent, not by colour: a deliberate
+     outline, a quiet division, a construction line. */
+  --line-strong: var(--ink-700);
+  --line-soft: #d8dcd2;
+  --line-faint: #e8e7db;
+
+  --surface-app: var(--paper-0);
+  --surface-card: var(--paper-2);
+  --surface-sunken: var(--paper-1);
+  --surface-input: var(--paper-3);
+
+  --text-heading: var(--ink-900);
+  --text-body: var(--ink-900);
+  --text-secondary: var(--ink-500);
+  --text-muted: var(--ink-300);
+  --text-accent: var(--teal-600);
+  --text-link: var(--ink-700);
+  --text-on-accent: #fcfbf6;
+  --text-on-ink: #fcfbf6;
+
+  --selection-bg: var(--teal-100);
+
+  /* Composite type styles. Prof's own size scale is deliberately
+     *not* imposed on Tailwind's — this app is dense and tuned to
+     it — so these shorthands are for the drawn components below,
+     where the whole style travels as one token. */
+  --text-2xs: 0.6875rem;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --leading-tight: 1.15;
+  --leading-snug: 1.35;
+  --leading-body: 1.55;
+  --tracking-label: 0.08em;
+  --type-annotation: var(--weight-medium) var(--text-2xs) / 1.2 var(--font-mono);
+  --type-figure: var(--weight-medium) 2.75rem / var(--leading-tight) var(--font-mono);
+  --type-label: var(--weight-medium) 0.875rem / 1.2 var(--font-sans);
+  --type-card-title: var(--weight-semibold) 1.1875rem / var(--leading-snug) var(--font-sans);
+
+  /* Sketch geometry. Every radius is asymmetric on both axes, so
+     no two corners of a box agree — that asymmetry *is* the
+     hand-drawn read. NB: a multi-value radius is only legal in the
+     `border-radius` shorthand; `rounded-t-*`, `rounded-l-*` and
+     `calc()`/`min()` on these will silently drop the declaration. */
+  --radius-sketch-sm: 0.4rem 0.55rem 0.45rem 0.6rem / 0.55rem 0.45rem 0.6rem 0.4rem;
+  --radius-sketch-md: 0.65rem 0.9rem 0.7rem 1rem / 0.9rem 0.7rem 1rem 0.65rem;
+  --radius-sketch-lg: 1rem 1.4rem 1.1rem 1.5rem / 1.4rem 1.1rem 1.5rem 1rem;
+  --radius-pill: 2rem 1.8rem 2rem 1.7rem / 1.8rem 2rem 1.7rem 2rem;
+  --radius-blob: 49% 51% 52% 48% / 52% 48% 51% 49%;
+
+  --stroke-hair: 1px;
+  --stroke-pen: 1.5px;
+  --stroke-marker: 2.5px;
+
+  --control-sm: 2rem;
+  --control-md: 2.5rem;
+  --control-lg: 3rem;
+
+  /* Paper grain: fractal noise, laid over everything at 5%. */
+  --texture-paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23g)' opacity='0.55'/%3E%3C/svg%3E");
+  --texture-paper-opacity: 0.05;
+
+  /* Graphite, never gloss: a hard 1px offset like a sheet lifted
+     off the page, then a wide soft cast. */
+  --shadow-card: 0 1px 0 rgba(16, 50, 70, 0.06), 0 3px 10px rgba(16, 50, 70, 0.07);
+  --shadow-raised: 0 2px 0 rgba(16, 50, 70, 0.05), 0 8px 24px rgba(16, 50, 70, 0.12);
+  --shadow-popover: 0 3px 0 rgba(16, 50, 70, 0.04), 0 12px 32px rgba(16, 50, 70, 0.16);
+
+  /* Pen hatching as tiles. Fills that read as *drawn* fill rather
+     than printed colour — used where a solid block would shout. */
+  --hatch-navy: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 2 L2 -2 M-2 10 L10 -2 M6 10 L10 6' stroke='%23105270' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  --hatch-teal: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 2 L2 -2 M-2 10 L10 -2 M6 10 L10 6' stroke='%2300897A' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  --hatch-red: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 2 L2 -2 M-2 10 L10 -2 M6 10 L10 6' stroke='%23BC4B33' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  --hatch-amber: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 2 L2 -2 M-2 10 L10 -2 M6 10 L10 6' stroke='%23B07C1F' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  --hatch-paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 2 L2 -2 M-2 10 L10 -2 M6 10 L10 6' stroke='%23FAF6EF' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  --hatch-cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Cpath d='M-2 2 L2 -2 M-2 12 L12 -2 M8 12 L12 8 M-2 8 L8 -2 M2 12 L12 2' stroke='%23105270' stroke-width='0.9' opacity='0.8' fill='none'/%3E%3C/svg%3E");
+
+  /* Rules and underlines are drawn paths, not 1px borders — they
+     drift off true by a fraction of a pixel across their length.
+
+     `preserveAspectRatio='none'` is ours, not Prof's. `.sketch-underline`
+     paints these at `100% 8px`, so under the default `xMidYMid meet` the
+     drawing scales by `min(width / 160, 1)`: past 160px it stops growing and
+     sits as a short mark floating mid-element, and under 160px the 2.2px
+     stroke thins with it — an 80px tab got roughly 1px. With `none` the
+     vertical scale stays 1, so the stroke keeps its weight at any width and
+     only the drift stretches. `--stroke-rule` needs no such fix: it tiles
+     with `repeat-x` instead of scaling. */
+  --stroke-underline: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='8' viewBox='0 0 160 8' preserveAspectRatio='none'%3E%3Cpath d='M3 5.5 C 40 3.2, 95 3.0, 157 4.6' fill='none' stroke='%23105270' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E");
+  --stroke-underline-teal: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='8' viewBox='0 0 160 8' preserveAspectRatio='none'%3E%3Cpath d='M3 5.5 C 40 3.2, 95 3.0, 157 4.6' fill='none' stroke='%2300A694' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E");
+  --stroke-rule: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='6' viewBox='0 0 600 6'%3E%3Cpath d='M2 3.4 C 120 2.2, 300 4.1, 440 2.9 S 560 3.6, 598 2.8' fill='none' stroke='%23105270' stroke-width='1.7' stroke-linecap='round' opacity='0.7'/%3E%3C/svg%3E");
+
+  /* A gap in paper, then the teal — so focus reads on any surface. */
+  --focus-ring: 0 0 0 2px var(--surface-app), 0 0 0 4px var(--teal-500);
+
+  --ease-settle: cubic-bezier(0.25, 0.6, 0.3, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+
+  /* ---------- shadcn semantics, remapped onto Prof ----------
+     These are the names the app's ~150 utility call sites already
+     use. Pointing them at Prof primitives is what reskins the
+     whole app from one file. */
+  --background: var(--surface-app);
+  --foreground: var(--text-body);
+  --card: var(--surface-card);
+  --card-foreground: var(--text-body);
+  --popover: var(--surface-input);
+  --popover-foreground: var(--text-body);
+  --primary: var(--ink-700);
+  --primary-foreground: var(--text-on-ink);
+  --secondary: var(--paper-1);
+  --secondary-foreground: var(--text-body);
+  --muted: var(--surface-sunken);
+  --muted-foreground: var(--text-secondary);
+  /* shadcn's `--accent` is a hover surface, not a brand colour.
+     Prof's faintest teal wash serves as both. */
+  --accent: var(--teal-100);
+  --accent-foreground: var(--text-heading);
+  --destructive: var(--pen-red);
+  /* `--border` is the quiet division that most of the app draws;
+     the deliberate outline is `--line-strong`, reached for by name
+     (`border-ink`) or by `.sketch-box`. `--input` is a *stroke*
+     colour — never a fill. */
+  --border: var(--line-soft);
+  --input: var(--line-soft);
+  --ring: var(--teal-500);
+
+  /* Charts and sidebar: unused today, kept in Prof terms so a
+     future generated shadcn component lands on-palette. */
+  --chart-1: var(--teal-500);
+  --chart-2: var(--ink-700);
+  --chart-3: var(--pen-amber);
+  --chart-4: var(--pen-red);
+  --chart-5: var(--ink-500);
+  --sidebar: var(--paper-1);
+  --sidebar-foreground: var(--text-body);
+  --sidebar-primary: var(--ink-700);
+  --sidebar-primary-foreground: var(--text-on-ink);
+  --sidebar-accent: var(--teal-100);
+  --sidebar-accent-foreground: var(--text-heading);
+  --sidebar-border: var(--line-soft);
+  --sidebar-ring: var(--teal-500);
+
+  /* A diff is where Prof's coloured pens earn their keep: added is
+     the brand teal rather than a generic green, removed is the red
+     pen. Row tints stay pale enough for syntax colour to survive
+     on top; word tints are the same pen two steps stronger, so an
+     intra-line edit reads against its own row, not the page. */
+  --diff-add: var(--pen-green-tint);
+  --diff-add-word: var(--teal-300);
+  --diff-delete: var(--pen-red-tint);
+  --diff-delete-word: #e8b4a2;
   --diff-word: transparent;
-  --diff-add-fg: oklch(0.78 0.14 150);
-  --diff-delete-fg: oklch(0.75 0.15 25);
+  /* Not the word tints reused. Those are backgrounds and sit near
+     the page's lightness by design; the same colours as text would
+     be unreadable. The pens themselves, at full strength. */
+  --diff-add-fg: var(--pen-green);
+  --diff-delete-fg: var(--pen-red);
+}
+
+/* ============================================================
+   1b. Prof primitives — dark (chalk on a deep board)
+
+   Not the light theme dimmed. The paper stack inverts (deeper =
+   more sunken), ink becomes chalk, and the pens brighten so they
+   still read as pens. Only the values that change are restated;
+   everything else above still holds.
+   ============================================================ */
+.dark {
+  --paper-0: #0d2230;
+  --paper-1: #091a25;
+  --paper-2: #12303f;
+  --paper-3: #163848;
+
+  --ink-900: #f0ece1;
+  --ink-700: #c3d9e0;
+  --ink-500: #8faab4;
+  --ink-300: #5c7a86;
+  --ink-150: #2e4d5b;
+
+  --teal-600: #3dd2bc;
+  --teal-500: #1fbda8;
+  --teal-300: #15826f;
+  --teal-100: #11423f;
+
+  --pen-red: #e08a72;
+  --pen-red-tint: #3c2a26;
+  --pen-amber: #d9b36a;
+  --pen-amber-tint: #3a3322;
+  --pen-green: #3dd2bc;
+  --pen-green-tint: #11423f;
+
+  --line-soft: #29475a;
+  --line-faint: #1d3a4a;
+
+  --text-on-accent: #07211e;
+  --text-on-ink: #0d2230;
+  --text-accent: var(--teal-500);
+  --selection-bg: #1a5b54;
+
+  --texture-paper-opacity: 0.04;
+
+  --shadow-card: 0 1px 0 rgba(0, 0, 0, 0.2), 0 3px 10px rgba(0, 0, 0, 0.3);
+  --shadow-raised: 0 2px 0 rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-popover: 0 3px 0 rgba(0, 0, 0, 0.2), 0 12px 32px rgba(0, 0, 0, 0.5);
+
+  /* Chalk hatching and chalk-drawn rules: same paths, lighter pen. */
+  --hatch-navy: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 2 L2 -2 M-2 10 L10 -2 M6 10 L10 6' stroke='%23C3D9E0' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  --hatch-teal: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 2 L2 -2 M-2 10 L10 -2 M6 10 L10 6' stroke='%233DD2BC' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  --hatch-red: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 2 L2 -2 M-2 10 L10 -2 M6 10 L10 6' stroke='%23E08A72' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  --hatch-amber: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 2 L2 -2 M-2 10 L10 -2 M6 10 L10 6' stroke='%23D9B36A' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  --hatch-paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 2 L2 -2 M-2 10 L10 -2 M6 10 L10 6' stroke='%230D2230' stroke-width='1.2' fill='none'/%3E%3C/svg%3E");
+  --hatch-cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Cpath d='M-2 2 L2 -2 M-2 12 L12 -2 M8 12 L12 8 M-2 8 L8 -2 M2 12 L12 2' stroke='%23C3D9E0' stroke-width='0.9' opacity='0.8' fill='none'/%3E%3C/svg%3E");
+
+  --stroke-underline: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='8' viewBox='0 0 160 8' preserveAspectRatio='none'%3E%3Cpath d='M3 5.5 C 40 3.2, 95 3.0, 157 4.6' fill='none' stroke='%23C3D9E0' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E");
+  --stroke-underline-teal: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='8' viewBox='0 0 160 8' preserveAspectRatio='none'%3E%3Cpath d='M3 5.5 C 40 3.2, 95 3.0, 157 4.6' fill='none' stroke='%231FBDA8' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E");
+  --stroke-rule: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='6' viewBox='0 0 600 6'%3E%3Cpath d='M2 3.4 C 120 2.2, 300 4.1, 440 2.9 S 560 3.6, 598 2.8' fill='none' stroke='%23C3D9E0' stroke-width='1.4' stroke-linecap='round' opacity='0.55'/%3E%3C/svg%3E");
+
+  /* The semantic layer is all indirection through the primitives
+     above, so it re-resolves on its own. Two exceptions: on a dark
+     board a raised card is *lighter* than the app, which inverts
+     which sheet `--muted` should point at, and `--destructive`
+     wants the brightened pen. */
+  --muted: var(--paper-2);
+
+  --diff-add: var(--pen-green-tint);
+  --diff-add-word: var(--teal-300);
+  --diff-delete: var(--pen-red-tint);
+  --diff-delete-word: #6b3e32;
+  --diff-word: transparent;
+}
+
+/* ============================================================
+   3. What Tailwind may generate
+
+   Font families and the two additions to Tailwind's own scales go
+   in a plain `@theme` so they are also emitted as custom
+   properties (the `--type-*` shorthands above reference them).
+   Everything that must re-resolve under `.dark` goes in
+   `@theme inline`, which substitutes the `var()` rather than
+   snapshotting its value.
+   ============================================================ */
+@theme {
+  --font-sans: 'Hanken Grotesk', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'Spline Sans Mono', 'SF Mono', Menlo, monospace;
+  /* Below Tailwind's `text-xs`. Prof's annotation size — figure
+     labels, counts, the small mono type that labels a drawing. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1.2;
+  --tracking-label: 0.08em;
 }
 
 @theme inline {
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  /* Every `rounded-*` in the app becomes hand-drawn from here.
+     Controls (≤40px tall) want `rounded-sm`; panels and cards want
+     `rounded-lg`. Directional variants are not available — see the
+     note on the sketch radii above. */
+  --radius-sm: var(--radius-sketch-sm);
+  --radius-md: var(--radius-sketch-sm);
+  --radius-lg: var(--radius-sketch-md);
+  --radius-xl: var(--radius-sketch-lg);
+  --radius-pill: var(--radius-pill);
+  --radius-blob: var(--radius-blob);
+
+  /* Prof's own palette, by name, for the places that want a
+     specific pen rather than a semantic role. */
+  --color-paper-0: var(--paper-0);
+  --color-paper-1: var(--paper-1);
+  --color-paper-2: var(--paper-2);
+  --color-paper-3: var(--paper-3);
+  --color-ink-900: var(--ink-900);
+  --color-ink: var(--ink-700);
+  --color-ink-700: var(--ink-700);
+  --color-ink-500: var(--ink-500);
+  --color-ink-300: var(--ink-300);
+  --color-ink-150: var(--ink-150);
+  --color-teal-600: var(--teal-600);
+  --color-teal-500: var(--teal-500);
+  --color-teal-300: var(--teal-300);
+  --color-teal-100: var(--teal-100);
+  --color-pen-red: var(--pen-red);
+  --color-pen-red-tint: var(--pen-red-tint);
+  --color-pen-amber: var(--pen-amber);
+  --color-pen-amber-tint: var(--pen-amber-tint);
+  --color-pen-green: var(--pen-green);
+  --color-pen-green-tint: var(--pen-green-tint);
+  --color-line-strong: var(--line-strong);
+  --color-line-soft: var(--line-soft);
+  --color-line-faint: var(--line-faint);
+  --color-on-ink: var(--text-on-ink);
+  --color-on-accent: var(--text-on-accent);
+
+  /* shadcn semantics. */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -132,25 +471,22 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+
   --color-diff-add: var(--diff-add);
   --color-diff-delete: var(--diff-delete);
-  /* Resolved per row, not per theme: `.diff-add` and `.diff-delete` below each
-     rebind `--diff-word`, so one `bg-diff-word` on a token renders green inside
-     an added line and red inside a removed one without knowing which it is in. */
+  /* Resolved per row, not per theme: `.diff-add` and `.diff-delete`
+     below each rebind `--diff-word`, so one `bg-diff-word` on a
+     token renders teal inside an added line and red inside a
+     removed one without knowing which it is in. */
   --color-diff-word: var(--diff-word);
   --color-diff-add-fg: var(--diff-add-fg);
   --color-diff-delete-fg: var(--diff-delete-fg);
-}
 
-@layer components {
-  .diff-add {
-    background-color: var(--diff-add);
-    --diff-word: var(--diff-add-word);
-  }
-  .diff-delete {
-    background-color: var(--diff-delete);
-    --diff-word: var(--diff-delete-word);
-  }
+  --shadow-card: var(--shadow-card);
+  --shadow-raised: var(--shadow-raised);
+  --shadow-popover: var(--shadow-popover);
+
+  --ease-settle: var(--ease-settle);
 }
 
 @layer base {
@@ -159,10 +495,264 @@
   }
   body {
     @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
   }
   html,
   body,
   #app {
     min-height: 100%;
+  }
+  /* Prof's headings are set tight; Tailwind's defaults are not. */
+  h1,
+  h2,
+  h3,
+  h4 {
+    letter-spacing: -0.015em;
+  }
+  ::selection {
+    background: var(--selection-bg);
+  }
+  /* A second pen pass around whatever has focus. Prof draws this
+     as a shadow rather than an outline so it follows the organic
+     corners instead of boxing them. */
+  :where(button, input, select, textarea, a, [tabindex]):focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+}
+
+@layer components {
+  /* ---------- Paper grain ----------
+     On <body>. Fixed and above everything so the whole viewport
+     shares one continuous sheet rather than each panel getting its
+     own grain; `--local` scopes it to a positioned ancestor. */
+  .paper-grain {
+    position: relative;
+  }
+  .paper-grain::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: var(--texture-paper);
+    opacity: var(--texture-paper-opacity);
+    pointer-events: none;
+    z-index: 2147483646;
+  }
+  .paper-grain--local::after {
+    position: absolute;
+  }
+
+  /* ---------- The drawn box ----------
+     Prof's card: pen outline, organic corners, graphite lift.
+     `--quiet` for the many boxes that only need to be divided from
+     their neighbour, not outlined. */
+  .sketch-box {
+    background: var(--surface-card);
+    border: var(--stroke-pen) solid var(--line-strong);
+    border-radius: var(--radius-sketch-md);
+    box-shadow: var(--shadow-card);
+  }
+  .sketch-box--lg {
+    border-radius: var(--radius-sketch-lg);
+  }
+  .sketch-box--sm {
+    border-radius: var(--radius-sketch-sm);
+  }
+  .sketch-box--quiet {
+    border-color: var(--line-soft);
+    box-shadow: none;
+  }
+
+  /* ---------- Drawn rule ----------
+     Replaces <hr> and `border-t`. 6px tall, so it needs vertical
+     room a 1px border does not. */
+  .sketch-rule {
+    border: none;
+    height: 6px;
+    background: var(--stroke-rule) left center / 600px 6px repeat-x;
+  }
+
+  /* ---------- Drawn underline ----------
+     For the emphasised word in a heading, and for the ink under an
+     active tab. Costs 8px of padding-bottom. */
+  .sketch-underline {
+    background: var(--stroke-underline) bottom left / 100% 8px no-repeat;
+    padding-bottom: 8px;
+  }
+  .sketch-underline--teal {
+    background-image: var(--stroke-underline-teal);
+  }
+
+  /* ---------- Hatch fills ----------
+     Pair with a tint background: the tint carries the colour, the
+     hatch makes it read as drawn. */
+  .hatch-navy {
+    background-image: var(--hatch-navy);
+  }
+  .hatch-teal {
+    background-image: var(--hatch-teal);
+  }
+  .hatch-red {
+    background-image: var(--hatch-red);
+  }
+  .hatch-amber {
+    background-image: var(--hatch-amber);
+  }
+  .hatch-cross {
+    background-image: var(--hatch-cross);
+  }
+
+  /* ---------- Annotation ----------
+     Tiny uppercase mono, the way a figure is labelled. Prof's
+     answer to every "LABEL:" in the app. */
+  .annotation {
+    font: var(--type-annotation);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+
+  /* ---------- Badge ----------
+     A hand-drawn pill. Neutral is ink on card; each tone swaps in
+     its pen for the stroke and the text, and its wash for the
+     fill. `__dot` is a blob, not a circle. */
+  .prof-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: var(--weight-medium) 0.75rem / 1 var(--font-sans);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-pill);
+    padding: 4px 10px;
+    background: var(--surface-card);
+    color: var(--text-body);
+  }
+  .prof-badge__dot {
+    width: 7px;
+    height: 7px;
+    flex: none;
+    border-radius: var(--radius-blob);
+    background: var(--ink-500);
+  }
+  .prof-badge--teal {
+    border-color: var(--teal-600);
+    color: var(--teal-600);
+    background: var(--pen-green-tint);
+  }
+  .prof-badge--teal .prof-badge__dot {
+    background: var(--teal-500);
+  }
+  .prof-badge--navy {
+    border-color: var(--ink-700);
+    color: var(--ink-700);
+  }
+  .prof-badge--navy .prof-badge__dot {
+    background: var(--ink-700);
+  }
+  .prof-badge--red {
+    border-color: var(--pen-red);
+    color: var(--pen-red);
+    background: var(--pen-red-tint);
+  }
+  .prof-badge--red .prof-badge__dot {
+    background: var(--pen-red);
+  }
+  .prof-badge--amber {
+    border-color: var(--pen-amber);
+    color: var(--pen-amber);
+    background: var(--pen-amber-tint);
+  }
+  .prof-badge--amber .prof-badge__dot {
+    background: var(--pen-amber);
+  }
+
+  /* ---------- Tabs ----------
+     The active tab is marked by drawn ink underneath it, not by a
+     1px border. `__ink` is absolutely positioned, so the tab needs
+     `position: relative` and 10px of bottom padding. */
+  .prof-tabs {
+    display: flex;
+    border-bottom: var(--stroke-hair) solid var(--line-soft);
+  }
+  .prof-tab {
+    position: relative;
+    margin-bottom: -1px;
+    font: var(--type-label);
+    color: var(--text-secondary);
+    padding: 0.5rem 2px 10px;
+    cursor: pointer;
+  }
+  .prof-tab:hover,
+  .prof-tab--active {
+    color: var(--text-heading);
+  }
+  .prof-tab__ink {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 8px;
+    background: var(--stroke-underline-teal) bottom left / 100% 8px no-repeat;
+  }
+
+  /* ---------- Avatar ----------
+     A blob with a pen outline. Size comes from the call site. */
+  .prof-avatar {
+    display: inline-grid;
+    place-items: center;
+    border: var(--stroke-pen) solid var(--line-strong);
+    border-radius: var(--radius-blob);
+    background: var(--teal-100);
+    color: var(--ink-700);
+    font: var(--weight-semibold) 0.8em / 1 var(--font-sans);
+    overflow: hidden;
+    flex: none;
+  }
+  .prof-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  /* ---------- Progress ----------
+     A hatched fill inside a drawn pill, with a pen stroke at the
+     leading edge. Tones follow the badge tones. */
+  .prof-progress {
+    height: 1rem;
+    border: var(--stroke-pen) solid var(--line-strong);
+    border-radius: var(--radius-pill);
+    background: var(--surface-input);
+    overflow: hidden;
+  }
+  .prof-progress__fill {
+    height: 100%;
+    background-color: var(--teal-100);
+    background-image: var(--hatch-teal);
+    border-right: var(--stroke-pen) solid var(--line-strong);
+    transition: width var(--duration-slow) var(--ease-settle);
+  }
+  .prof-progress--red .prof-progress__fill {
+    background-color: var(--pen-red-tint);
+    background-image: var(--hatch-red);
+  }
+  .prof-progress--amber .prof-progress__fill {
+    background-color: var(--pen-amber-tint);
+    background-image: var(--hatch-amber);
+  }
+  .prof-progress--navy .prof-progress__fill {
+    background-color: var(--paper-1);
+    background-image: var(--hatch-navy);
+  }
+
+  /* ---------- Diff rows ----------
+     See `--color-diff-word` above: each row class rebinds
+     `--diff-word` so one utility on a token works in both. */
+  .diff-add {
+    background-color: var(--diff-add);
+    --diff-word: var(--diff-add-word);
+  }
+  .diff-delete {
+    background-color: var(--diff-delete);
+    --diff-word: var(--diff-delete-word);
   }
 }

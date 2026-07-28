@@ -1,4 +1,4 @@
-import { Check, CircleHelp, Clock, Minus, TriangleAlert, X } from 'lucide-react'
+import { Check, CircleHelp, Clock, Minus, TriangleAlert, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { ReactNode } from 'react'
@@ -68,9 +68,27 @@ function branch(ref: string): string {
   return ref.replace(/^refs\/heads\//, '')
 }
 
-function Chip({ children }: { children: ReactNode }) {
+/**
+ * The little words that qualify a row — "draft", "team", "you", "+ body".
+ *
+ * `.annotation` rather than a hand-rolled `text-[10px] uppercase`: these are the
+ * same kind of mark as a section label, so they should be the same type. The
+ * 1.5px stroke is Prof's pen weight, in the faint construction ink — a chip that
+ * qualifies a row must not outdraw the row.
+ *
+ * `tone` exists for exactly one caller. "Team", "you" and "+ body" describe the
+ * row; "draft" changes what the pull request *is* — it cannot merge — and that
+ * is what Prof's amber pen means. Everything else stays in construction ink,
+ * because a page where five kinds of chip are five colours has no colour left.
+ */
+function Chip({ children, tone }: { children: ReactNode; tone?: 'amber' }) {
   return (
-    <span className="text-muted-foreground border-border ml-1.5 rounded border px-1 text-[10px] uppercase">
+    <span
+      className={cn(
+        'annotation ml-1.5 rounded-sm border-[1.5px] px-1',
+        tone === 'amber' ? 'border-pen-amber text-pen-amber bg-pen-amber-tint' : 'border-ink-150',
+      )}
+    >
       {children}
     </span>
   )
@@ -88,9 +106,16 @@ function Section({
 }) {
   return (
     <section className="w-full" aria-label={title}>
+      {/* `.annotation` carries the whole style — tiny mono, 0.08em tracking,
+          uppercase, secondary ink — so the utilities that used to approximate it
+          are gone rather than layered on top of it. The count inherits the mono
+          from the same shorthand.
+          `text-ink` is the one thing added back: the policy groups inside this
+          section are annotations too, and without a pen on the outer label the
+          two levels are the same mark. */}
       <h2
         aria-label={count === undefined ? undefined : `${title}, ${count}`}
-        className="text-muted-foreground mb-1 flex items-baseline gap-2 text-xs font-medium tracking-wide uppercase"
+        className="annotation text-ink mb-1.5 flex items-baseline gap-2"
       >
         {title}
         {count === undefined ? null : <span className="tabular-nums">{count}</span>}
@@ -182,20 +207,28 @@ const POLICY_WORDS: Record<PolicyStatus, string> = {
   unknown: 'unknown',
 }
 
+// One pen per verdict, and the glyph is the only place the colour appears — the
+// row itself stays ink on paper. A checklist where every row is tinted is a
+// checklist with no emphasis left for the one row that is failing.
+//
+// Amber for both `queued` and `running` even though they mean different things
+// ("not yet satisfied" vs "a build is going"): the word beside the icon already
+// separates them, and inventing a fourth pen to say so would put a colour in
+// this system that nothing else uses.
 function PolicyIcon({ status }: { status: PolicyStatus }) {
   switch (status) {
     case 'approved':
-      return <Check className="size-3.5 shrink-0" aria-hidden />
+      return <Check className="text-pen-green size-3.5 shrink-0" aria-hidden />
     case 'rejected':
     case 'broken':
       return <X className="text-destructive size-3.5 shrink-0" aria-hidden />
     case 'queued':
     case 'running':
-      return <Clock className="size-3.5 shrink-0" aria-hidden />
+      return <Clock className="text-pen-amber size-3.5 shrink-0" aria-hidden />
     case 'notApplicable':
-      return <Minus className="size-3.5 shrink-0" aria-hidden />
+      return <Minus className="text-ink-300 size-3.5 shrink-0" aria-hidden />
     default:
-      return <CircleHelp className="size-3.5 shrink-0" aria-hidden />
+      return <CircleHelp className="text-muted-foreground size-3.5 shrink-0" aria-hidden />
   }
 }
 
@@ -217,7 +250,11 @@ function label(policy: Policy): string {
 
 function PolicyRow({ policy, ambiguous }: { policy: Policy; ambiguous: boolean }) {
   return (
-    <li className="border-border/60 flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
+    // `border-border` at full strength rather than the old `/60`: `--border` is
+    // already Prof's soft line, so the opacity was thinning a line that had
+    // been chosen to be quiet. A divider between neighbours in the same panel is
+    // exactly what that token is for.
+    <li className="border-border flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
       <PolicyIcon status={policy.status} />
       <span className="min-w-0 flex-1">
         {policy.name}
@@ -225,20 +262,26 @@ function PolicyRow({ policy, ambiguous }: { policy: Policy; ambiguous: boolean }
           <span className="text-muted-foreground"> — {policy.detail}</span>
         )}
         {ambiguous ? (
-          <span className="text-muted-foreground font-mono text-xs"> #{policy.id}</span>
+          <span className="text-muted-foreground font-mono text-2xs"> #{policy.id}</span>
         ) : null}
       </span>
       {policy.url === null ? null : (
+        // 1.5px of pen at a 3px offset, and it finds the brand navy on hover.
+        // The stock `underline-offset-4` sat a hair too low under 11px type.
         <a
           href={policy.url}
           target="_blank"
           rel="noreferrer"
-          className="text-muted-foreground shrink-0 text-xs underline underline-offset-4"
+          className="text-muted-foreground hover:text-primary shrink-0 text-2xs underline decoration-[1.5px] underline-offset-[3px]"
         >
           result
         </a>
       )}
-      <span className="text-muted-foreground w-24 shrink-0 text-right text-xs">
+      {/* Mono, because this column is read down rather than across: the verdicts
+          line up on a shared advance width and a row that says "failed" jumps
+          out of a stack of "passed". Wider than the old `w-24` to hold "not
+          applicable" at mono's advance. */}
+      <span className="text-muted-foreground w-28 shrink-0 text-right font-mono text-2xs">
         {POLICY_WORDS[policy.status]}
       </span>
     </li>
@@ -264,15 +307,18 @@ function PolicyChecklist({ policies }: { policies: readonly Policy[] }) {
       {GROUPS.map(([name], index) =>
         buckets[index].length === 0 ? null : (
           <div key={name}>
-            <h3
-              className={cn(
-                'mb-1 text-xs font-medium',
-                name === 'Blocking' ? 'text-destructive' : 'text-muted-foreground',
-              )}
-            >
+            {/* A group heading is the same kind of mark as the section heading
+                above it, one level quieter — so it is the same `.annotation`,
+                and the only thing that distinguishes "Blocking" is the red pen.
+                That override sits in `@layer utilities`, above `.annotation`'s
+                own colour, so it wins without `!`. */}
+            <h3 className={cn('annotation mb-1', name === 'Blocking' && 'text-destructive')}>
               {name}
             </h3>
-            <ul aria-label={name} className="border-border/60 rounded-md border">
+            {/* Quiet, because four of these can stack under one heading and a
+                drawn outline with a shadow on each would read as four cards
+                rather than four groups of one list. */}
+            <ul aria-label={name} className="sketch-box sketch-box--quiet">
               {buckets[index].map((policy) => (
                 <PolicyRow
                   key={policy.id}
@@ -301,9 +347,56 @@ export function voteWord(vote: number): string {
   return VOTES.get(vote) ?? `vote ${vote}`
 }
 
+/**
+ * Which pen each vote is drawn in.
+ *
+ * Both approvals are teal because this column answers one question — does this
+ * reviewer stand between the branch and the target — and "approved with
+ * suggestions" does not. The words already tell them apart; a second pen for the
+ * caveat would spend a colour saying what the sentence says.
+ *
+ * "No vote" gets the bare badge: card paper, ink outline, and the dot's default
+ * grey. It is the state most reviewers are in on most pull requests, and it is
+ * the one that must not draw the eye. An unrecognised integer falls to navy,
+ * because a vote scale that grew a sixth value is worth looking at.
+ */
+const VOTE_TONES = new Map<number, string>([
+  [10, 'prof-badge--teal'],
+  [5, 'prof-badge--teal'],
+  [0, ''],
+  [-5, 'prof-badge--amber'],
+  [-10, 'prof-badge--red'],
+])
+
+/**
+ * Two letters for the blob.
+ *
+ * `\p{L}` rather than `\w`: these are ADO display names, and "Ángel Ruiz" has to
+ * come out "AR" while `[Products]\Contributors` must not come out "[P" — which
+ * is why a container never reaches here and gets the group glyph instead.
+ * First and last name, not first two, so "Paul James DeVito" is still "PD".
+ */
+function initials(displayName: string): string {
+  const words = displayName.match(/\p{L}+/gu)
+  if (words === null || words.length === 0) return '?'
+
+  const last = words.length > 1 ? words[words.length - 1][0] : ''
+  return (words[0][0] + last).toUpperCase()
+}
+
 function ReviewerRow({ reviewer, viewerId }: { reviewer: Reviewer; viewerId: string | null }) {
   return (
-    <li className="border-border/60 flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
+    // `items-center`, where every other row in this file is `items-baseline`:
+    // this one holds a blob and a pill rather than three runs of text, and a
+    // circle sitting on a text baseline hangs.
+    <li className="border-border flex items-center gap-2 border-b px-2 py-1.5 text-sm last:border-b-0">
+      {/* No avatar URLs come down from ADO — `Reviewer` carries a display name
+          and a vote, nothing else — so the blob is a monogram or a glyph. That
+          is not a downgrade here: containers outnumber people 127 to 23 on this
+          org, and a group of people has no face to show anyway. */}
+      <span className="prof-avatar size-5" aria-hidden>
+        {reviewer.isContainer ? <Users className="size-3" /> : initials(reviewer.displayName)}
+      </span>
       <span className="min-w-0 flex-1">
         {reviewer.displayName}
         {reviewer.isContainer ? <Chip>team</Chip> : null}
@@ -317,28 +410,38 @@ function ReviewerRow({ reviewer, viewerId }: { reviewer: Reviewer; viewerId: str
       </span>
       {/* Required carries full weight and optional recedes: `isRequired` sits
           on 127 containers against 23 people in the live sample, so a section
-          that reads teams as a footnote reads almost empty on a real PR. */}
-      <span
-        className={cn(
-          'w-16 shrink-0 text-right text-xs',
-          reviewer.isRequired ? 'font-medium' : 'text-muted-foreground',
-        )}
-      >
+          that reads teams as a footnote reads almost empty on a real PR. In
+          Prof that weight is the brand pen against `.annotation`'s secondary
+          ink, not a bolder face — the label is 11px mono, and bold at 11px
+          thickens into a smudge before it reads as emphasis. */}
+      <span className={cn('annotation w-16 shrink-0 text-right', reviewer.isRequired && 'text-ink')}>
         {reviewer.isRequired ? 'required' : 'optional'}
       </span>
-      <span className="w-44 shrink-0 text-right text-xs">{voteWord(reviewer.vote)}</span>
+      {/* Wide enough for "approved with suggestions" in a pill, which is what
+          set this column's width — the badge's own padding and dot cost about
+          30px on top of the words. */}
+      <span className="flex w-52 shrink-0 justify-end">
+        <span className={cn('prof-badge', VOTE_TONES.get(reviewer.vote) ?? 'prof-badge--navy')}>
+          <span className="prof-badge__dot" aria-hidden />
+          {voteWord(reviewer.vote)}
+        </span>
+      </span>
     </li>
   )
 }
 
 function CommitRow({ commit }: { commit: Commit }) {
   return (
-    <li className="border-border/60 flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
+    <li className="border-border flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
+      {/* Bare mono with no underline until you want it: seven hex characters
+          are already visibly a link's worth of "this is an identifier", and
+          underlining every sha in a run of thirty draws a ladder down the
+          gutter. The brand navy on hover is the affordance. */}
       <a
         href={commit.url}
         target="_blank"
         rel="noreferrer"
-        className="text-muted-foreground w-16 shrink-0 font-mono text-xs"
+        className="text-muted-foreground hover:text-primary w-16 shrink-0 font-mono text-2xs"
       >
         {commit.id.slice(0, 7)}
       </a>
@@ -353,8 +456,11 @@ function CommitRow({ commit }: { commit: Commit }) {
       <span className="text-muted-foreground hidden shrink-0 truncate text-xs sm:block sm:max-w-40">
         {commit.author}
       </span>
+      {/* Mono for the age, like every other figure on the page: "3d" and "12h"
+          land on the same two columns down a list of thirty commits, which is
+          the only reason this column is worth its width. */}
       <span
-        className="text-muted-foreground w-16 shrink-0 text-right text-xs tabular-nums"
+        className="text-muted-foreground w-16 shrink-0 text-right font-mono text-2xs tabular-nums"
         title={commit.at}
       >
         {age(commit.at)}
@@ -386,9 +492,17 @@ function LayoutToggle({
           type="button"
           aria-pressed={layout === option}
           onClick={() => onLayoutChange(option)}
+          // `rounded-sm` and not bare `rounded`: only the named steps are mapped
+          // onto the sketch radii, so `rounded` is the one class in the scale
+          // that still draws a machine corner.
+          //
+          // The pressed option is filled in with the teal wash rather than
+          // outlined, because an outline that appears and disappears moves the
+          // two words either side of it. `bg-muted` said "sunken" on a control
+          // that is chosen, which is the wrong direction.
           className={cn(
-            'rounded px-1.5 py-0.5',
-            layout === option ? 'text-foreground bg-muted' : 'hover:text-foreground',
+            'rounded-sm px-1.5 py-0.5',
+            layout === option ? 'text-ink bg-accent' : 'hover:text-foreground',
           )}
         >
           {option === 'unified' ? 'Unified' : 'Side by side'}
@@ -438,7 +552,13 @@ function UpdatePicker({
       aria-label="Update"
       value={selected}
       onChange={(event) => onSelect(Number(event.target.value))}
-      className="border-input bg-background max-w-full rounded border px-1.5 py-0.5 text-xs"
+      // A control's own edge is the strong line in Prof, drawn at the pen's
+      // 1.5px, and an input is the brightest sheet on the page — `bg-background`
+      // made the one thing on this line you can operate look like the page it
+      // sits on. The native `<select>` keeps its own arrow: a hand-drawn
+      // chevron would mean rebuilding the popup, and the popup is the part that
+      // works on a 39-update pull request.
+      className="border-ink bg-paper-3 max-w-full rounded-sm border-[1.5px] px-1.5 py-0.5 text-xs"
     >
       {/* Newest first: the reason to be in this view at all is the push that just
           arrived, and it should not be at the bottom of thirty-nine. */}
@@ -483,11 +603,11 @@ function TabStrip({
   onTabChange: (tab: DetailTab) => void
 }) {
   return (
-    <div
-      role="tablist"
-      aria-label="Pull request"
-      className="border-border/60 flex w-full items-baseline gap-1 border-b text-sm"
-    >
+    // `.prof-tabs` brings the flex row and the hairline the strip sits on; the
+    // gap widens from 1 to 4 because the tabs no longer have 8px of padding
+    // either side to separate them. The drawn ink under the active tab is
+    // exactly as wide as its label now, which is the point of drawing it.
+    <div role="tablist" aria-label="Pull request" className="prof-tabs w-full items-baseline gap-4">
       {tabs.map(({ id, label, count }) => (
         <button
           key={id}
@@ -515,17 +635,23 @@ function TabStrip({
             document.getElementById(`tab-${next.id}`)?.focus()
           }}
           onClick={() => onTabChange(id)}
-          className={cn(
-            '-mb-px flex items-baseline gap-1.5 rounded-t border-b-2 px-2 py-1',
-            tab === id
-              ? 'border-foreground text-foreground'
-              : 'text-muted-foreground hover:text-foreground border-transparent',
-          )}
+          // The old `rounded-t` was a directional radius, which the sketch
+          // radii cannot survive — they are multi-value, and a multi-value
+          // radius in a longhand drops the whole declaration. It went out with
+          // the 2px bottom border it was cornering: Prof marks the active tab
+          // with a stroke drawn underneath it instead, so the ink below is the
+          // mark and there is nothing left to round. `.prof-tab` owns the
+          // padding, the type and the hover colour.
+          className={cn('prof-tab flex items-baseline gap-1.5', tab === id && 'prof-tab--active')}
         >
           {label}
           {count === undefined ? null : (
-            <span className="text-muted-foreground text-xs tabular-nums">{count}</span>
+            <span className="text-muted-foreground font-mono text-2xs tabular-nums">{count}</span>
           )}
+          {/* Inside the button so it tracks the label's width, and `aria-hidden`
+              because the tab already says which one it is through
+              `aria-selected`. */}
+          {tab === id ? <span className="prof-tab__ink" aria-hidden /> : null}
         </button>
       ))}
     </div>
@@ -647,7 +773,10 @@ function ChangedFiles({
           ticket's third success criterion. */}
       <div className="text-muted-foreground flex flex-wrap items-baseline justify-between gap-4 text-xs">
         <span className="flex items-baseline gap-3">
-          <span className="tabular-nums">
+          {/* Mono, because this is the number you come back to the page for and
+              it changes under you as you read: on a shared advance width the
+              digits tick in place instead of shifting the words after them. */}
+          <span className="font-mono tabular-nums">
             {read} of {changes.files.length} read
           </span>
           {update}
@@ -954,7 +1083,13 @@ export function PullRequestDetailView({
 
   return (
     <article className="flex w-full flex-col items-start gap-5">
-      <header className="w-full">
+      {/* The one drawn card on the page, and the only surface here that keeps
+          `.sketch-box`'s shadow. Everything below it — policies, reviewers,
+          commits — is `--quiet`, so the page reads as one sheet lifted off the
+          paper with a stack of lists under it rather than five competing cards.
+          The header is what you look at to know where you are; the lists are
+          what you read. */}
+      <header className="sketch-box w-full px-4 py-3">
         <div className="flex items-baseline justify-between gap-4">
           <h1 className="text-xl leading-tight font-semibold tracking-tight">{pr.title}</h1>
           {/* Demoted, not removed: there will always be something only ADO can do. */}
@@ -962,24 +1097,41 @@ export function PullRequestDetailView({
             href={pr.url}
             target="_blank"
             rel="noreferrer"
-            className="text-muted-foreground shrink-0 text-xs underline underline-offset-4"
+            className="text-muted-foreground hover:text-primary shrink-0 text-2xs underline decoration-[1.5px] underline-offset-[3px]"
           >
             Azure DevOps
           </a>
         </div>
-        <p className="text-muted-foreground mt-1 text-xs">
+
+        {/* A drawn rule between the title and its provenance, where a `border-t`
+            would have gone. `.sketch-rule` and not `.sketch-underline` under the
+            title itself: the underline is a 160px drawing stretched with
+            `background-size: 100% 8px`, and SVG's default `meet` fitting means
+            it clamps at 1× — on a title wider than 160px the stroke stops
+            scaling and renders as a short mark floating in the middle of the
+            line. The rule tiles a 600px drawing with `repeat-x`, so it is
+            correct at any width. */}
+        <hr className="sketch-rule my-2" />
+
+        <p className="text-muted-foreground text-xs">
+          {/* Everything ADO addresses this pull request by is mono, and the two
+              things a person wrote — the author's name and the age — are not.
+              That split is the whole reason the line is readable at 12px: the
+              identifiers line up as a run of code, the prose stays prose. */}
           <span className="font-mono tabular-nums">!{pr.id}</span>
           {' · '}
-          {pr.project}/{pr.repository}
+          <span className="font-mono">
+            {pr.project}/{pr.repository}
+          </span>
           {' · '}
           {pr.author.displayName}
           {' · '}
-          {age(pr.createdAt)}
+          <span className="font-mono tabular-nums">{age(pr.createdAt)}</span>
           {' · '}
           <span className="font-mono">
             {branch(pr.sourceBranch)} → {branch(pr.targetBranch)}
           </span>
-          {pr.isDraft ? <Chip>draft</Chip> : null}
+          {pr.isDraft ? <Chip tone="amber">draft</Chip> : null}
         </p>
       </header>
 
@@ -1069,7 +1221,7 @@ export function PullRequestDetailView({
             {pr.reviewers.length === 0 ? (
               <Empty>Nobody has been asked to review this.</Empty>
             ) : (
-              <ul className="border-border/60 w-full rounded-md border">
+              <ul className="sketch-box sketch-box--quiet w-full">
                 {pr.reviewers.map((reviewer) => (
                   <ReviewerRow key={reviewer.id} reviewer={reviewer} viewerId={pr.viewerId} />
                 ))}
@@ -1096,7 +1248,7 @@ export function PullRequestDetailView({
             ) : pr.commits.length === 0 ? (
               <Empty>No commits on this branch.</Empty>
             ) : (
-              <ul className="border-border/60 w-full rounded-md border">
+              <ul className="sketch-box sketch-box--quiet w-full">
                 {pr.commits.map((commit) => (
                   <CommitRow key={commit.id} commit={commit} />
                 ))}

@@ -65,8 +65,12 @@ function Badge({ label, children }: { label: string; children: ReactNode }) {
 function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | undefined }) {
   const checks = result?.ok === true ? result.data.checks : null
 
+  // One pen per meaning, and the counts in mono because they are figures: at
+  // 6rem wide this column is read as a row of coloured marks, so the colour has
+  // to be the message. Red is something wrong, amber is something unfinished,
+  // teal is something done, navy is something to look at.
   return (
-    <span className="text-muted-foreground flex w-24 shrink-0 items-center justify-end gap-1 overflow-hidden text-xs tabular-nums">
+    <span className="text-muted-foreground flex w-24 shrink-0 items-center justify-end gap-1 overflow-hidden font-mono text-xs tabular-nums">
       {/* Free from the list call, so it is the one badge that never waits. */}
       {row.conflicted ? (
         <Badge label="Merge conflicts">
@@ -74,9 +78,10 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
         </Badge>
       ) : null}
 
+      {/* Amber, not red: the pull request is not in trouble, our data is. */}
       {result?.ok === false ? (
         <Badge label={`Could not load: ${result.error}`}>
-          <TriangleAlert className="size-3" aria-hidden />
+          <TriangleAlert className="text-pen-amber size-3" aria-hidden />
         </Badge>
       ) : null}
 
@@ -87,18 +92,18 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
         </Badge>
       ) : checks && checks.pending > 0 ? (
         <Badge label={`${checks.pending} checks running`}>
-          <Clock className="size-3" aria-hidden />
+          <Clock className="text-pen-amber size-3" aria-hidden />
           {checks.pending}
         </Badge>
       ) : checks && checks.passed > 0 ? (
         <Badge label="All checks passed">
-          <Check className="size-3" aria-hidden />
+          <Check className="text-pen-green size-3" aria-hidden />
         </Badge>
       ) : null}
 
       {result?.ok === true && result.data.unresolved > 0 ? (
         <Badge label={`${result.data.unresolved} unresolved comments`}>
-          <MessageSquare className="size-3" aria-hidden />
+          <MessageSquare className="text-ink size-3" aria-hidden />
           {result.data.unresolved}
         </Badge>
       ) : null}
@@ -131,21 +136,29 @@ function Row({
   // Every other column is truncated or hidden at narrow widths, so the
   // accessible name has to carry what the eye might not get.
   const label = `${row.project}/${row.repository} · ${row.author}${row.viaTeam ? ` · via ${row.viaTeam}` : ''}`
-  const columns = 'flex min-w-0 flex-1 items-baseline gap-x-3 px-2 py-1.5 text-sm'
+  // `rounded-sm` on the link, not just on the row: this is the element the
+  // keyboard focuses all day, and Prof's focus ring is a box-shadow that follows
+  // whatever radius it finds. On a square link it would be a square ring.
+  const columns = 'flex min-w-0 flex-1 items-baseline gap-x-3 rounded-sm px-2 py-1.5 text-sm'
   const body = (
     <>
       <span className="text-muted-foreground w-14 shrink-0 text-right font-mono text-xs tabular-nums">
         {row.id}
       </span>
       <span className="min-w-0 flex-1 truncate">
+        {/* Amber is the waiting pen, and a draft is a pull request waiting on its
+            own author. Sized to stay inside the row's line box so a draft row is
+            not taller than its neighbours. */}
         {row.isDraft ? (
-          <span className="text-muted-foreground border-border mr-1.5 rounded border px-1 text-[10px] uppercase">
+          <span className="prof-badge prof-badge--amber tracking-label mr-1.5 px-1.5 py-0.5 text-2xs leading-none uppercase">
             draft
           </span>
         ) : null}
         {row.title}
       </span>
-      <span className="text-muted-foreground hidden shrink-0 truncate text-xs sm:block sm:max-w-40">
+      {/* Repository and branch are identifiers, so they are set in mono; the
+          author is a person and stays in the prose face. */}
+      <span className="text-muted-foreground hidden shrink-0 truncate font-mono text-xs sm:block sm:max-w-40">
         {row.repository}
       </span>
       <span className="text-muted-foreground hidden shrink-0 truncate text-xs md:block md:max-w-32">
@@ -155,7 +168,7 @@ function Row({
         →{row.targetBranch}
       </span>
       <Rich row={row} result={result} />
-      <span className="text-muted-foreground w-16 shrink-0 text-right text-xs tabular-nums">
+      <span className="text-muted-foreground w-16 shrink-0 text-right font-mono text-xs tabular-nums">
         {age(row.createdAt)}
       </span>
     </>
@@ -168,8 +181,14 @@ function Row({
       data-pr-id={row.id}
       aria-current={isSelected ? true : undefined}
       className={cn(
-        'hover:bg-muted/50 border-border/60 flex border-b last:border-b-0',
-        isSelected && 'bg-muted',
+        // Neighbours on one sheet: a quiet drawn division between rows, and the
+        // teal wash only where the eye is. The wash is deliberately not a sunken
+        // grey — a selected row is the row you are reading, not a hole in the
+        // list. No transition on it either: `j`/`k` move the selection faster
+        // than a settle would finish, and a trailing highlight lies about where
+        // the cursor is.
+        'border-border flex border-b last:border-b-0',
+        isSelected ? 'bg-accent rounded-sm' : 'hover:bg-accent/50 hover:rounded-sm',
       )}
     >
       {addressable(row) ? (
@@ -193,7 +212,7 @@ function Row({
             target="_blank"
             rel="noreferrer"
             title={`Open !${row.id} in Azure DevOps`}
-            className="text-muted-foreground hover:text-foreground flex shrink-0 items-center px-2"
+            className="text-muted-foreground hover:text-teal-600 flex shrink-0 items-center rounded-sm px-2"
           >
             <ExternalLink className="size-3.5" aria-hidden />
             <span className="sr-only">Open in Azure DevOps</span>
@@ -297,18 +316,30 @@ export function PullRequestSection({
   return (
     <section className="w-full" aria-label={title}>
       {/* Labelled because the flex gap is whitespace only to the eye — the
-          accessible name would otherwise run together as "Mine3". */}
+          accessible name would otherwise run together as "Mine3". `.annotation`
+          then carries the whole visual style, so the section names read as the
+          labels on a drawing rather than as headings competing with the title. */}
       <h2
         aria-label={`${title}, ${rows.length} pull requests`}
-        className="text-muted-foreground mb-1 flex items-baseline gap-2 text-xs font-medium tracking-wide uppercase"
+        className="annotation flex items-baseline gap-2"
       >
         {title}
         <span className="tabular-nums">{rows.length}</span>
       </h2>
+      {/* A drawn rule instead of the list's top border. It is 6px tall, which is
+          where the margins went: a 1px line needed none. */}
+      <div className="sketch-rule mt-1 mb-1.5" aria-hidden />
       {rows.length === 0 ? (
-        <p className="text-muted-foreground px-2 py-1.5 text-sm">{empty}</p>
+        // An empty section is a state, not an absence, so it gets a box of its
+        // own — quiet, because there is nothing here worth outlining in ink.
+        <p className="sketch-box sketch-box--quiet text-muted-foreground px-3 py-2 text-sm">
+          {empty}
+        </p>
       ) : (
-        <ul ref={listRef} className="border-border/60 rounded-md border">
+        // The list is a sheet raised off the desk. `p-1` is the gutter that keeps
+        // a washed row's organic corners — and its focus ring — off the box's own
+        // edge, which `overflow-hidden` would have clipped instead.
+        <ul ref={listRef} className="sketch-box sketch-box--quiet p-1">
           {rows.map((row) => (
             <Row
               key={row.id}

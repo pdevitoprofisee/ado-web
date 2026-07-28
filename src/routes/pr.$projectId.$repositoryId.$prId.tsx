@@ -90,9 +90,12 @@ function PullRequestPage() {
       )}
     >
       <header className="flex w-full items-baseline justify-between gap-4">
+        {/* Hover finds the brand navy rather than plain heading ink: this is the
+            one link on the page's chrome, and Prof spends `--primary` on exactly
+            that. */}
         <Link
           to="/"
-          className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 text-sm"
+          className="text-muted-foreground hover:text-primary flex items-center gap-1.5 text-sm"
         >
           <ArrowLeft className="size-3.5" aria-hidden />
           Inbox
@@ -106,14 +109,21 @@ function PullRequestPage() {
         <Alert variant="destructive">
           <AlertTitle>That is not a pull request number</AlertTitle>
           <AlertDescription>
-            <code>{prId}</code> is not a number, so there is nothing to look up. Check the
-            link, or <Link to="/">go back to the inbox</Link>.
+            {/* The one place on this page where the offending text is quoted
+                back at you, so it is drawn as a chip rather than left to the
+                browser's generic monospace. `bg-muted` inside a tinted alert
+                still reads: the wash under it is a pen tint, not a surface. */}
+            <code className="bg-muted rounded-sm px-1 py-0.5 font-mono">{prId}</code> is not a
+            number, so there is nothing to look up. Check the link, or{' '}
+            <Link to="/">go back to the inbox</Link>.
           </AlertDescription>
         </Alert>
       ) : null}
 
       {query.isPending && addressable ? (
-        <p className="text-muted-foreground text-sm">Loading !{prId}…</p>
+        <p className="text-muted-foreground text-sm">
+          Loading <span className="font-mono">!{prId}</span>…
+        </p>
       ) : null}
 
       {result && !result.connected ? (
@@ -164,9 +174,12 @@ function PullRequestPage() {
       ) : null}
 
       {/* The same budget line the inbox carries, for the same reason: this page
-          is five calls where the inbox is two, and it polls. */}
+          is five calls where the inbox is two, and it polls. `.annotation`
+          because that is what the line is — a note in the margin about the page
+          rather than part of it, and mono keeps the count from reflowing the
+          words after it as it climbs. */}
       {result?.rateLimit ? (
-        <footer className="text-muted-foreground w-full text-xs">
+        <footer className="annotation w-full">
           <span title={`≥ ${result.rateLimit.cost.toFixed(4)} TSTU billed`}>
             {result.rateLimit.calls} ADO calls this session
           </span>

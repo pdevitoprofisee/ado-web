@@ -33,8 +33,16 @@ import type { Components } from 'react-markdown'
  * `pre > code` is styled through the `pre`, because react-markdown gives inline
  * code and fenced code the same `code` component and dropped the `inline` prop
  * in v9. The parent knows which one it is, so the parent undoes the chip.
+ *
+ * The block is a sunken well with a pen around it: a fenced block in an ADO
+ * description is usually a stack trace or a config snippet, and it needs to read
+ * as a thing pasted into the page rather than as a paragraph that happens to be
+ * grey. `font-mono` here as well as on the `code` inside, because a bare `pre`
+ * would otherwise fall back to the browser's generic monospace rather than the
+ * one this system draws in.
  */
-const PRE = 'bg-muted mb-2 overflow-x-auto rounded-md p-3 text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit'
+const PRE =
+  'bg-muted border-border mb-2 overflow-x-auto rounded-md border-[1.5px] p-3 font-mono text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit'
 
 const COMPONENTS: Components = {
   p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
@@ -47,33 +55,60 @@ const COMPONENTS: Components = {
   ul: ({ children }) => <ul className="mb-2 list-disc pl-5 last:mb-0">{children}</ul>,
   ol: ({ children }) => <ol className="mb-2 list-decimal pl-5 last:mb-0">{children}</ol>,
   li: ({ children }) => <li className="mb-0.5">{children}</li>,
+  // `rounded-sm` and not bare `rounded`: the sketch radii are mapped onto the
+  // named steps of the scale, and bare `rounded` is the one that still resolves
+  // to `--radius` — a square corner in the middle of a sentence.
   code: ({ children }) => (
-    <code className="bg-muted rounded px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
+    <code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
   ),
   pre: ({ children }) => <pre className={PRE}>{children}</pre>,
   // A new tab, because the app is a single page you are half way down a diff on
   // and a work-item link should not take that away. `noreferrer` covers `opener`
   // too, so a linked page cannot reach back through `window.opener`.
+  //
+  // Drawn in the brand navy at the pen's 1.5px, and lifted to a 3px offset so
+  // the stroke clears the descenders in a `feature/some-branch` link instead of
+  // running through them.
   a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer" className="underline underline-offset-4">
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-primary underline decoration-[1.5px] underline-offset-[3px]"
+    >
       {children}
     </a>
   ),
+  // A quoted passage gets the pen's weight in the brand navy rather than 2px of
+  // border colour: the mark down the margin is the whole of what says "somebody
+  // else wrote this", so it should look drawn.
   blockquote: ({ children }) => (
-    <blockquote className="border-border text-muted-foreground mb-2 border-l-2 pl-3 last:mb-0">
+    <blockquote className="border-ink text-muted-foreground mb-2 border-l-[1.5px] pl-3 last:mb-0">
       {children}
     </blockquote>
   ),
-  hr: () => <hr className="border-border/60 my-3" />,
+  // A drawn rule, which is 6px tall where the border was 1px — hence the shorter
+  // margin. `.sketch-rule` tiles a 600px drawing, so it stays a hand-drawn line
+  // at any width instead of stretching into a smooth one.
+  hr: () => <hr className="sketch-rule my-2" />,
   table: ({ children }) => (
     <div className="mb-2 w-full overflow-x-auto last:mb-0">
-      <table className="border-border/60 w-full border-collapse border text-xs">{children}</table>
+      {/* Stripes on the body rows and no fill on the header: a description's
+          tables are usually three columns of short values, and a striped body
+          under uppercase headers is enough structure without tinting two things
+          the same paper. `tbody tr` and not `tr`, or the header row would count
+          itself into the alternation. */}
+      <table className="border-border w-full border-collapse border text-xs [&_tbody_tr:nth-child(odd)]:bg-muted">
+        {children}
+      </table>
     </div>
   ),
+  // `.annotation` is what this system calls a column label, and it does the
+  // separating a fill would otherwise have to do.
   th: ({ children }) => (
-    <th className="border-border/60 border px-2 py-1 text-left font-medium">{children}</th>
+    <th className="annotation border-border border px-2 py-1 text-left">{children}</th>
   ),
-  td: ({ children }) => <td className="border-border/60 border px-2 py-1 align-top">{children}</td>,
+  td: ({ children }) => <td className="border-border border px-2 py-1 align-top">{children}</td>,
   // GFM's task lists. Disabled because ticking one here would change nothing in
   // Azure DevOps, and a checkbox that does not stick is worse than a read-only one.
   input: ({ type, checked }) =>

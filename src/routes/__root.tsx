@@ -46,13 +46,16 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    // Dark is the default; light arrives when there's a settings surface to
-    // toggle it from.
-    <html lang="en" className="dark">
+    // Paper is the default. Prof's dark theme is chalk on a board and lives
+    // behind `.dark` on this element; it arrives when there's a settings
+    // surface to toggle it from.
+    <html lang="en">
       <head>
         <HeadContent />
       </head>
-      <body>
+      {/* The grain overlay is fixed and covers the viewport, so it belongs
+          once here rather than per-panel — one continuous sheet. */}
+      <body className="paper-grain">
         {/* The app's one keydown listener, and the `?` sheet it renders. */}
         <CommandProvider>{children}</CommandProvider>
         <TanStackDevtools

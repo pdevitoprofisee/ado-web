@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { FileDiffPanel } from './file-diff'
+import { changeKind } from './file-tree'
 import { diffFile } from '@/lib/diff'
 import { buildRows, expandGap, setHideDone, setLayout, setThreads } from '@/lib/diff-rows'
 import { fileAnchor } from '@/lib/file-anchor'
@@ -191,6 +192,10 @@ export function ChangedFileDiff({
         rows={model?.rows ?? []}
         layout={layout}
         originalPath={file.originalPath}
+        // The same reduction the sidebar shows, from the same function: the tree's
+        // letter and the header's badge disagreeing about what happened to a file
+        // would be worse than either of them being absent.
+        kind={changeKind(file)}
         conflicted={conflicted}
         viewed={viewed}
         // No `defaultOpen`, which is the panel's own default of "open unless

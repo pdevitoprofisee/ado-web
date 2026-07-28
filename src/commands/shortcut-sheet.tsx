@@ -38,6 +38,11 @@ export function ShortcutSheet({
   isBound: (id: CommandId) => boolean
 }) {
   return (
+    // Width is all this adds: `Dialog` already draws the largest sketch
+    // corners, the pen outline, the brightest sheet and the graphite cast, and
+    // a reference sheet is exactly the surface that vocabulary was written for.
+    // Wider than the default `sm:max-w-sm` because every row here is a pair —
+    // wording on the left, key on the right — and they should not meet.
     <Dialog isOpen={isOpen} onOpenChange={onOpenChange} className="sm:max-w-md">
       <DialogHeader>
         <DialogTitle>Keyboard shortcuts</DialogTitle>
@@ -46,12 +51,14 @@ export function ShortcutSheet({
         </DialogDescription>
       </DialogHeader>
 
-      <div className="flex flex-col gap-3">
+      {/* A drawn rule between what this sheet is and the reference itself. 6px
+          tall; the dialog's own gap is what gives it the room. */}
+      <hr className="sketch-rule" />
+
+      <div className="flex flex-col gap-4">
         {byGroup(COMMANDS).map(([group, commands]) => (
           <section key={group} className="flex flex-col gap-0.5">
-            <h3 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-              {group}
-            </h3>
+            <h3 className="annotation">{group}</h3>
             <dl className="flex flex-col">
               {commands.map((command) => {
                 const bound = isBound(command.id as CommandId)
@@ -65,7 +72,10 @@ export function ShortcutSheet({
                       !bound && 'opacity-45',
                     )}
                   >
-                    <dt>{command.label}</dt>
+                    {/* The key is the thing being looked up, so it keeps the
+                        strong ink the drawn `Kbd` gives it; the wording beside
+                        it is the caption. */}
+                    <dt className="text-ink-500">{command.label}</dt>
                     <dd>
                       <Kbd>{command.keyLabel ?? command.key}</Kbd>
                     </dd>

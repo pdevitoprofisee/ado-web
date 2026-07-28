@@ -16,28 +16,42 @@ import type { ChangedFile } from '@/server/pull-request'
 // this actually is. Directories are buttons with `aria-expanded`, files are
 // buttons that move the page, and the whole thing is one labelled `nav`.
 
+export type ChangeKind = 'add' | 'delete' | 'rename' | 'edit'
+
 /**
- * One letter for a change, in the order that answers the question first.
+ * One kind for a change, in the order that answers the question first.
  *
  * `changeType` is a flag set, so a file can be an edit *and* a rename; the rename
  * is the part you cannot see in the diff body, so it wins. Delete and add come
  * before it because a file that is not there afterwards is not a file you read
  * for its changes.
+ *
+ * Exported because the file header states the same thing as a badge, and one
+ * precedence rule stated twice is one that will disagree with itself.
  */
-function changeLetter(file: ChangedFile): string {
+export function changeKind(file: ChangedFile): ChangeKind | null {
   const types = new Set(file.changeType)
-  if (types.has('delete')) return 'D'
-  if (types.has('add')) return 'A'
-  if (types.has('rename')) return 'R'
-  if (types.has('edit')) return 'M'
+  if (types.has('delete')) return 'delete'
+  if (types.has('add')) return 'add'
+  if (types.has('rename')) return 'rename'
+  if (types.has('edit')) return 'edit'
 
-  return '·'
+  return null
 }
 
-/** Colour carries the same thing the letter does, for the same reason the diff body has colours. */
-const LETTER_TONE: Record<string, string> = {
-  A: 'text-diff-add-fg',
-  D: 'text-diff-delete-fg',
+const LETTER: Record<ChangeKind, string> = { add: 'A', delete: 'D', rename: 'R', edit: 'M' }
+
+/**
+ * Colour carries the same thing the letter does, for the same reason the diff
+ * body has colours — and in the same pens, so the sidebar and the header a file
+ * scrolls to agree. A rename gets the brand navy rather than the chrome grey an
+ * edit sits in: it is the one kind whose change is invisible in the diff body.
+ */
+const KIND_TONE: Record<ChangeKind, string> = {
+  add: 'text-diff-add-fg',
+  delete: 'text-diff-delete-fg',
+  rename: 'text-ink',
+  edit: 'text-ink-500',
 }
 
 function Row({
@@ -47,6 +61,7 @@ function Row({
   expanded,
   title,
   dim,
+  className,
 }: {
   depth: number
   children: React.ReactNode
@@ -54,6 +69,7 @@ function Row({
   expanded?: boolean
   title?: string
   dim?: boolean
+  className?: string
 }) {
   return (
     <button
@@ -65,8 +81,18 @@ function Row({
       // the full width of the sidebar at every depth.
       style={{ paddingLeft: `${depth * 0.75 + 0.25}rem` }}
       className={cn(
-        'hover:bg-muted flex w-full items-center gap-1 rounded py-0.5 pr-1 text-left font-mono text-xs',
+        // `rounded-sm`, not `rounded`: Tailwind's bare `rounded` is still a
+        // mechanical 4px, and only the named steps are mapped onto Prof's
+        // asymmetric corners. A row is a control, so it takes the control
+        // radius — which the global focus ring then follows, being a shadow.
+        //
+        // The wash is on hover rather than on a selected row because this tree
+        // has no selection to paint: a click scrolls the page and the row does
+        // not stay lit. `bg-accent` is the faintest teal, so the band reads as
+        // "this one" without competing with the change letters.
+        'hover:bg-accent flex w-full items-center gap-1 rounded-sm py-0.5 pr-1 text-left font-mono text-xs',
         dim === true && 'text-muted-foreground',
+        className,
       )}
     >
       {children}
@@ -92,14 +118,22 @@ function Directory({
 
   return (
     <li>
-      <Row depth={depth} onPress={() => setOpen(!open)} expanded={open} title={node.path}>
+      {/* Directories are the scaffolding, not the content: secondary ink throughout
+          so the files inside them are what the eye lands on first. */}
+      <Row
+        depth={depth}
+        onPress={() => setOpen(!open)}
+        expanded={open}
+        title={node.path}
+        className="text-ink-500"
+      >
         {open ? (
           <ChevronDown className="size-3 shrink-0" aria-hidden />
         ) : (
           <ChevronRight className="size-3 shrink-0" aria-hidden />
         )}
         <span className="truncate">{node.name}</span>
-        <span className="text-muted-foreground ml-auto shrink-0 tabular-nums">{node.files}</span>
+        <span className="text-ink-300 ml-auto shrink-0 tabular-nums">{node.files}</span>
       </Row>
       {open ? <Nodes nodes={node.children} depth={depth + 1} viewed={viewed} conflicted={conflicted} /> : null}
     </li>
@@ -119,7 +153,7 @@ function File({
   read: boolean
   conflicted: boolean
 }) {
-  const letter = changeLetter(file)
+  const kind = changeKind(file)
 
   return (
     <li>
@@ -139,9 +173,12 @@ function File({
       >
         <span
           aria-hidden
-          className={cn('w-3 shrink-0 text-center', LETTER_TONE[letter] ?? 'text-muted-foreground')}
+          className={cn(
+            'w-3 shrink-0 text-center',
+            kind === null ? 'text-ink-300' : KIND_TONE[kind],
+          )}
         >
-          {letter}
+          {kind === null ? '·' : LETTER[kind]}
         </span>
         <span className={cn('truncate', read && 'line-through')}>{name}</span>
         {conflicted ? <span className="text-destructive ml-auto shrink-0">!</span> : null}
@@ -199,6 +236,14 @@ export function FileTree({
       aria-label="File tree"
       className="sticky top-4 hidden max-h-[calc(100vh-6rem)] w-64 shrink-0 overflow-y-auto lg:block"
     >
+      {/* `aria-hidden` because the `nav` is already labelled "File tree"; this is
+          the same label drawn for the eye, and a screen reader hearing it twice
+          learns nothing. `.annotation` is Prof's answer to every small caps label,
+          and it also gives the tree a top edge — without one the first row floats
+          against the header above it. */}
+      <p aria-hidden className="annotation px-1 pb-1">
+        Files
+      </p>
       <Nodes nodes={nodes} depth={0} viewed={viewed} conflicted={conflicted} />
     </nav>
   )

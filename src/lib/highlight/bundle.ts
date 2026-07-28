@@ -21,14 +21,18 @@
 // highlight a `.ts` file**. Take that setting out and this list becomes a lie.
 
 /**
- * One theme, not two. The app renders `<html className="dark">`
- * unconditionally (`src/routes/__root.tsx`), and `HighlightToken.color` in the
- * contract is a single resolved hex — dual-theme output would need CSS
- * variables the contract has no room for.
+ * One theme, not two. The app renders light (`src/routes/__root.tsx`), and
+ * `HighlightToken.color` in the contract is a single resolved hex — dual-theme
+ * output would need CSS variables the contract has no room for.
+ *
+ * `vitesse-light` over the more familiar `github-light` because Prof's paper is
+ * warm (`--paper-0: #FAF6EF`): vitesse's palette is warm and muted, and its
+ * `#393a34` foreground reads as ink on that stock where github-light's cool
+ * `#24292e` and its blue/purple keywords read as a screen pasted onto paper.
  */
-export const THEME = 'github-dark'
+export const THEME = 'vitesse-light'
 
-export const loadTheme = () => import('shiki/themes/github-dark.mjs').then((m) => m.default)
+export const loadTheme = () => import('shiki/themes/vitesse-light.mjs').then((m) => m.default)
 
 const GRAMMARS = {
   typescript: () => import('shiki/langs/typescript.mjs'),

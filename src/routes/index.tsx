@@ -50,9 +50,18 @@ function Home() {
   return (
     <main className="mx-auto flex max-w-4xl flex-col items-start gap-5 p-8">
       <header className="flex w-full items-baseline justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">ado-web</h1>
+        {/* The drawn underline goes on an inline span, not on the block: it is
+            sized to 100% of its element, so on the <h1> it would rule the whole
+            page. It also costs 8px of padding-bottom, which the header's baseline
+            alignment absorbs. */}
+        <h1 className="text-2xl font-semibold tracking-tight">
+          <span className="sketch-underline sketch-underline--teal">ado-web</span>
+        </h1>
         <p className="text-muted-foreground text-xs">
-          <Link to="/onboarding" className="underline underline-offset-4">
+          <Link
+            to="/onboarding"
+            className="text-ink hover:text-teal-600 underline underline-offset-4"
+          >
             connections
           </Link>
           {' · '}
@@ -60,7 +69,13 @@ function Home() {
         </p>
       </header>
 
-      {query.isPending ? <p className="text-muted-foreground text-sm">Loading the inbox…</p> : null}
+      {/* A box rather than a bare line, so the first second of the app is a page
+          with a placeholder drawn on it and not a page missing its content. */}
+      {query.isPending ? (
+        <p className="sketch-box sketch-box--quiet text-muted-foreground w-full px-3 py-2 text-sm">
+          Loading the inbox…
+        </p>
+      ) : null}
 
       {result && !result.connected ? (
         <Alert>
@@ -105,6 +120,10 @@ function Home() {
             selectedId={selectedId}
           />
 
+          {/* The metadata under the inbox is divided from it by a drawn rule; a
+              1px border here would be the one printed line on the page. */}
+          <div className="sketch-rule w-full" aria-hidden />
+
           <footer className="text-muted-foreground flex w-full items-center gap-3 text-xs">
             {/* The team list is shown because it is the entire reason "Assigned
                 to me" is not empty: on this account every assignment is
@@ -120,9 +139,13 @@ function Home() {
             {/* The budget, in the only unit that is actually observable. ADO
                 sends no `X-RateLimit-Remaining` on any endpoint we call, so a
                 running call count is what "left open overnight" gets checked
-                against — see T-008. */}
+                against — see T-008. Set as an annotation, not as more prose:
+                it is a gauge reading sitting beside a sentence. */}
             {result?.rateLimit ? (
-              <span title={`≥ ${result.rateLimit.cost.toFixed(4)} TSTU billed`}>
+              <span
+                className="annotation"
+                title={`≥ ${result.rateLimit.cost.toFixed(4)} TSTU billed`}
+              >
                 {result.rateLimit.calls} ADO calls this session
               </span>
             ) : null}

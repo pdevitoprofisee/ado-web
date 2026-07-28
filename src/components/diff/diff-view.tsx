@@ -103,11 +103,27 @@ function tokensFor(
   return line.newLine === null ? null : (after?.[line.newLine - 1] ?? null)
 }
 
-function Gutter({ line }: { line: number | null }) {
+/**
+ * `className` carries the sheet the numbers sit on, decided by the caller.
+ *
+ * Prof's gutter is the sunken sheet beside the code, but a tinted row has to
+ * keep its own wash all the way to the left edge or the eye stops reading the
+ * colour as "this whole line changed" — so `bg-muted` is the caller's call, not
+ * this component's. Passed as a class rather than as a boolean because the same
+ * hook carries the division from the code, and one prop beats two.
+ */
+function Gutter({ line, className }: { line: number | null; className?: string }) {
   return (
     <span
       aria-hidden
-      className="text-muted-foreground w-12 shrink-0 grow-0 basis-12 pr-2 text-right tabular-nums select-none"
+      className={cn(
+        // Secondary ink, not `--ink-300`: placeholder ink on the sunken gutter
+        // measures 2.1:1, and a line number you have to hunt for is the one
+        // thing in a gutter that has a job. `--ink-500` clears 4.5:1 there and
+        // still sits well behind the code's `#393a34`.
+        'text-ink-500 w-12 shrink-0 grow-0 basis-12 pr-2 text-right tabular-nums select-none',
+        className,
+      )}
     >
       {line ?? ''}
     </span>
@@ -134,8 +150,15 @@ function Cell({
         line === null
           ? // Not a gap and not a zero-height row: side-by-side needs a blank
             // of the same height opposite an unmatched line, or the two columns
-            // stop lining up from that point down.
-            'bg-muted/30'
+            // stop lining up from that point down. Full-strength `bg-muted`
+            // rather than the fraction this used to carry, which was legible
+            // against a dark app and is nothing at all against paper.
+            //
+            // A `hatch-cross` void is the more Prof answer and was tried: in
+            // split every changed line has a blank opposite it, so half the
+            // pane fills with drawn texture, and it is a tiled background image
+            // on the one component that must not get more expensive per row.
+            'bg-muted'
           : line.op === 'add'
             ? 'diff-add'
             : line.op === 'delete'
@@ -144,7 +167,10 @@ function Cell({
         className,
       )}
     >
-      <Gutter line={number} />
+      <Gutter
+        line={number}
+        className={cn(line?.op === 'context' && 'bg-muted', 'border-border border-r')}
+      />
       <span aria-hidden className="w-3 shrink-0 select-none">
         {line === null ? '' : MARK[line.op]}
       </span>
@@ -179,8 +205,13 @@ function Row({
 
   if (row.kind === 'hunk') {
     return (
-      <span className="bg-muted/60 text-muted-foreground flex w-full items-baseline px-2 select-none">
+      // A break in the page rather than a grey bar: the `@@` label, then a drawn
+      // rule running out to the right edge. The rule costs no row height — it is
+      // 6px centred inside the 20px the virtualizer already reserved — which is
+      // the only reason `.sketch-rule` is affordable anywhere in this file.
+      <span className="bg-muted text-muted-foreground flex w-full items-center gap-2 px-2 select-none">
         {row.label}
+        <span aria-hidden className="sketch-rule min-w-8 flex-1" />
       </span>
     )
   }
@@ -196,7 +227,12 @@ function Row({
         // would have to be undone to get there.
         onClick={onExpand === undefined ? undefined : () => onExpand(row)}
         disabled={onExpand === undefined}
-        className="bg-muted/30 text-muted-foreground hover:bg-muted flex w-full items-baseline gap-1.5 px-2 text-left disabled:hover:bg-transparent"
+        // Teal on hover, because `bg-accent` is what the rest of the app uses to
+        // say "this is the thing you are about to press". The disabled override
+        // holds the band rather than clearing it: an inert gap should look like
+        // furniture, and the old `bg-transparent` made it flicker out under the
+        // pointer instead.
+        className="bg-muted text-muted-foreground hover:bg-accent flex w-full items-baseline gap-1.5 px-2 text-left disabled:hover:bg-muted"
       >
         <ChevronsUpDown className="size-3 shrink-0" aria-hidden />
         {label}
@@ -214,7 +250,7 @@ function Row({
           line={row.left}
           number={row.left?.oldLine ?? null}
           tokens={row.left === null ? null : tokensFor(row.left, before, after)}
-          className="border-border/60 border-r"
+          className="border-border border-r"
         />
         <Cell
           line={row.right}
@@ -230,6 +266,11 @@ function Row({
   const line = row.left ?? row.right
   if (line === null) return null
 
+  // Only the unchanged line gets the sunken sheet under its numbers; a tinted
+  // row keeps its pen all the way across. The division goes on the second
+  // gutter, which is where the numbers stop and the code starts.
+  const sheet = line.op === 'context' ? 'bg-muted' : undefined
+
   return (
     <span
       className={cn(
@@ -237,8 +278,8 @@ function Row({
         line.op === 'add' ? 'diff-add' : line.op === 'delete' ? 'diff-delete' : undefined,
       )}
     >
-      <Gutter line={line.oldLine} />
-      <Gutter line={line.newLine} />
+      <Gutter line={line.oldLine} className={sheet} />
+      <Gutter line={line.newLine} className={cn(sheet, 'border-border border-r')} />
       <span aria-hidden className="w-3 shrink-0 select-none">
         {MARK[line.op]}
       </span>
@@ -293,7 +334,11 @@ export function DiffView({
       ref={scroller}
       role="region"
       aria-label={label}
-      className="border-border/60 max-h-[70vh] w-full overflow-auto rounded-md border font-mono text-xs leading-5"
+      // No box of its own any more. `FileDiffPanel` draws one — a pen outline
+      // with organic corners — and two drawn boxes one inside the other read as
+      // a mistake in a system whose whole signature is linework. The diff runs
+      // full-bleed to the panel's inner edge instead.
+      className="max-h-[70vh] w-full overflow-auto font-mono text-xs leading-5"
     >
       <div className="relative w-full" style={{ height: virtual.getTotalSize() }}>
         {virtual.getVirtualItems().map((item) => {

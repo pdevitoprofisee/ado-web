@@ -14,6 +14,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import logo from '@/assets/prof-logo.png'
 
 import type { ReactNode } from 'react'
 import type { ConnectionResult } from '@/server/connection-test'
@@ -33,34 +34,72 @@ function Onboarding() {
   const status = useQuery({ queryKey: STATUS_KEY, queryFn: () => credentialStatus() })
 
   return (
-    <main className="mx-auto flex max-w-xl flex-col gap-8 p-8">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Connections</h1>
-        <p className="text-muted-foreground text-sm">
-          Both tokens are stored in the Windows credential manager and are only ever read on
-          the server. Neither is sent to this page.
-        </p>
+    <main className="mx-auto flex max-w-xl flex-col gap-6 p-8">
+      <header className="flex items-start gap-3">
+        {/* Decorative: the heading is this screen's accessible name, and a mark
+            announced as "Prof" would only be one more thing to skip past.
+            Nudged down to sit on the heading's cap height, not its line box. */}
+        <img src={logo} alt="" className="mt-1 size-9 shrink-0" />
+        <div className="flex flex-col">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {/* `inline-block` so the drawn underline measures the word rather
+                than the column, and so its 8px of padding is real height —
+                inline padding would let it run into the prose below. */}
+            <span className="sketch-underline sketch-underline--teal inline-block">
+              Connections
+            </span>
+          </h1>
+          <p className="text-ink-500 text-sm">
+            Both tokens are stored in the Windows credential manager and are only ever read on
+            the server. Neither is sent to this page.
+          </p>
+        </div>
       </header>
 
-      <AzureDevOpsSection
-        configured={status.data?.ado.configured ?? false}
-        org={status.data?.ado.org ?? null}
-      />
-      <SonarCloudSection configured={status.data?.sonar.configured ?? false} />
+      {/* One drawn panel, not one per service: these are two halves of a single
+          setup step, and one outline with a rule down the middle says that
+          where two cards would imply two unrelated jobs. */}
+      <div className="sketch-box flex flex-col gap-5 p-5">
+        <AzureDevOpsSection
+          configured={status.data?.ado.configured ?? false}
+          org={status.data?.ado.org ?? null}
+        />
+        {/* A drawn rule, not a `border-t`. It is 6px tall, which the panel's
+            gap-5 already has room for. */}
+        <hr className="sketch-rule" />
+        <SonarCloudSection configured={status.data?.sonar.configured ?? false} />
+      </div>
 
-      <Link to="/" className="text-muted-foreground text-sm underline underline-offset-4">
+      {/* `self-start` so the focus ring wraps the word and not the column. */}
+      <Link
+        to="/"
+        className="text-ink-500 hover:text-ink self-start text-sm underline underline-offset-4"
+      >
         Back
       </Link>
     </main>
   )
 }
 
+// The pens live in `Alert`'s variants — wash, 1.5px stroke and hatched margin
+// bar all arrive with `variant="destructive"`. Nothing coloured is stated here
+// on purpose: an error on the setup screen should look like an error everywhere
+// else, and a local tint would be a second opinion to keep in sync.
 function Outcome({ result }: { result: ConnectionResult }) {
   if (result.ok) {
     return (
       <Alert>
         <CircleCheck />
-        <AlertTitle>{result.account ? `Connected as ${result.account}` : 'Connected'}</AlertTitle>
+        <AlertTitle>
+          {result.account ? (
+            // An account name is an identifier, so it is set in mono.
+            <>
+              Connected as <span className="font-mono">{result.account}</span>
+            </>
+          ) : (
+            'Connected'
+          )}
+        </AlertTitle>
         {result.note ? <AlertDescription>{result.note}</AlertDescription> : null}
       </Alert>
     )
@@ -97,6 +136,20 @@ function useForget(kind: CredentialKind) {
   })
 }
 
+/**
+ * The one screen where a field name is a *figure* label: this is a drawn page
+ * with two fields on it, not the app's dense chrome, so the labels are set as
+ * annotations. `ui/label.tsx` deliberately keeps its shared default in
+ * sentence-case body ink — that is the right call for a form the eye skims, and
+ * the wrong one here, so the annotation is asked for at this call site.
+ *
+ * Two classes restated rather than trusted: `Label`'s own `text-sm` and
+ * `text-foreground` are *utilities*, and utilities outrank the component-layer
+ * font shorthand `.annotation` sets. Secondary ink also keeps the field names
+ * under the section headings, which are annotations in the strong ink.
+ */
+const FIELD_LABEL = 'annotation text-2xs text-ink-500'
+
 function Section({
   title,
   configured,
@@ -106,23 +159,35 @@ function Section({
 }: {
   title: string
   configured: boolean
-  detail: string
+  /** A node, not a string: the ADO half labels itself with an identifier. */
+  detail: ReactNode
   onForget: () => void
   children: ReactNode
 }) {
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between gap-4">
-        <h2 className="text-base font-medium">{title}</h2>
+        {/* An annotation rather than a small sans heading — but in the strong
+            ink, which is what keeps it reading as the section's name instead of
+            as a label for the row beside it. */}
+        <h2 className="annotation text-ink-900">{title}</h2>
         {configured ? (
-          <span className="text-muted-foreground flex items-baseline gap-2 text-xs">
-            {detail}
+          <span className="flex items-baseline gap-2">
+            <span className="prof-badge prof-badge--teal">
+              <span className="prof-badge__dot" aria-hidden />
+              {detail}
+            </span>
             <Button variant="ghost" size="sm" onPress={onForget}>
               Disconnect
             </Button>
           </span>
         ) : (
-          <span className="text-muted-foreground text-xs">Not configured</span>
+          // Amber is the waiting pen, and on first run that is exactly what
+          // this is: nothing is wrong yet, nothing is done yet.
+          <span className="prof-badge prof-badge--amber">
+            <span className="prof-badge__dot" aria-hidden />
+            Not configured
+          </span>
         )}
       </div>
       {children}
@@ -151,7 +216,7 @@ function AzureDevOpsSection({ configured, org }: { configured: boolean; org: str
     <Section
       title="Azure DevOps"
       configured={configured}
-      detail={org ?? ''}
+      detail={<span className="font-mono">{org ?? ''}</span>}
       onForget={forget.mutate}
     >
       <form
@@ -162,12 +227,12 @@ function AzureDevOpsSection({ configured, org }: { configured: boolean; org: str
         }}
       >
         <TextField className="flex flex-col gap-1.5" value={orgInput} onChange={setOrgInput}>
-          <Label>Organization</Label>
+          <Label className={FIELD_LABEL}>Organization</Label>
           <Input placeholder={org ?? 'Contoso'} autoComplete="off" />
         </TextField>
 
         <TextField className="flex flex-col gap-1.5" value={pat} onChange={setPat}>
-          <Label>Personal access token</Label>
+          <Label className={FIELD_LABEL}>Personal access token</Label>
           {/* Needs Code (read), Build (read & execute) and Identity (read). */}
           <Input type="password" autoComplete="off" placeholder="••••••••" />
         </TextField>
@@ -212,7 +277,7 @@ function SonarCloudSection({ configured }: { configured: boolean }) {
         }}
       >
         <TextField className="flex flex-col gap-1.5" value={token} onChange={setToken}>
-          <Label>Personal token</Label>
+          <Label className={FIELD_LABEL}>Personal token</Label>
           {/* Only a *personal* token can read issues; analysis and scoped
               organization tokens validate but return nothing useful. */}
           <Input type="password" autoComplete="off" placeholder="••••••••" />

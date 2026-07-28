@@ -5,6 +5,7 @@ import { DiffView, blobNotice } from './diff-view'
 import { FileThreadList } from '@/components/comments/file-thread-list'
 import { cn } from '@/lib/utils'
 
+import type { ChangeKind } from './file-tree'
 import type { FileThreads, IterationContext } from '@/lib/comment-contract'
 import type { ThreadActions } from '@/components/comments/thread-actions'
 import type {
@@ -41,6 +42,21 @@ function noNewlineNotice(blobs: FileBlobs): string | null {
   return `${marker} (${before ? 'before' : 'after'})`
 }
 
+/**
+ * The pill a file's kind gets in its header — and `edit` deliberately has none.
+ *
+ * A `.prof-badge` carries a visible outline, so a pill is a claim on attention;
+ * 294 of them saying "edited" would be chrome with no information in it, and the
+ * `+`/`−` counts beside it already say the file was edited. The three kinds left
+ * are the ones the diff body cannot tell you: a file that is new, one that is
+ * gone, and one that moved.
+ */
+const KIND_BADGE: Partial<Record<ChangeKind, { label: string; tone: string }>> = {
+  add: { label: 'added', tone: 'prof-badge--teal' },
+  delete: { label: 'deleted', tone: 'prof-badge--red' },
+  rename: { label: 'renamed', tone: 'prof-badge--navy' },
+}
+
 /** `+12 −3`, or nothing at all for a file whose bytes did not move. */
 function Counts({ added, removed }: { added: number; removed: number }) {
   if (added === 0 && removed === 0) return null
@@ -63,6 +79,7 @@ export function FileDiffPanel({
   rows,
   layout,
   originalPath = null,
+  kind = null,
   conflicted = false,
   viewed = false,
   defaultOpen,
@@ -89,6 +106,13 @@ export function FileDiffPanel({
    * without it a rename is a change with nothing on screen to show for it.
    */
   originalPath?: string | null
+  /**
+   * What happened to the file, already reduced to one kind by `changeKind` in
+   * `file-tree.tsx`. Optional because `FileBlobs` cannot answer it — the flag set
+   * lives on `ChangedFile`, which only the caller holds — and a panel handed raw
+   * blobs (a test, a single-file view) should not have to invent one.
+   */
+  kind?: ChangeKind | null
   /** This file is one of the ones the merge cannot resolve. */
   conflicted?: boolean
   viewed?: boolean
@@ -161,19 +185,31 @@ export function FileDiffPanel({
   const noNewline = notice === null ? noNewlineNotice(blobs) : null
 
   const cut = blobs.path.lastIndexOf('/')
+  const badge = kind === null ? undefined : KIND_BADGE[kind]
 
   return (
     // Deliberately unnamed: `DiffView` inside it is a region labelled with this
     // same path, and two landmarks with one name is worse than one. The header
     // button is what announces which file this is.
-    <section className="border-border/60 rounded-md border">
+    //
+    // `--quiet`: this is the only drawn box in a column of up to 294 of them, and
+    // the full `.sketch-box` pen plus its graphite lift, stacked that many times,
+    // turns a page of files into a page of outlines. Soft-line edges and no shadow
+    // keep each file legible as one panel without any of them shouting.
+    //
+    // `overflow-hidden` is what makes the box read as drawn rather than as a frame
+    // with content escaping it: the diff body inside scrolls both ways, and without
+    // the clip its rows would run out past the organic corners.
+    <section className="sketch-box sketch-box--quiet overflow-hidden">
       <div className="flex items-baseline gap-2 px-2 py-1.5 font-mono text-xs">
         <button
           type="button"
           onClick={() => show(!open)}
           aria-expanded={open}
           title={blobs.path}
-          className="flex min-w-0 flex-1 items-baseline gap-1.5 text-left"
+          // `rounded-sm` so the global focus box-shadow traces sketch corners
+          // rather than drawing a mechanical rectangle around the filename.
+          className="flex min-w-0 flex-1 items-baseline gap-1.5 rounded-sm text-left"
         >
           {open ? (
             <ChevronDown className="size-3 shrink-0 self-center" aria-hidden />
@@ -197,12 +233,34 @@ export function FileDiffPanel({
           )}
         </button>
 
-        {conflicted ? <span className="text-destructive shrink-0">conflict</span> : null}
+        {/* Badges are `self-center`, not baseline-aligned: a pill's baseline is its
+            label's, so aligning it with the surrounding text hangs the outline low
+            and the whole row starts to look like it slipped. */}
+        {badge === undefined ? null : (
+          // Readable, not `aria-hidden`: "added" and "deleted" are the one thing
+          // the counts beside it cannot say — a new file and a rewritten one both
+          // read as "+40 −0" — and this pill is where that fact lives.
+          <span className={cn('prof-badge shrink-0 self-center', badge.tone)}>{badge.label}</span>
+        )}
+
+        {conflicted ? (
+          <span className="prof-badge prof-badge--red shrink-0 self-center">conflict</span>
+        ) : null}
 
         <Counts added={diff.added} removed={diff.removed} />
 
         {onViewedChange === undefined ? null : (
-          <label className="text-muted-foreground flex shrink-0 items-center gap-1 select-none">
+          // Teal for read, and both halves of the control say it: `accent-*` tints
+          // the native box, which is worth keeping native here because a checkbox
+          // that behaves exactly like a checkbox is one less thing between the
+          // reader and 294 files. The label follows the box so the state survives
+          // being seen out of the corner of an eye.
+          <label
+            className={cn(
+              'flex shrink-0 items-center gap-1 select-none',
+              viewed ? 'text-teal-600' : 'text-muted-foreground',
+            )}
+          >
             <input
               type="checkbox"
               checked={viewed}
@@ -210,54 +268,63 @@ export function FileDiffPanel({
                 onViewedChange(event.target.checked)
                 show(!event.target.checked)
               }}
-              className="size-3"
+              className="accent-teal-500 size-3"
             />
             Viewed
           </label>
         )}
       </div>
 
-      {!open ? null : notice !== null ? (
+      {!open ? null : (
         <>
-          <p className="text-muted-foreground border-border/60 border-t px-2 py-1.5 text-xs">
-            {notice}
-          </p>
-          {/* `all`, because there is no diff for an anchored thread to sit in.
-              A comment on a binary file is still a comment. */}
-          <FileThreadList
-            path={blobs.path}
-            threads={threads}
-            actions={threadActions}
-            hideDone={hideDone}
-            all
-            iterationContext={iterationContext}
-          />
-        </>
-      ) : (
-        <>
-          {/* Above the diff rather than below it: these are the threads that
-              have no line, and the bottom of a 70vh scroller is where a comment
-              goes to be missed. */}
-          <FileThreadList
-            path={blobs.path}
-            threads={threads}
-            actions={threadActions}
-            hideDone={hideDone}
-            iterationContext={iterationContext}
-          />
-          <DiffView
-            rows={rows}
-            layout={layout}
-            label={blobs.path}
-            before={before}
-            after={after}
-            onExpand={onExpand}
-            threadActions={threadActions}
-          />
-          {noNewline === null ? null : (
-            <p className="text-muted-foreground border-border/60 border-t px-2 py-1 font-mono text-xs">
-              {noNewline}
-            </p>
+          {/* A drawn break where the old design put `border-t`. It costs 6px, which
+              is affordable exactly once per panel — hence one rule under the header
+              rather than one above every footer. */}
+          <div aria-hidden className="sketch-rule" />
+          {notice !== null ? (
+            <>
+              <p className="text-muted-foreground px-2 py-1.5 text-xs">{notice}</p>
+              {/* `all`, because there is no diff for an anchored thread to sit in.
+                  A comment on a binary file is still a comment. */}
+              <FileThreadList
+                path={blobs.path}
+                threads={threads}
+                actions={threadActions}
+                hideDone={hideDone}
+                all
+                iterationContext={iterationContext}
+              />
+            </>
+          ) : (
+            <>
+              {/* Above the diff rather than below it: these are the threads that
+                  have no line, and the bottom of a 70vh scroller is where a comment
+                  goes to be missed. */}
+              <FileThreadList
+                path={blobs.path}
+                threads={threads}
+                actions={threadActions}
+                hideDone={hideDone}
+                iterationContext={iterationContext}
+              />
+              <DiffView
+                rows={rows}
+                layout={layout}
+                label={blobs.path}
+                before={before}
+                after={after}
+                onExpand={onExpand}
+                threadActions={threadActions}
+              />
+              {noNewline === null ? null : (
+                // The marker is part of the file's text, not chrome around it, so
+                // it sits on the same sunken sheet the gutters use with no rule
+                // between: `git diff` prints it as the last line of the diff.
+                <p className="text-muted-foreground bg-muted px-2 py-1 font-mono text-xs">
+                  {noNewline}
+                </p>
+              )}
+            </>
           )}
         </>
       )}
