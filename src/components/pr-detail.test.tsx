@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { PullRequestDetailView as Detail, voteWord } from './pr-detail'
+import { viewedKey } from '@/lib/viewed-key'
+import { markViewed, viewedQuery } from '@/server/viewed-fn'
 
 import type { ComponentProps, ReactElement, ReactNode } from 'react'
 import type {
@@ -13,6 +15,18 @@ import type {
   PullRequestRef,
   Reviewer,
 } from '@/server/pull-request'
+
+// The viewed store is SQLite on the other side of a server function, which is
+// neither reachable nor the subject of anything here. Mocked to the store's own
+// contract — `markViewed` returns the key it wrote — so the page's arithmetic is
+// tested against the real key format rather than a stand-in for it.
+vi.mock('@/server/viewed-fn', () => ({
+  viewedQuery: vi.fn(async () => ({ keys: [] })),
+  markViewed: vi.fn(async ({ data }) => ({
+    key: viewedKey(data.objectId ?? data.originalObjectId, data.path),
+    viewed: data.viewed,
+  })),
+}))
 
 // Two things the view needs that none of these tests are about.
 //
@@ -500,6 +514,53 @@ describe('PullRequestDetailView files', () => {
     await userEvent.click(first as HTMLElement)
 
     expect(screen.getByText('1 of 3 read')).toBeVisible()
+    expect(vi.mocked(markViewed)).toHaveBeenCalledWith({
+      data: {
+        repositoryId: REF.repositoryId,
+        id: REF.id,
+        path: '/src/log.ts',
+        objectId: 'aa',
+        originalObjectId: 'bb',
+        viewed: true,
+      },
+    })
+  })
+
+  it('starts with the marks the store already had', async () => {
+    // The whole point of persisting them: coming back to a half-read pull
+    // request finds it half-read.
+    vi.mocked(viewedQuery).mockResolvedValueOnce({
+      keys: [viewedKey('cc', '/src/sink.ts'), viewedKey('ee', '/src/new.ts')],
+    })
+    render(<PullRequestDetailView pr={detail({ files })} />)
+
+    expect(await screen.findByText('2 of 3 read')).toBeVisible()
+
+    const boxes = screen.getAllByRole('checkbox', { name: 'Viewed' })
+    expect(boxes[0]).not.toBeChecked()
+    expect(boxes[1]).toBeChecked()
+    expect(boxes[2]).toBeChecked()
+  })
+
+  it('marks a delete on its before-sha, the only one it has', async () => {
+    // `objectId` is absent on every delete, so a mark keyed on the after-side
+    // alone could not be made at all — and a hole in the progress count sits
+    // exactly where a reviewer is most likely to skim.
+    const deleted = {
+      ...files,
+      files: [
+        { path: '/src/gone.ts', changeType: ['delete'], originalPath: null, objectId: null, originalObjectId: 'ff' },
+      ],
+    }
+    render(<PullRequestDetailView pr={detail({ files: deleted })} />)
+
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Viewed' }))
+
+    expect(screen.getByText('1 of 1 read')).toBeVisible()
+    expect(vi.mocked(markViewed).mock.lastCall?.[0]?.data).toMatchObject({
+      objectId: null,
+      originalObjectId: 'ff',
+    })
   })
 
   it('offers one layout choice for the whole page, not one per file', async () => {

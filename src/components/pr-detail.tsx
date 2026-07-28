@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Check, CircleHelp, Clock, Minus, TriangleAlert, X } from 'lucide-react'
 
 import type { ReactNode } from 'react'
@@ -7,6 +6,8 @@ import { age } from './pr-list'
 import { ChangedFileDiff } from './diff/changed-file'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { cn } from '@/lib/utils'
+import { useViewedFiles } from '@/lib/viewed'
+import { fileViewedKey } from '@/lib/viewed-key'
 
 import type { DiffLayout } from '@/lib/diff-contract'
 import type {
@@ -380,15 +381,16 @@ function LayoutToggle({
 }
 
 /**
- * What a viewed flag is *about*, and the reason T-021 keys on it.
+ * Whether this row is one of the marked ones.
  *
- * The path alone would carry a stale mark across a push that rewrote the file;
- * the content sha alone would lose the mark when a file is moved unchanged. The
- * pair says "I have read these bytes, at this name", which is the statement a
- * reviewer is actually making.
+ * `fileViewedKey` returns `null` for a change entry with a blob on neither side
+ * — nothing a mark could be about, so nothing that can be marked. Folded into
+ * `false` here rather than handled, because `loadFiles` filters those out and no
+ * live payload has produced one.
  */
-function viewedKey(file: ChangedFile): string {
-  return `${file.path}\n${file.objectId ?? ''}`
+function isViewed(viewed: ReadonlySet<string>, file: ChangedFile): boolean {
+  const key = fileViewedKey(file)
+  return key !== null && viewed.has(key)
 }
 
 function ChangedFiles({
@@ -420,7 +422,7 @@ function ChangedFiles({
     else bucket.push(file)
   }
 
-  const read = list.files.filter((file) => viewed.has(viewedKey(file))).length
+  const read = list.files.filter((file) => isViewed(viewed, file)).length
 
   return (
     <div className="flex w-full flex-col gap-3">
@@ -453,7 +455,7 @@ function ChangedFiles({
                   file={file}
                   layout={layout}
                   conflicted={conflicted.has(file.path)}
-                  viewed={viewed.has(viewedKey(file))}
+                  viewed={isViewed(viewed, file)}
                   onViewedChange={(next) => onViewedChange(file, next)}
                 />
               </li>
@@ -489,19 +491,9 @@ export function PullRequestDetailView({
   layout?: DiffLayout
   onLayoutChange?: (layout: DiffLayout) => void
 }) {
-  // Local for now. T-021 replaces this with the persisted store; the shape it
-  // has to present is exactly this — a set of content keys and a setter — so
-  // swapping it is one line here and nothing anywhere below.
-  const [viewed, setViewed] = useState<ReadonlySet<string>>(() => new Set())
-
-  function markViewed(file: ChangedFile, next: boolean) {
-    setViewed((current) => {
-      const updated = new Set(current)
-      if (next) updated.add(viewedKey(file))
-      else updated.delete(viewedKey(file))
-      return updated
-    })
-  }
+  // Persisted, so closing the tab halfway through a 40-file review does not
+  // start it over. Read once per page and written through on each tick.
+  const { keys: viewed, setViewed } = useViewedFiles(prRef)
 
   return (
     <article className="flex w-full flex-col items-start gap-5">
@@ -600,7 +592,7 @@ export function PullRequestDetailView({
             layout={layout}
             onLayoutChange={onLayoutChange}
             viewed={viewed}
-            onViewedChange={markViewed}
+            onViewedChange={setViewed}
           />
         )}
       </Section>
