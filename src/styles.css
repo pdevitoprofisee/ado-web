@@ -47,6 +47,11 @@
   --diff-delete: oklch(0.95 0.04 25);
   --diff-delete-word: oklch(0.88 0.1 25);
   --diff-word: transparent;
+  /* Not the word tints reused. Those are backgrounds and sit near the page's
+     lightness by design; the same colour set as text on the page would be
+     unreadable. Same hues, taken far enough the other way to be legible. */
+  --diff-add-fg: oklch(0.52 0.13 150);
+  --diff-delete-fg: oklch(0.52 0.17 25);
 }
 
 .dark {
@@ -87,6 +92,8 @@
   --diff-delete: oklch(0.32 0.05 25);
   --diff-delete-word: oklch(0.45 0.12 25);
   --diff-word: transparent;
+  --diff-add-fg: oklch(0.78 0.14 150);
+  --diff-delete-fg: oklch(0.75 0.15 25);
 }
 
 @theme inline {
@@ -131,6 +138,8 @@
      rebind `--diff-word`, so one `bg-diff-word` on a token renders green inside
      an added line and red inside a removed one without knowing which it is in. */
   --color-diff-word: var(--diff-word);
+  --color-diff-add-fg: var(--diff-add-fg);
+  --color-diff-delete-fg: var(--diff-delete-fg);
 }
 
 @layer components {
