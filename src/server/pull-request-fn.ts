@@ -2,16 +2,22 @@ import { createServerFn } from '@tanstack/react-start'
 
 import { NotConnectedError, adoClient } from './ado'
 import { AdoError } from './ado-client'
+import { readPrCache } from './pr-cache'
 import {
+  abandon,
+  castVote,
   completePullRequest,
+  isVote,
   loadChanges,
   loadPullRequest,
+  reactivate,
   requeueEvaluation,
   setTitle,
 } from './pull-request'
 
 import type { AdoClient, RateLimit } from './ado-client'
-import type { ChangeSet, PullRequestDetail, PullRequestRef } from './pull-request'
+import type { Hydration } from './hydrate'
+import type { ChangeSet, PullRequestDetail, PullRequestRef, Vote } from './pull-request'
 
 // The route addresses a PR by three values out of a URL, which makes all three
 // attacker-controlled in the only sense that matters here: every one of them is
@@ -254,6 +260,108 @@ export function renameRequest(input: unknown): RenameRequest {
   return { ...ref, title: renamedTitle(raw.title) }
 }
 
+/**
+ * Which pull request, and which of ADO's five votes.
+ *
+ * **Whose vote is deliberately not in here.** ADO puts the reviewer's id in the
+ * path, so a `reviewerId` field on this request would be a field through which
+ * one account casts another's approval — the exact thing the ticket names. It is
+ * not validated-and-ignored either: `voteRequest` builds its answer out of a
+ * `PullRequestRef` and a vote, so anything else the caller sends never reaches a
+ * variable. `castVote` resolves the id from `_apis/connectionData`.
+ */
+export interface VoteRequest extends PullRequestRef {
+  readonly vote: Vote
+}
+
+/**
+ * Whether ADO recorded the vote.
+ *
+ * Its own type beside `RequeueResult`'s three identical fields, for the reason
+ * `RenameResult` gives: a result is read at its call site, and one shared shape
+ * would have the compiler agreeing that a vote reports whether a build was
+ * queued. `error` carries the refusal `castVote` made *before* sending as well as
+ * anything ADO said, because from the header's side those are one outcome — the
+ * vote is not set, and here is the sentence saying why.
+ */
+export interface VoteResult {
+  readonly ok: boolean
+  readonly error: string | null
+  readonly connected: boolean
+}
+
+/**
+ * The five integers, and only those.
+ *
+ * `isVote` lives in `pull-request.ts` so it is covered by that file's tests, and
+ * it is a whitelist rather than a range check because the scale is not arithmetic:
+ * `-7` is not "slightly rejected", it is a value ADO would store and nothing in
+ * this app could read back.
+ */
+export function voteRequest(input: unknown): VoteRequest {
+  const ref = pullRequestRef(input)
+  const raw = (input ?? {}) as Record<string, unknown>
+
+  if (!isVote(raw.vote)) {
+    throw new Error('vote must be one of 10, 5, 0, -5 or -10.')
+  }
+
+  return { ...ref, vote: raw.vote }
+}
+
+/**
+ * Whether ADO abandoned it, and whether it put it back.
+ *
+ * Two types for two writes with the same three fields, `RenameResult`'s reason
+ * again — and with more to it here than usual, because these two are each other's
+ * inverse. A single `LifecycleResult` returned by both is a type in which the
+ * compiler cannot tell "we closed it" from "we reopened it", which is the one
+ * distinction a reader of either call site is there to make.
+ */
+export interface AbandonResult {
+  readonly ok: boolean
+  readonly error: string | null
+  readonly connected: boolean
+}
+
+export interface ReactivateResult {
+  readonly ok: boolean
+  readonly error: string | null
+  readonly connected: boolean
+}
+
+/**
+ * "Did a push wipe my approval" — read out of the inbox's cache, not out of ADO.
+ *
+ * The fact needs the pull request's system threads, `hydrate.ts` already reads
+ * them every poll, and `pr_cache` is keyed on `(pr_id, commit_id)` where the
+ * commit is the source tip. So this costs one synchronous SQLite lookup and no
+ * network call at all, and the key does the freshness check for us: once anybody
+ * pushes, the row no longer matches and this answers `null` — *we do not know* —
+ * rather than handing the header a verdict about a commit that has been replaced.
+ *
+ * `null` in three more cases, all of them the same honest answer: ADO did not say
+ * which commit the branch is on, the inbox has never hydrated this pull request,
+ * or reading the database failed. The header says nothing on `null`, which the
+ * ticket asks for outright — a stale approval on screen after a force-push is
+ * worse than silence.
+ *
+ * Not gated on the viewer's current vote here. `approvalWasReset` already
+ * short-circuits on `myVote > 0`, but that was computed against the vote as it
+ * stood when the inbox last looked; the header holds a fresher one and gates on
+ * it there, so re-approving clears the notice without waiting for a poll.
+ */
+function approvalReset(detail: PullRequestDetail): boolean | null {
+  const commitId = detail.lastMergeSourceCommit
+  if (commitId === null) return null
+
+  try {
+    return readPrCache<Hydration>(detail.id, commitId)?.approvalReset ?? null
+  } catch {
+    return null
+  }
+}
+
 /** The error rather than `null`, so the message it already carries is the one shown. */
 function connectedClient(): AdoClient | NotConnectedError {
   try {
@@ -280,7 +388,8 @@ export const pullRequestQuery = createServerFn({ method: 'GET' })
     }
 
     try {
-      const pullRequest = await loadPullRequest(client, data)
+      const detail = await loadPullRequest(client, data)
+      const pullRequest = { ...detail, approvalReset: approvalReset(detail) }
 
       return {
         pullRequest,
@@ -427,6 +536,98 @@ export const squashMerge = createServerFn({ method: 'POST' })
 
     try {
       await completePullRequest(client, ref, lastMergeSourceCommit)
+
+      return { ok: true, error: null, connected: true }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        connected: true,
+      }
+    }
+  })
+
+/**
+ * Set **my** vote on the pull request.
+ *
+ * The name is the contract: there is no other vote this can set. The reviewer id
+ * ADO wants in the path is resolved from the token inside `castVote` and is not a
+ * field of `VoteRequest`, so a caller who names somebody else is a caller who has
+ * sent a key nothing reads.
+ *
+ * A refused vote comes back as `ok: false` with `castVote`'s sentence, alongside
+ * "not connected" and anything ADO said — `requeuePolicy`'s reason. The header
+ * shows the sentence and leaves the vote where ADO still has it, which is the same
+ * rule `EditableTitle` follows for a rename ADO would not take.
+ */
+export const setMyVote = createServerFn({ method: 'POST' })
+  .validator(voteRequest)
+  .handler(async ({ data }): Promise<VoteResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) {
+      return { ok: false, error: client.message, connected: false }
+    }
+
+    const { vote, ...ref } = data
+
+    try {
+      const refusal = await castVote(client, ref, vote)
+
+      return { ok: refusal === null, error: refusal, connected: true }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        connected: true,
+      }
+    }
+  })
+
+/**
+ * Abandon the pull request.
+ *
+ * Nothing here decides whether abandoning is allowed, for `renamePullRequest`'s
+ * reason — ADO owns that answer and this app has no credential to probe it with.
+ * What *is* decided, and decided on the page rather than here, is whether to offer
+ * the button at all: the header offers it on an active pull request the viewer
+ * opened, and ADO refuses the rest with a sentence the dialog shows.
+ *
+ * The confirmation in front of it is the component's, not this function's. A
+ * server function that could only be called after a dialog would be a server
+ * function that trusts a dialog.
+ */
+export const abandonPullRequest = createServerFn({ method: 'POST' })
+  .validator(pullRequestRef)
+  .handler(async ({ data }): Promise<AbandonResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) {
+      return { ok: false, error: client.message, connected: false }
+    }
+
+    try {
+      await abandon(client, data)
+
+      return { ok: true, error: null, connected: true }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        connected: true,
+      }
+    }
+  })
+
+/** Put an abandoned pull request back. `abandonPullRequest`'s inverse, and its twin. */
+export const reactivatePullRequest = createServerFn({ method: 'POST' })
+  .validator(pullRequestRef)
+  .handler(async ({ data }): Promise<ReactivateResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) {
+      return { ok: false, error: client.message, connected: false }
+    }
+
+    try {
+      await reactivate(client, data)
 
       return { ok: true, error: null, connected: true }
     } catch (error) {

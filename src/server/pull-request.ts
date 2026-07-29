@@ -77,6 +77,24 @@ export interface MergeState {
 }
 
 /**
+ * ADO's vote scale, and the whole of it: five integers with nothing in between.
+ *
+ * A union rather than `number`, because this value goes into a write. The scale
+ * is not ordinal arithmetic — `-7` is not "slightly rejected", it is a value ADO
+ * stores and nothing in this app or its UI can read back — so the five are named
+ * once, here, next to the reviewer row they land on.
+ */
+export type Vote = 10 | 5 | 0 | -5 | -10
+
+/** Most positive first, which is the order the header offers them in. */
+export const VOTE_VALUES: readonly Vote[] = [10, 5, 0, -5, -10]
+
+/** The check the vote's validator makes. Here rather than in `-fn`, so it is tested. */
+export function isVote(value: unknown): value is Vote {
+  return VOTE_VALUES.some((allowed) => allowed === value)
+}
+
+/**
  * Votes: `10` approved · `5` approved with suggestions · `0` none ·
  * `-5` waiting for author · `-10` rejected.
  */
@@ -293,6 +311,24 @@ export interface PullRequestDetail {
   readonly url: string
   /** Who is looking, so the UI can mark their own row. `null` if unresolved. */
   readonly viewerId: string | null
+  /**
+   * "You approved this, then somebody pushed" — `true`, `false`, or `null` for
+   * *we do not know*, which is a different answer and must render as silence.
+   *
+   * It is not computed here. The fact needs the pull request's **system threads**
+   * — a `VoteUpdate` followed by a `RefUpdate` — and `hydrate.ts` already reads
+   * them for the inbox and caches the verdict as `Hydration.approvalReset`. So
+   * `pullRequestQuery` reads that row out of `pr_cache` (zero network, keyed on
+   * the source tip) and fills this in; `loadPullRequest` leaves it `null`,
+   * because it talks to Azure DevOps and this answer is in SQLite.
+   *
+   * `null` on a cache miss is the honest value and the ticket's preference stated
+   * outright: a header that shows a stale approval after a force-push is worse
+   * than one that shows nothing. A miss happens exactly when the tip has moved
+   * since the inbox last looked — i.e. exactly when a cached verdict would be the
+   * stale thing.
+   */
+  readonly approvalReset: boolean | null
   /** Per-section fetch failures. All `null` on a page that loaded whole. */
   readonly errors: SectionErrors
 }
@@ -790,6 +826,125 @@ export async function completePullRequest(
   })
 }
 
+/**
+ * ADO is not consistent about GUID casing between endpoints, which is `inbox.ts`'
+ * note and `threads.ts`' verbatim. Mirrored rather than imported because
+ * importing it would mean importing the conversation into the pull request, and
+ * three lines are cheaper than that coupling. Here the failure mode is a casing
+ * mismatch refusing to let somebody vote on a PR they are a reviewer on.
+ */
+const sameIdentity = (a: string, b: string): boolean =>
+  a !== '' && b !== '' && a.toLowerCase() === b.toLowerCase()
+
+/**
+ * Set the viewer's own vote — approve, approve with suggestions, no vote, wait
+ * for the author, reject.
+ *
+ * **There is no parameter for whose vote it is, and that is the security
+ * property.** ADO addresses a vote by putting the reviewer's id in the path, so a
+ * function that accepted one would be a function that can cast a colleague's
+ * approval on request. The id comes from `resolveViewer`, which is
+ * `_apis/connectionData` — the token's own account — and cannot be reached from a
+ * request body.
+ *
+ * `null` when the write went out; a sentence when it was refused before being
+ * sent. Two refusals, and neither duplicates the header's own `voteBlocker`:
+ *
+ *   - **We cannot say who is asking.** `resolveViewer` is best-effort by design
+ *     (a missing id costs the "that's you" marker, not the page), but a write has
+ *     no such fallback: there is no such thing as voting as nobody, and the one
+ *     id we must not guess at is the one that goes in the path.
+ *   - **There is no reviewer row to change.** Read back from ADO rather than
+ *     trusted from whatever the header had on screen, exactly as
+ *     `guardOwnComment` reads the comment's author back. This one is not
+ *     belt-and-braces: `PUT .../reviewers/{id}` **creates** the reviewer when
+ *     there is none, so a vote sent on a PR you are not on is an *add reviewer*
+ *     write — a different action, in a different ticket (T-034) — and ADO would
+ *     accept it rather than refuse it. Unlike the merge, there is no second
+ *     judge to fall back on, so this one is made here.
+ *
+ * The exception is a **container**: on this org groups outnumber people and
+ * `[Products]\Contributors` is a reviewer on 119 of 163 active PRs, where a
+ * person is legitimately absent from `reviewers` until they vote and ADO's own PUT
+ * is what adds them with `votedFor`. So a container on the pull request means
+ * membership is ADO's question to answer, and it answers it with a 403 of its own
+ * if the group is not yours.
+ *
+ * Body `{ vote }` and nothing else, for `setTitle`'s reason: the reviewer
+ * resource also carries `isRequired` and `isFlagged`, and a vote that can quietly
+ * make somebody a required reviewer is not a vote.
+ *
+ * Unproven against ADO: no write has ever been sent from this app, and the PAT
+ * needs `vso.code_write`. The reviewer record it answers with is dropped for
+ * `requeueEvaluation`'s reason — the caller re-reads the pull request.
+ */
+export async function castVote(
+  client: AdoClient,
+  ref: PullRequestRef,
+  vote: Vote,
+): Promise<string | null> {
+  const viewerId = await resolveViewer(client)
+  if (viewerId === null || viewerId === '') {
+    return 'Azure DevOps did not say who this token belongs to, so there is no vote of yours to set.'
+  }
+
+  const pr = await client.get<AdoDetail>(prBase(ref))
+  const reviewers = pr.reviewers ?? []
+  const mine = reviewers.some((reviewer) => sameIdentity(reviewer.id ?? '', viewerId))
+  const viaTeam = reviewers.some((reviewer) => reviewer.isContainer === true)
+
+  if (!mine && !viaTeam) {
+    return 'You are not a reviewer on this pull request, so there is no vote of yours to set. Adding yourself is a different action, and this one will not do it quietly.'
+  }
+
+  await client.write('PUT', `${prBase(ref)}/reviewers/${viewerId}`, { vote })
+
+  return null
+}
+
+/**
+ * Abandon the pull request — ADO's word for closing it without merging.
+ *
+ * The same PATCH as `setTitle` and `completePullRequest`, with the one field that
+ * matters, for the reason all three of them state: a body wider than the field
+ * being changed is a write with a side effect. `status: 'abandoned'` is the
+ * `PullRequestStatus` enum, one of the seven updatable fields on that route.
+ *
+ * **Not a delete.** Nothing is removed: the threads, the commits and the votes
+ * all stay, and `reactivate` below puts it back. That is what makes one
+ * confirmation enough in front of it, and it is also why there is no
+ * `deleteSourceBranch` here — abandoning is reversible and deleting a branch is
+ * not, and one confirmation must not buy two.
+ *
+ * **Nothing in here checks whether abandoning is allowed**, which is
+ * `renamePullRequest`'s decision and made again for the same reason: who may
+ * close a pull request is ADO's permission model, and the header already declines
+ * to offer the button on a PR the viewer did not open. ADO's sentence is what the
+ * dialog shows.
+ *
+ * Unproven against ADO: written from the documented shape, and the PAT needs
+ * `vso.code_write`.
+ */
+export async function abandon(client: AdoClient, ref: PullRequestRef): Promise<void> {
+  await client.write('PATCH', prBase(ref), { status: 'abandoned' })
+}
+
+/**
+ * Put an abandoned pull request back — the exact inverse, and a separate function
+ * rather than `setStatus(client, ref, status)`.
+ *
+ * One function with a status parameter is the shape `threads-fn.ts` refuses on
+ * the conversation's four writes, and the reason lands harder here: the values
+ * this route accepts include `completed`, so a single status-taking write is one
+ * mistyped argument away from merging a branch. Two functions, two bodies,
+ * neither able to become the other.
+ *
+ * Unproven against ADO, as everything above it.
+ */
+export async function reactivate(client: AdoClient, ref: PullRequestRef): Promise<void> {
+  await client.write('PATCH', prBase(ref), { status: 'active' })
+}
+
 async function loadCommits(
   client: AdoClient,
   ref: PullRequestRef,
@@ -992,6 +1147,11 @@ export async function loadPullRequest(
     repository,
     url: `https://dev.azure.com/${encodeURIComponent(client.org)}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repository)}/pullrequest/${pr.pullRequestId}`,
     viewerId,
+    // Not this function's answer to give: it lives in the inbox's hydration
+    // cache, and reading SQLite from the file that talks to Azure DevOps would
+    // make every caller of this one carry a database. `pullRequestQuery` fills
+    // it in — see `PullRequestDetail.approvalReset`.
+    approvalReset: null,
     errors: {
       policies: policies.error,
       commits: commits.error,

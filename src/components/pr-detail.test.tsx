@@ -7,9 +7,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { PullRequestDetailView as Detail, mergeBlocker, voteWord } from './pr-detail'
 import { viewedKey } from '@/lib/viewed-key'
 import {
+  abandonPullRequest,
   iterationChangesQuery,
+  reactivatePullRequest,
   renamePullRequest,
   requeuePolicy,
+  setMyVote,
   squashMerge,
 } from '@/server/pull-request-fn'
 import { startThread, threadsQuery } from '@/server/threads-fn'
@@ -61,6 +64,12 @@ vi.mock('@/server/pull-request-fn', () => ({
   // in the app that would complete a real pull request, so the module must not
   // reach a bundle that could send it.
   squashMerge: vi.fn(async () => ({ ok: true, error: null, connected: true })),
+  // The header's three new writes, mocked for the same two reasons: `useVote`,
+  // `useAbandon` and `useReactivate` are called on every render of the header, and
+  // one of them abandons a real pull request.
+  setMyVote: vi.fn(async () => ({ ok: true, error: null, connected: true })),
+  abandonPullRequest: vi.fn(async () => ({ ok: true, error: null, connected: true })),
+  reactivatePullRequest: vi.fn(async () => ({ ok: true, error: null, connected: true })),
   iterationChangesQuery: vi.fn(async () => ({
     changes: {
       files: [
@@ -220,6 +229,9 @@ const detail = (over: Partial<PullRequestDetail> = {}): PullRequestDetail => ({
   repository: 'utilities',
   url: 'https://dev.azure.com/Profisee/Products/_git/utilities/pullrequest/24698',
   viewerId: 'author-1',
+  // `null` is the shape of "nobody has hydrated this pull request", which is the
+  // state most of these tests are in and the one that must draw nothing.
+  approvalReset: null,
   errors: { policies: null, commits: null, files: null, conflicts: null },
   ...over,
 })
@@ -774,6 +786,237 @@ describe('PullRequestDetailView squash merge', () => {
     await userEvent.click(button)
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(squashMerge).not.toHaveBeenCalled()
+  })
+})
+
+describe('PullRequestDetailView vote', () => {
+  beforeEach(() => {
+    vi.mocked(setMyVote).mockClear()
+    vi.mocked(setMyVote).mockResolvedValue({ ok: true, error: null, connected: true })
+  })
+
+  /**
+   * The viewer on the reviewer list, which is what makes a vote theirs to cast.
+   * The fixture's viewer is its author, so one reviewer row with that id is a
+   * person reviewing their own pull request — which ADO allows, and which is not
+   * what any of these tests are about.
+   */
+  const votable = (over: Partial<PullRequestDetail> = {}) =>
+    detail({ reviewers: [reviewer({ id: 'author-1', displayName: 'Paul DeVito' })], ...over })
+
+  const group = () => screen.getByRole('group', { name: 'Your vote' })
+  const press = (name: string) => userEvent.click(screen.getByRole('button', { name }))
+
+  // Every value on ADO's scale, and no other: the wire numbers are the one part of
+  // this feature a reader cannot check by looking at the page.
+  it.each([
+    ['Approve', 10],
+    ['Approve with suggestions', 5],
+    ['No vote', 0],
+    ['Wait for author', -5],
+    ['Reject', -10],
+  ])('sends %s as %d', async (label, vote) => {
+    render(<PullRequestDetailView pr={votable()} />)
+
+    await press(label)
+
+    expect(setMyVote).toHaveBeenCalledWith({ data: { ...REF, vote } })
+  })
+
+  it('asks nothing first, because voting again is the correction', async () => {
+    render(<PullRequestDetailView pr={votable()} />)
+
+    await press('Approve')
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(setMyVote).toHaveBeenCalledTimes(1)
+  })
+
+  it('draws the vote it last read as the one that is held down, in words as well', () => {
+    render(<PullRequestDetailView pr={votable({ reviewers: [reviewer({ id: 'author-1', vote: -5 })] })} />)
+
+    expect(screen.getByRole('button', { name: 'Wait for author' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: 'Approve' })).toHaveAttribute('aria-pressed', 'false')
+    // The state said in words too, and not only by which button is filled in.
+    expect(group().parentElement).toHaveTextContent('waiting for author')
+  })
+
+  it('surfaces a refused vote in Azure DevOps own words', async () => {
+    vi.mocked(setMyVote).mockResolvedValue({
+      ok: false,
+      error: 'You are not a reviewer on this pull request, so there is no vote of yours to set.',
+      connected: true,
+    })
+    render(<PullRequestDetailView pr={votable()} />)
+
+    await press('Approve')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Azure DevOps did not record your vote: You are not a reviewer on this pull request, so there is no vote of yours to set.',
+    )
+  })
+
+  it('keeps the reset notice up after a vote, because only a re-read can take it down', async () => {
+    render(<PullRequestDetailView pr={votable({ approvalReset: true })} />)
+
+    const notice = 'A push reset your approval, so it is not standing until you vote again.'
+    expect(screen.getByText(notice)).toBeVisible()
+
+    await press('Approve')
+    await waitFor(() => expect(setMyVote).toHaveBeenCalled())
+
+    // The whole point: the page does not redraw the vote as freshly cast. Until
+    // the pull request is read again, "your approval was reset" is still true.
+    expect(screen.getByText(notice)).toBeVisible()
+  })
+
+  it('says nothing about a reset when nothing has hydrated the pull request', () => {
+    render(<PullRequestDetailView pr={votable()} />)
+
+    expect(screen.queryByText(/reset your approval/)).toBeNull()
+  })
+
+  it('refuses with a reason rather than hiding, on a completed pull request', async () => {
+    render(<PullRequestDetailView pr={votable({ status: 'completed' })} />)
+
+    expect(group()).toHaveAccessibleDescription(
+      'This pull request has been completed, so its votes are a record of what happened.',
+    )
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled()
+
+    await press('Approve')
+    expect(setMyVote).not.toHaveBeenCalled()
+  })
+
+  it('refuses when the viewer is not a reviewer at all', () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    expect(group()).toHaveAccessibleDescription(
+      'You are not a reviewer on this pull request, so there is no vote of yours to set.',
+    )
+  })
+
+  it('offers a vote when a team is the reviewer, which is how most reviewing arrives', () => {
+    render(
+      <PullRequestDetailView
+        pr={detail({ reviewers: [reviewer({ id: 'team-1', displayName: 'Contributors', isContainer: true })] })}
+      />,
+    )
+
+    expect(group()).toHaveAccessibleDescription('')
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled()
+  })
+})
+
+describe('PullRequestDetailView abandon and reactivate', () => {
+  beforeEach(() => {
+    vi.mocked(abandonPullRequest).mockClear()
+    vi.mocked(abandonPullRequest).mockResolvedValue({ ok: true, error: null, connected: true })
+    vi.mocked(reactivatePullRequest).mockClear()
+    vi.mocked(reactivatePullRequest).mockResolvedValue({ ok: true, error: null, connected: true })
+  })
+
+  const trigger = () => screen.getByRole('button', { name: 'Abandon' })
+  const confirm = () => within(screen.getByRole('dialog')).getByRole('button', { name: 'Abandon' })
+
+  it('asks first, and says what abandoning does and does not do', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await userEvent.click(trigger())
+    expect(abandonPullRequest).not.toHaveBeenCalled()
+
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('!24698 move the logging sink off the shared account')
+    // Not a delete, in writing: the word sounds like one.
+    expect(dialog).toHaveTextContent('The branch, the commits, the comments and the votes all stay')
+    expect(dialog).toHaveTextContent('You can reactivate it from this header afterwards.')
+  })
+
+  it('abandons the pull request once confirmed', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await userEvent.click(trigger())
+    await userEvent.click(confirm())
+
+    expect(abandonPullRequest).toHaveBeenCalledWith({ data: REF })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('abandons nothing when the confirmation is cancelled', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await userEvent.click(trigger())
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(abandonPullRequest).not.toHaveBeenCalled()
+  })
+
+  it('shows a refusal in Azure DevOps own words, and leaves the dialog standing', async () => {
+    vi.mocked(abandonPullRequest).mockResolvedValue({
+      ok: false,
+      error: 'TF401027: You need the Contribute to pull requests permission.',
+      connected: true,
+    })
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await userEvent.click(trigger())
+    await userEvent.click(confirm())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Azure DevOps did not abandon it: TF401027: You need the Contribute to pull requests permission.',
+    )
+    expect(screen.getByRole('dialog')).toBeVisible()
+  })
+
+  it('reactivates an abandoned pull request without asking', async () => {
+    render(<PullRequestDetailView pr={detail({ status: 'abandoned' })} />)
+
+    // The two verbs are never both on offer: this one is the only kind of pull
+    // request you can reactivate, and it is not one you can abandon.
+    expect(screen.queryByRole('button', { name: 'Abandon' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Reactivate' }))
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(reactivatePullRequest).toHaveBeenCalledWith({ data: REF })
+  })
+
+  it('surfaces a refused reactivation', async () => {
+    vi.mocked(reactivatePullRequest).mockResolvedValue({
+      ok: false,
+      error: 'TF401398: The pull request has been abandoned by policy.',
+      connected: true,
+    })
+    render(<PullRequestDetailView pr={detail({ status: 'abandoned' })} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reactivate' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Azure DevOps did not reactivate it: TF401398: The pull request has been abandoned by policy.',
+    )
+  })
+
+  it('refuses on somebody elses pull request, with the reason on the control', async () => {
+    render(<PullRequestDetailView pr={detail({ viewerId: 'someone-else' })} />)
+
+    const button = trigger()
+    expect(button).toBeDisabled()
+    expect(button).toHaveAccessibleDescription(
+      "Abandoning somebody else's pull request is a decision to make in Azure DevOps.",
+    )
+
+    await userEvent.click(button)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(abandonPullRequest).not.toHaveBeenCalled()
+  })
+
+  it('refuses on a completed pull request rather than hiding the button', () => {
+    render(<PullRequestDetailView pr={detail({ status: 'completed' })} />)
+
+    expect(trigger()).toHaveAccessibleDescription('This pull request has already been completed.')
   })
 })
 

@@ -6,6 +6,7 @@ import {
   HelpCircleIcon,
   MinusSignIcon,
   PencilEdit02Icon,
+  RefreshIcon,
   Tick02Icon,
   UserMultipleIcon,
 } from '@hugeicons/core-free-icons'
@@ -38,6 +39,7 @@ import { useWarmDiff } from '@/lib/blob-query'
 import { COMBINED, useChanges } from '@/lib/changes'
 import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
+import { lifecycleAction, useAbandon, useReactivate } from '@/lib/lifecycle'
 import { useSquashMerge } from '@/lib/merge'
 import { initials } from '@/lib/people'
 import { useRename } from '@/lib/rename'
@@ -45,6 +47,7 @@ import { useRequeue } from '@/lib/requeue'
 import { cn } from '@/lib/utils'
 import { useViewedFiles } from '@/lib/viewed'
 import { fileViewedKey } from '@/lib/viewed-key'
+import { useVote, viewerVote, voteBlocker } from '@/lib/vote'
 
 import type { ThreadActions } from './comments/thread-actions'
 import type { SonarJump } from './sonar/panel'
@@ -64,6 +67,7 @@ import type {
   PullRequestDetail,
   PullRequestRef,
   Reviewer,
+  Vote,
 } from '@/server/pull-request'
 
 // The detail page's reading surface. Split out of the route for the same reason
@@ -899,6 +903,227 @@ const VOTE_TONES = new Map<number, string>([
   [-5, 'prof-badge--amber'],
   [-10, 'prof-badge--red'],
 ])
+
+/**
+ * The same five, as things to do rather than states to be in.
+ *
+ * Imperative labels against `VOTES`' past tense — "Approve" on the button,
+ * "approved" on the badge — because the two are read differently. One is an offer
+ * and the other is a fact, and a row of five buttons all reading like statuses is
+ * a row nobody can tell they are allowed to press. "No vote" keeps ADO's own
+ * phrase rather than "Reset" or "Clear": the value it writes is `0`, which is a
+ * position on the scale and not the absence of one.
+ *
+ * In ADO's own order, most positive first, so the row reads yes to no with the
+ * neutral in the middle. Every one carries an icon *and* a word — the badge
+ * beside them is the only coloured thing here, and colour is never the only
+ * channel telling two of these apart.
+ */
+const VOTE_CHOICES: ReadonlyArray<{ vote: Vote; label: string; icon: IconSvgElement }> = [
+  { vote: 10, label: 'Approve', icon: Tick02Icon },
+  { vote: 5, label: 'Approve with suggestions', icon: HelpCircleIcon },
+  { vote: 0, label: 'No vote', icon: MinusSignIcon },
+  { vote: -5, label: 'Wait for author', icon: Clock01Icon },
+  { vote: -10, label: 'Reject', icon: Cancel01Icon },
+]
+
+/**
+ * Where the viewer stands, and the five ways to change it.
+ *
+ * In the header, because a vote is a fact about the pull request as a whole and
+ * not about any one of the lists below it — and because the reviewers section is a
+ * record of what everybody thinks, which is a different thing from a control for
+ * what you think.
+ *
+ * No confirmation on any of the five, deliberately: a vote is correctable by
+ * voting again, and the button that corrects it is right there. Contrast
+ * `LifecycleControl`, which asks.
+ */
+function VoteControl({ pr, prRef }: { pr: PullRequestDetail; prRef: PullRequestRef }) {
+  const vote = useVote(prRef)
+
+  const blocker = voteBlocker(pr)
+  const current = viewerVote(pr)
+  const busy = vote.pending !== null
+
+  // The notice the ticket is really about. `approvalReset` is `null` when nobody
+  // has hydrated this pull request, and `null` renders as silence rather than as
+  // reassurance — see `PullRequestDetail.approvalReset`.
+  //
+  // Gated on the vote the page last read, and *not* on whether a vote was just
+  // sent: pressing Approve does not take this notice down, because until the
+  // re-read comes back the honest answer is still "your approval was reset". It
+  // goes when ADO says the vote is standing again, which is the only thing that
+  // could take it down truthfully.
+  const stale = pr.approvalReset === true && (current ?? 0) <= 0
+
+  return (
+    <div className="flex min-w-0 flex-col items-start gap-1.5">
+      {stale ? (
+        <p className="text-destructive flex items-center gap-1 text-xs">
+          <HugeiconsIcon icon={RefreshIcon} size={12} aria-hidden />
+          A push reset your approval, so it is not standing until you vote again.
+        </p>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        {/* State first, then the offers, so the row answers "where am I" before
+            "what can I do". Absent entirely when we cannot attribute a vote —
+            `viewerVote` returns `null` for an unresolved viewer, and a badge
+            reading "no vote" would be claiming to know something. */}
+        {current === null ? null : (
+          <span className={cn('prof-badge', VOTE_TONES.get(current) ?? 'prof-badge--navy')}>
+            <span className="prof-badge__dot" aria-hidden />
+            {voteWord(current)}
+          </span>
+        )}
+
+        {/* A group with a name, not five loose buttons: "Approve" on its own does
+            not say what it is approving, and the description carries the refusal
+            for all five at once. */}
+        <div
+          role="group"
+          aria-label="Your vote"
+          aria-describedby={blocker === null ? undefined : 'vote-blocked'}
+          className="flex flex-wrap items-center gap-1"
+        >
+          {VOTE_CHOICES.map((choice) => (
+            <Button
+              key={choice.vote}
+              size="xs"
+              // The one that is already the answer is drawn as held down rather
+              // than as another thing to press, and `aria-pressed` says so for
+              // anybody who is not looking at the fill.
+              variant={current === choice.vote ? 'secondary' : 'ghost'}
+              aria-pressed={current === choice.vote}
+              // All five go quiet while one is in flight. Leaving the other four
+              // live would let a reviewer queue two votes on a scale where only
+              // the last one survives.
+              isDisabled={blocker !== null || busy}
+              onPress={() => vote.run(choice.vote)}
+            >
+              <HugeiconsIcon icon={choice.icon} size={13} aria-hidden />
+              {choice.label}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {blocker === null ? null : (
+        <p id="vote-blocked" className="text-muted-foreground text-xs">
+          {blocker}
+        </p>
+      )}
+      {/* Which vote, not just that something is happening: with the whole group
+          disabled, the label is the only thing left saying what was pressed. */}
+      {vote.pending === null ? null : (
+        <p role="status" className="annotation">
+          setting your vote to {voteWord(vote.pending)}…
+        </p>
+      )}
+      {vote.error === null ? null : (
+        // ADO's words. A refusal here is a permissions answer or a "you are not a
+        // reviewer", and both belong to it rather than to us.
+        <p role="alert" className="text-destructive text-xs">
+          Azure DevOps did not record your vote: {vote.error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Closing this pull request without merging it, or opening it again.
+ *
+ * One button, because the two verbs are never both available: an abandoned pull
+ * request is the only kind you can reactivate. Both stay on the page when they do
+ * not apply, disabled with the sentence saying why — the ticket's "refused with a
+ * reason rather than hidden", and the same shape `MergeControl` uses.
+ *
+ * Abandon confirms and reactivate does not, which is the line the ticket draws:
+ * abandoning closes work other people are waiting on, and reactivating undoes it
+ * exactly. See `useReactivate`.
+ */
+function LifecycleControl({ pr, prRef }: { pr: PullRequestDetail; prRef: PullRequestRef }) {
+  const [confirming, setConfirming] = useState(false)
+  // Success only, as in `MergeControl`: a refusal has to leave the dialog up,
+  // because ADO's reason is written inside it.
+  const abandon = useAbandon(prRef, () => setConfirming(false))
+  const reactivate = useReactivate(prRef)
+
+  const { kind, blocker } = lifecycleAction(pr)
+
+  return (
+    <div className="flex shrink-0 flex-col items-start gap-1.5">
+      <Button
+        // Destructive for the one that closes work, plain outline for the one
+        // that reopens it. The two never appear together, so the pen is doing
+        // the work a pair of buttons side by side would have done.
+        variant={kind === 'abandon' ? 'destructive' : 'outline'}
+        size="sm"
+        isDisabled={blocker !== null || reactivate.isPending}
+        aria-describedby={blocker === null ? undefined : 'lifecycle-blocked'}
+        onPress={() => {
+          if (kind === 'abandon') setConfirming(true)
+          else reactivate.run()
+        }}
+      >
+        {kind === 'abandon' ? 'Abandon' : reactivate.isPending ? 'Reactivating…' : 'Reactivate'}
+      </Button>
+      {blocker === null ? null : (
+        <p id="lifecycle-blocked" className="text-muted-foreground text-xs">
+          {blocker}
+        </p>
+      )}
+      {reactivate.error === null ? null : (
+        <p role="alert" className="text-destructive text-xs">
+          Azure DevOps did not reactivate it: {reactivate.error}
+        </p>
+      )}
+
+      <Dialog
+        isOpen={confirming}
+        onOpenChange={(open) => {
+          setConfirming(open)
+          if (!open) abandon.dismiss()
+        }}
+        isDismissable={!abandon.isPending}
+        showCloseButton={false}
+      >
+        <DialogHeader>
+          <DialogTitle>Abandon this pull request?</DialogTitle>
+          <DialogDescription className="flex flex-col gap-2">
+            <p>
+              <span className="font-mono tabular-nums">!{pr.id}</span> {pr.title}
+            </p>
+            {/* What it does and, just as importantly, what it does not do. The
+                word "abandon" sounds like a delete, and a reviewer who thinks it
+                is one will not press it when it is the right answer. */}
+            <p>
+              It closes without merging and drops out of everybody&rsquo;s review queue. The branch,
+              the commits, the comments and the votes all stay where they are.
+            </p>
+            <p>You can reactivate it from this header afterwards.</p>
+          </DialogDescription>
+        </DialogHeader>
+
+        {abandon.error === null ? null : (
+          <p role="alert" className="text-destructive text-sm">
+            Azure DevOps did not abandon it: {abandon.error}
+          </p>
+        )}
+
+        <DialogFooter>
+          {/* Cancel first in the DOM, so focus opens on the way out. */}
+          <DialogClose isDisabled={abandon.isPending}>Cancel</DialogClose>
+          <Button variant="destructive" isDisabled={abandon.isPending} onPress={() => abandon.run()}>
+            {abandon.isPending ? 'Abandoning…' : 'Abandon'}
+          </Button>
+        </DialogFooter>
+      </Dialog>
+    </div>
+  )
+}
 
 function ReviewerRow({ reviewer, viewerId }: { reviewer: Reviewer; viewerId: string | null }) {
   return (
@@ -1803,6 +2028,23 @@ export function PullRequestDetailView({
           <CopyBranch sourceBranch={branch(pr.sourceBranch)} />
           {pr.isDraft ? <Chip tone="amber">draft</Chip> : null}
         </p>
+
+        {/* The header's write row, under a second rule: above it is what this pull
+            request *is*, below it is what you can do about it. Both controls are
+            here rather than down the page because both are answers about the pull
+            request as a whole — and because the tab strip is directly underneath,
+            so anything further down would be an action hidden inside a reading
+            surface.
+
+            Vote left, lifecycle right, and far apart: they are the two ends of
+            what a reviewer might mean, and the destructive one should not be the
+            button next to Reject. */}
+        <hr className="sketch-rule my-2" />
+
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
+          <VoteControl pr={pr} prRef={prRef} />
+          <LifecycleControl pr={pr} prRef={prRef} />
+        </div>
       </header>
 
       <TabStrip tab={active} tabs={tabs} onTabChange={onTabChange} />

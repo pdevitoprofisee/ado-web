@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest'
 
 import {
   POLICY_VERSION,
+  abandon,
+  castVote,
   changeFlags,
   commitSubject,
   completePullRequest,
+  isVote,
   loadChanges,
   loadPullRequest,
+  reactivate,
   requeueEvaluation,
   setTitle,
   toPolicies,
@@ -514,8 +518,16 @@ describe('requeueing a build policy', () => {
   })
 })
 
-/** The write, captured rather than sent. Nothing in either describe reaches Azure DevOps. */
-function capture() {
+/**
+ * The write, captured rather than sent. Nothing in any describe below reaches
+ * Azure DevOps.
+ *
+ * `replies` because one of these writes reads first — `castVote` asks who the
+ * token belongs to and what the reviewer list looks like before it sends
+ * anything — and a capture whose `get` rejects everything could only ever test
+ * the refusals.
+ */
+function capture(replies: Record<string, Reply> = {}) {
   const writes: Array<{
     method: string
     path: string
@@ -524,7 +536,7 @@ function capture() {
   }> = []
 
   const client: AdoClient = {
-    ...fakeClient({}).client,
+    ...fakeClient(replies).client,
     write: (method, path, body, params = {}) => {
       writes.push({ method, path, body, params })
 
@@ -597,6 +609,191 @@ describe('completing a pull request', () => {
     expect((writes[0].body as { lastMergeSourceCommit: unknown }).lastMergeSourceCommit).toEqual({
       commitId: tip,
     })
+  })
+})
+
+/**
+ * What `castVote` reads before it writes: who the token is, and who is on the
+ * pull request. The viewer is a reviewer here, which is the ordinary case.
+ */
+const VOTING: Record<string, Reply> = {
+  '_apis/connectionData': REPLIES['_apis/connectionData'],
+  '/pullRequests/24698': detail({
+    reviewers: [{ id: ME, displayName: 'Paul DeVito', vote: 0 }],
+  }),
+}
+
+describe('isVote', () => {
+  it('accepts the five integers ADO has and nothing between them', () => {
+    expect([10, 5, 0, -5, -10].every(isVote)).toBe(true)
+    // 1 and -1 matter: a caller doing arithmetic on a vote, or reading a boolean
+    // as one, lands on exactly these.
+    expect([1, -1, 11, 100, -100, 0.5].some(isVote)).toBe(false)
+  })
+
+  it('rejects the things a request body arrives as', () => {
+    // `'10'` in particular: a form or a query string hands over the right vote as
+    // the wrong type, and ADO would take it as no vote at all.
+    expect(['10', null, undefined, true, {}, [], NaN].some(isVote)).toBe(false)
+  })
+})
+
+describe('casting a vote', () => {
+  it.each([10, 5, 0, -5, -10] as const)('puts %d on the viewers own reviewer entry', async (vote) => {
+    const { client, writes } = capture(VOTING)
+
+    expect(await castVote(client, REF, vote)).toBeNull()
+    expect(writes).toEqual([
+      {
+        method: 'PUT',
+        // The vote lives on the reviewer sub-resource; there is no vote field on
+        // the pull request itself.
+        path: `${PR}/reviewers/${ME}`,
+        // One key, pinned whole for `setTitle`'s reason: this same PUT carries
+        // `isRequired` and creates reviewers, and anything that leaked in here
+        // would make a vote change the review itself.
+        body: { vote },
+        params: {},
+      },
+    ])
+  })
+
+  it('addresses the vote to the token, never to a reviewer it was shown', async () => {
+    // A colleague first on the list, and a colleague who is *also* a reviewer — the
+    // shape a "vote as someone else" attempt would need to succeed. There is no
+    // parameter for whose vote it is, so there is nothing for it to travel in.
+    const { client, writes } = capture({
+      ...VOTING,
+      '/pullRequests/24698': detail({
+        reviewers: [
+          { id: COLLEAGUE, displayName: 'Naveen Angali', vote: 10 },
+          { id: ME, displayName: 'Paul DeVito', vote: 0 },
+        ],
+      }),
+    })
+
+    await castVote(client, REF, -10)
+
+    expect(writes[0].path).toBe(`${PR}/reviewers/${ME}`)
+    expect(writes[0].path).not.toContain(COLLEAGUE)
+  })
+
+  it('takes the identity from ADO on each vote rather than from the reviewer list', async () => {
+    // The same PR read twice under two different tokens: the path follows the
+    // token, so the reviewer list is never what decides whose vote this is.
+    const { client, writes } = capture({
+      ...VOTING,
+      '_apis/connectionData': {
+        authenticatedUser: { id: COLLEAGUE, providerDisplayName: 'Naveen Angali' },
+      },
+      '/pullRequests/24698': detail({
+        reviewers: [
+          { id: ME, displayName: 'Paul DeVito', vote: 0 },
+          { id: COLLEAGUE, displayName: 'Naveen Angali', vote: 0 },
+        ],
+      }),
+    })
+
+    await castVote(client, REF, 5)
+
+    expect(writes[0].path).toBe(`${PR}/reviewers/${COLLEAGUE}`)
+  })
+
+  it('matches the reviewer list case-insensitively, as ADO returns it', async () => {
+    const { client, writes } = capture({
+      ...VOTING,
+      '/pullRequests/24698': detail({
+        reviewers: [{ id: ME.toUpperCase(), displayName: 'Paul DeVito', vote: 0 }],
+      }),
+    })
+
+    expect(await castVote(client, REF, 10)).toBeNull()
+    // The token's casing, not the list's: the id ADO answered `connectionData`
+    // with is the one its own routes are addressed by.
+    expect(writes[0].path).toBe(`${PR}/reviewers/${ME}`)
+  })
+
+  it('refuses when ADO will not say who the token belongs to, and writes nothing', async () => {
+    const { client, writes } = capture({
+      ...VOTING,
+      // Note 4's failure: an expired token comes back as a sign-in page rather
+      // than a 401, and this is what that looks like once parsed.
+      '_apis/connectionData': {},
+    })
+
+    expect(await castVote(client, REF, 10)).toBe(
+      'Azure DevOps did not say who this token belongs to, so there is no vote of yours to set.',
+    )
+    expect(writes).toEqual([])
+  })
+
+  it('refuses when the viewer is not on the pull request at all', async () => {
+    const { client, writes } = capture({
+      ...VOTING,
+      '/pullRequests/24698': detail({
+        reviewers: [{ id: COLLEAGUE, displayName: 'Naveen Angali', vote: 0 }],
+      }),
+    })
+
+    // Not a permissions guess: ADO's PUT *creates* the reviewer it addresses, so
+    // an unguarded vote here would quietly add the viewer to somebody's review.
+    expect(await castVote(client, REF, 10)).toContain('You are not a reviewer on this pull request')
+    expect(writes).toEqual([])
+  })
+
+  it('votes when a team is the reviewer and the viewer is not listed yet', async () => {
+    const { client, writes } = capture({
+      ...VOTING,
+      '/pullRequests/24698': detail({
+        reviewers: [{ id: CONTRIBUTORS, displayName: '[Products]\\Contributors', isContainer: true }],
+      }),
+    })
+
+    // The dominant case on this org — a container on 119 of 163 active pull
+    // requests — and the one ADO itself resolves: the PUT is how a member of the
+    // group appears on the list at all.
+    expect(await castVote(client, REF, 5)).toBeNull()
+    expect(writes[0].path).toBe(`${PR}/reviewers/${ME}`)
+  })
+})
+
+describe('abandoning and reactivating', () => {
+  it('patches the status to abandoned and nothing else', async () => {
+    const { client, writes } = capture()
+
+    await abandon(client, REF)
+
+    expect(writes).toEqual([
+      {
+        method: 'PATCH',
+        path: PR,
+        // Whole-object again, and here it is load-bearing twice over: this route
+        // also takes `completed`, and it also takes `lastMergeSourceCommit`. A
+        // body with more in it than this is a different action.
+        body: { status: 'abandoned' },
+        params: {},
+      },
+    ])
+  })
+
+  it('patches the status back to active, with no completion options anywhere near it', async () => {
+    const { client, writes } = capture()
+
+    await reactivate(client, REF)
+
+    expect(writes).toEqual([{ method: 'PATCH', path: PR, body: { status: 'active' }, params: {} }])
+  })
+
+  it('reads nothing first, because ADO is the only judge of either', async () => {
+    const { client, writes } = capture()
+
+    await abandon(client, REF)
+    await reactivate(client, REF)
+
+    // `capture()` with no replies rejects every `get`, so these two resolving at
+    // all is the assertion: neither pre-flights a permission check whose answer
+    // would be stale by the time the write went out.
+    expect(writes).toHaveLength(2)
   })
 })
 
