@@ -710,7 +710,7 @@ and 11 in `diff-view.test.tsx` for the behaviour (the button's presence and abse
 
 ## T-038 — The three Sonar shortfalls
 
-**Type:** feature · **Status:** parts 1 and 3 resolved · **part 2 still open** · **Blocked by:** —
+**Type:** feature · **Status:** resolved · **Blocked by:** —
 
 Phase 10. [Round 4](./round-4.md) delivered phase 6 early and named exactly three things it
 left. None is a defect; each was measured and declined.
@@ -740,11 +740,11 @@ HTML gets through, and Sonar's rule HTML is third-party content.
 
 ### Resolution
 
-**Parts 1 and 3 only. Part 2 was not attempted, deliberately.** The line-level jump needs
+**Parts 1 and 3 first; part 2 afterwards, on its own branch.** The line-level jump needs
 `src/lib/diff-rows.ts` and `src/components/diff/diff-view.tsx`, and T-037 was rewriting both at
 the same time in another worktree — two agents editing the row model of the same virtualized
-list produces a merge, not a feature. It stays open with its success criteria unchanged; nothing
-here forecloses it, and `SonarJump` already carries the line.
+list produces a merge, not a feature. So it was deferred rather than attempted, with its success
+criteria unchanged, and done once T-037 had landed. Part 2 is below, between the other two.
 
 **1. Paging.** `loadIssues` is a loop, `p` alongside `ps: 500`, bounded by
 `SONAR_MAX_PAGES = 20`. It ends on `total` — the top-level count, present on every 200 measured,
@@ -779,6 +779,52 @@ failure.
 The panel says it above the findings — `Showing 10000 of 24312 findings for profisee_matching.`
 plus which of the two reasons it was — in ink with an amber mark, because `--pen-amber` is
 3.39:1 on this paper: fine for a glyph, short of the 4.5:1 a sentence needs.
+
+**2. The jump. `scrollToIndex`, because the row is not in the DOM to be found.** A per-line
+`getElementById` answers `null` for exactly the jumps that had somewhere to go — the row for line
+214 exists only while 214 is one of the ~56 lines currently rendered — and a line inside
+collapsed context has no row at all, so a scroll asked for before the reveal lands on the nearest
+row that does exist and looks like a success. Recorded as note 13 in [the map](../map.md#the-notes).
+`DiffView` therefore grew its first effect that drives the virtualizer, on a `jumped` prop and a
+`landed` ref: the ref holds the *line*, not the rows, because the thread poll reprojects the rows
+every thirty seconds and an effect keyed on them would haul the reader back to the finding every
+half minute — while a row that only appears later (revealed gap, late bytes) is still followed.
+`align: 'center'`, since a finding is read with the lines around it.
+
+**A seventh row-model input, `jumped`, and state would have been wrong rather than merely
+fragile.** Note 7's reason applies — the poll rebuilds the model from its inputs and erases
+anything held beside them — but the deciding one is that `buildRows` has to *drop* it: new bytes
+renumber the file, and a mark recorded against the iteration you were reading would then be drawn
+on whatever moved into that line. It is also the only input no row is derived from, so
+`jumpToLine` sets it with a spread and hands the view back the same `rows` array — the one place
+in that module that does not reproject — because a new array costs a re-measure of the widest line
+in a 5,000-line file. When the line is inside a `gap` row it reveals the whole gap first, through
+the same `rebuild` the gutter expander uses, and that is one transition rather than two.
+`rowIndexForLine` is a linear scan over `rows` for `kind === 'line'` with a matching
+`right.newLine` — right side only, because Sonar's `textRange.startLine` is a right-side line and
+old 50 is new 52 in any file with an insertion above it. Not an index: indices move under
+`attach`, and the scan is nothing beside the render it is about to trigger.
+
+**Both outcomes are said in words, above the panel and inside the anchor.** `ChangedFileDiff`
+derives one sentence from the model — `Jumped to line 214.` or `Line 214 is not in this diff.`,
+the second one decided by `rowIndexForLine` returning `-1` — into a `role="status"` paragraph that
+is mounted empty from the start, because a live region inserted together with its own text is one
+several screen readers never announce. Derived rather than remembered, so the poll cannot erase it
+and new bytes drop it together with the mark it describes. The mark itself is an outline and not a
+border: every code row is exactly 20px and `box-sizing: border-box`, so 1.5px of border would eat
+3px of the one line you were sent to look at. Teal at pen weight, and never the only thing that
+says so.
+
+**The line has to wait for the bytes.** The page clears its jump as soon as the list has scrolled
+to the file, and that scroll is what *starts* the fetch (`enabled: opened || near`), so the panel
+latches the line in a `wanted` state and spends it on the first model it has. `pr-detail.tsx`
+matches the path once and hands 293 of the 294 panels the `null` that means "not you". A finding
+whose line is `null` still jumps to its file exactly as before, and the mark is never drawn.
+
+**48 files / 901 tests**, up from 882, `tsc --noEmit` clean. Two things deliberately not done: a
+file left marked read and shut is not forced open by a jump — the sentence sits above the panel,
+inside the anchor, so it is still the first thing at the landing point — and focus is not moved,
+because taking it off the finding you clicked would cost you the rest of the occurrence list.
 
 **3. The pairing.** One narrow schema extension: `dataDiffId` and `dataDiffType`, by name, on
 `pre`. **The names are the whole trap.** `hast-util-sanitize` filters the parsed tree, where the

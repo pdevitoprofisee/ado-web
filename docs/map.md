@@ -228,6 +228,19 @@ rewrite. Evidence in [`docs/research/`](./research/).
    count-based guess standing in for a fact the transport cannot see. Fixing it properly
    means giving the client a way to return headers — a change to the file every read goes
    through, and worth doing once rather than per feature.
+13. **You cannot find a diff row in the DOM, and the two ways of trying both look like they
+   worked.** (a) A per-line `getElementById` answers `null` for precisely the jumps that had
+   somewhere to go: the row for line 214 is in the document only while 214 is one of the ~56
+   lines the virtualizer currently renders, so the lookup succeeds for lines already on screen
+   and fails silently for every line worth scrolling to. `scrollToIndex` on the virtualizer is
+   the only mechanism, because it is the only thing that knows where an unrendered row *would*
+   be. (b) A line inside collapsed context has **no row at any index** — `expandGap` has to run
+   first, and a scroll issued before it lands on the nearest row that does exist, which reads as
+   a successful jump onto the wrong line. Found building T-038 part 2. Two smaller ones ride
+   along: a lookup that matches either side of a row puts a right-side line two rows out in any
+   file with an insertion above it, and in jsdom every offset a virtualizer computes is clamped
+   to `scrollHeight - clientHeight`, which is `0` for every element — so a test that asserts
+   *which* offset was scrolled to has to define both.
 
 ### Structural facts about the ADO API
 
