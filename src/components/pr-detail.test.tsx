@@ -440,11 +440,11 @@ describe('PullRequestDetailView copying the source branch', () => {
     await user.click(screen.getByRole('button', { name: 'Copy source branch feature/logging-sink' }))
 
     expect(writeText).toHaveBeenCalledWith('feature/logging-sink')
-    // The acknowledgement, on the control itself and in both channels — the word
-    // you can see is inside the name that gets spoken.
+    // The acknowledgement in both channels: the name that gets spoken, and — since
+    // an icon has no text to assert on — the `data-state` the tick is drawn from.
     expect(
       await screen.findByRole('button', { name: 'Copied source branch feature/logging-sink' }),
-    ).toHaveTextContent('copied')
+    ).toHaveAttribute('data-state', 'copied')
   })
 
   it('says it failed rather than throwing when the clipboard refuses', async () => {
@@ -456,7 +456,7 @@ describe('PullRequestDetailView copying the source branch', () => {
 
     expect(
       await screen.findByRole('button', { name: 'Failed to copy source branch feature/logging-sink' }),
-    ).toHaveTextContent('failed')
+    ).toHaveAttribute('data-state', 'failed')
   })
 
   it('says it failed when there is no clipboard to write to', async () => {
@@ -471,7 +471,7 @@ describe('PullRequestDetailView copying the source branch', () => {
 
     expect(
       await screen.findByRole('button', { name: 'Failed to copy source branch feature/logging-sink' }),
-    ).toHaveTextContent('failed')
+    ).toHaveAttribute('data-state', 'failed')
   })
 })
 

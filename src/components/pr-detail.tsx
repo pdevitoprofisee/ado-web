@@ -1,4 +1,6 @@
 import { Check, CircleHelp, Clock, Minus, TriangleAlert, Users, X } from 'lucide-react'
+import { Cancel01Icon, Copy01Icon, PencilEdit02Icon, Tick02Icon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 import { useEffect, useMemo, useState } from 'react'
 import { TextField } from 'react-aria-components'
 
@@ -189,14 +191,16 @@ function EditableTitle({
       <div className="flex min-w-0 items-baseline gap-2">
         <h1 className="min-w-0 text-xl leading-tight font-semibold tracking-tight">{title}</h1>
         {onRename === undefined ? null : (
-          // The same quiet underlined word as the `result` link and the `requeue`
-          // button in the checklist, and a `<button>` for the same reason: it does
-          // something rather than going somewhere. A `<Button>` here would outdraw
-          // the title it edits.
+          // A pencil rather than the word, because the word competes with the title
+          // for the same glance: this is the heading's own affordance, and the icon
+          // reads as belonging to it where a second piece of text reads as part of
+          // it. A `<button>` because it does something rather than going somewhere,
+          // and a `<Button>` here would outdraw the title it edits.
           //
-          // The name says what is being renamed — "rename" on its own, in a list
-          // of this page's controls, could be about any of them. The visible word
-          // is inside the name, so speaking one and reading the other still agree.
+          // An icon has no text to speak, so the whole meaning is in the name, and
+          // it says what is being renamed — "rename" on its own, in a list of this
+          // page's controls, could be about any of them. `title` gives the sighted
+          // reader the same sentence on hover.
           <button
             type="button"
             onClick={() => {
@@ -207,9 +211,12 @@ function EditableTitle({
               setEditing(true)
             }}
             aria-label="Rename this pull request"
-            className="text-muted-foreground hover:text-primary shrink-0 text-2xs underline decoration-[1.5px] underline-offset-[3px]"
+            title="Rename this pull request"
+            className="text-muted-foreground hover:text-primary shrink-0"
           >
-            rename
+            {/* 14px against a 20px heading: legible at a glance, and small enough
+                that the eye still lands on the title first. */}
+            <HugeiconsIcon icon={PencilEdit02Icon} size={14} aria-hidden />
           </button>
         )}
       </div>
@@ -261,13 +268,22 @@ const COPIED_FOR = 2000
  * Puts the source branch on the clipboard, because the only reason to read a
  * branch name off this page is to type it into a terminal.
  *
- * Three states on one control, and each visible word is contained in the
- * accessible name it ships with — a screen reader and a pair of eyes have to be
- * told the same thing. The name carries the branch as well, since "copy" beside
- * two branch names does not say which one it takes.
+ * Three states on one control, drawn as three icons — a page whose meta line is
+ * already five identifiers deep does not need a sixth word in it. An icon says
+ * nothing out loud, so the accessible name carries the whole meaning, including
+ * the branch: "copy" beside two branch names does not say which one it takes.
  */
 function CopyBranch({ sourceBranch }: { sourceBranch: string }) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  // One sentence for both audiences: the accessible name for anyone listening,
+  // and the tooltip for anyone who has to guess what a 14px glyph does.
+  const label =
+    state === 'copied'
+      ? `Copied source branch ${sourceBranch}`
+      : state === 'failed'
+        ? `Failed to copy source branch ${sourceBranch}`
+        : `Copy source branch ${sourceBranch}`
 
   useEffect(() => {
     if (state === 'idle') return
@@ -305,22 +321,20 @@ function CopyBranch({ sourceBranch }: { sourceBranch: string }) {
     <button
       type="button"
       onClick={() => void copy()}
-      aria-label={
-        state === 'copied'
-          ? `Copied source branch ${sourceBranch}`
-          : state === 'failed'
-            ? `Failed to copy source branch ${sourceBranch}`
-            : `Copy source branch ${sourceBranch}`
-      }
+      aria-label={label}
+      title={label}
+      // The visible half of the state, for a test that would otherwise have to
+      // assert on which SVG is in the DOM. The name changing is not enough on its
+      // own: a control that only acknowledges to a screen reader has not
+      // acknowledged.
+      data-state={state}
       className={cn(
-        // A fixed width, left-aligned, so the acknowledgement does not shove the
-        // draft chip sideways and back again. 3rem holds the longest of the three
-        // words at this size with room to spare.
-        //
-        // `text-2xs` is 0.6875rem at line-height 1.2 — 13.2px in a `text-xs` line
-        // whose own line box is 16px, so the button rides inside the line it is on
-        // and the meta line stays exactly as tall as it was.
-        'inline-block w-12 text-left text-2xs underline decoration-[1.5px] underline-offset-[3px]',
+        // Three icons of one size, so the acknowledgement cannot shove the draft
+        // chip sideways and back again the way three words of different lengths
+        // would have. `align-[-0.2em]` sits a 14px glyph on the 12px line's
+        // baseline instead of hanging it off the top, and it is a replaced element
+        // in a `<p>`, so the meta line stays exactly as tall as it was.
+        'inline-block align-[-0.2em]',
         state === 'idle' && 'text-muted-foreground hover:text-primary',
         // Teal for the acknowledgement and the pen for the refusal, which is the
         // page's existing pair for "done" and "that did not work".
@@ -328,7 +342,11 @@ function CopyBranch({ sourceBranch }: { sourceBranch: string }) {
         state === 'failed' && 'text-destructive',
       )}
     >
-      {state === 'copied' ? 'copied' : state === 'failed' ? 'failed' : 'copy'}
+      <HugeiconsIcon
+        icon={state === 'copied' ? Tick02Icon : state === 'failed' ? Cancel01Icon : Copy01Icon}
+        size={14}
+        aria-hidden
+      />
     </button>
   )
 }
