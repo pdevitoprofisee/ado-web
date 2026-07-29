@@ -229,6 +229,70 @@ describe('SonarPanel', () => {
     expect(panel().getByText('A long parameter list is hard to read.')).toBeVisible()
   })
 
+  it('says a repeated message once and leaves the rows as places', async () => {
+    // The measured shape of `external_roslyn:IDE0058`: four findings, one
+    // sentence between them. Printed per row it wrapped one word per line in a
+    // column the paths had already taken.
+    const repeated = 'Expression value is never used'
+    draw({
+      report: report({
+        groups: [
+          group({
+            rule: 'external_roslyn:IDE0058',
+            name: null,
+            findings: [
+              finding({ key: '1', message: repeated, effort: null }),
+              finding({
+                key: '2',
+                message: repeated,
+                effort: null,
+                textRange: { startLine: 182, endLine: 182, startOffset: null, endOffset: null },
+              }),
+            ],
+          }),
+        ],
+      }),
+      rules: [],
+    })
+
+    // A rule Sonar will not name is titled by what its findings say, with the key
+    // beside it — so the sentence is readable without expanding anything.
+    const header = panel().getByRole('button', { name: new RegExp(repeated) })
+    expect(header).toHaveTextContent('external_roslyn:IDE0058')
+    await userEvent.click(header)
+
+    // Once in the whole panel, and not inside either row.
+    expect(panel().getAllByText(repeated)).toHaveLength(1)
+    const rows = within(panel().getByRole('list', { name: /occurrences/ })).getAllByRole('listitem')
+    expect(rows).toHaveLength(2)
+    for (const row of rows) expect(row).not.toHaveTextContent(repeated)
+    // Each row is still the place it was, and still links out.
+    expect(within(rows[0]).getByRole('button', { name: `${PATH}:233` })).toBeVisible()
+    expect(within(rows[1]).getByRole('button', { name: `${PATH}:182` })).toBeVisible()
+    expect(within(rows[0]).getByRole('link', { name: 'SonarCloud' })).toBeVisible()
+  })
+
+  it('keeps each message on its own row when the findings disagree', async () => {
+    draw({
+      report: report({
+        groups: [
+          group({
+            findings: [
+              finding({ key: '1', message: 'Method has 8 parameters' }),
+              finding({ key: '2', message: 'Method has 9 parameters' }),
+            ],
+          }),
+        ],
+      }),
+    })
+
+    await userEvent.click(panel().getByRole('button', { name: /Methods should not/ }))
+
+    const rows = within(panel().getByRole('list', { name: /occurrences/ })).getAllByRole('listitem')
+    expect(rows[0]).toHaveTextContent('Method has 8 parameters')
+    expect(rows[1]).toHaveTextContent('Method has 9 parameters')
+  })
+
   it('says so when Sonar has no description for the rule that fired', async () => {
     draw({ rules: [] })
 

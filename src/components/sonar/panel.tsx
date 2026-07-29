@@ -63,7 +63,15 @@ function Failed({ children }: { children: ReactNode }) {
  */
 function Chip({ children, tone }: { children: ReactNode; tone?: string }) {
   return (
-    <span className={cn('annotation ml-1.5 rounded-sm border-[1.5px] px-1', tone ?? 'border-ink-150')}>
+    <span
+      // `shrink-0` because every use of this is a flex item beside text that is
+      // allowed to give way: a chip that shrinks wraps "not in this diff" into
+      // four lines and takes the row's height with it.
+      className={cn(
+        'annotation ml-1.5 shrink-0 rounded-sm border-[1.5px] px-1',
+        tone ?? 'border-ink-150',
+      )}
+    >
       {children}
     </span>
   )
@@ -219,21 +227,75 @@ function GateSummary({ gate }: { gate: QualityGate }) {
 }
 
 /**
- * One occurrence.
+ * The one message a whole group shares, or `null` when its rows differ.
+ *
+ * Sonar's message is per-issue, but for a great many rules it is a constant: all
+ * four `external_roslyn:IDE0058` findings on one measured pull request read
+ * "Expression value is never used", and printing that sentence four times down a
+ * squeezed column spends the panel's width saying nothing. Said once, the
+ * occurrences get to be what they actually are — a list of places.
+ *
+ * Two or more, because a lone finding has nothing to share the message with:
+ * hoisting it would move one sentence up by one line and cost a branch.
+ */
+function sharedMessage(findings: readonly SonarFinding[]): string | null {
+  if (findings.length < 2) return null
+
+  const [first, ...rest] = findings
+
+  return rest.every((finding) => finding.message === first.message) ? first.message : null
+}
+
+/**
+ * `directory/name:line`, with the directory giving way and never the name.
+ *
+ * The rule the file list and the diff header already follow: the end of a
+ * 90-column path is the part that says which file this is. Worth stating because
+ * the row before this made the whole path `shrink-0` and the message beside it
+ * `flex-1 min-w-0` — so on a real ADO path (three directories, `.Tests` in the
+ * middle) the path took the row and the sentence wrapped one word per line.
+ */
+function Locator({ path, line }: { path: string; line: number | null }) {
+  const cut = path.lastIndexOf('/')
+
+  return (
+    <>
+      <span className="text-muted-foreground truncate">{path.slice(0, cut + 1)}</span>
+      <span className="shrink-0">
+        {path.slice(cut + 1)}
+        {line === null ? null : `:${line}`}
+      </span>
+    </>
+  )
+}
+
+/**
+ * One occurrence: where it is, and the two links out of it.
  *
  * Three shapes, because the data has three: a finding on a file this pull request
  * changed, which is a jump; a finding on a file it did not, which says so rather
  * than scrolling nowhere; and a finding with no file at all, which is a
  * project-level issue — none were sampled, but the contract allows `null` and a
  * panel that assumes a path crashes on the first one instead of skipping it.
+ *
+ * **The message is a line of its own, not a column.** Two facts of unrelated
+ * length — a path and an English sentence — cannot share a row without one of
+ * them being crushed, and which one loses is decided by whichever happens to be
+ * longer today. Stacked, the path gets the width it needs and the sentence gets
+ * the rest of the line; when the group hoists the message above the list, the
+ * line simply is not drawn and the row is the compact place-link it should have
+ * been all along.
  */
 function FindingRow({
   finding,
   changedPaths,
+  showMessage,
   onJump,
 }: {
   finding: SonarFinding
   changedPaths: ReadonlySet<string>
+  /** `false` when the group prints the message once above the list. */
+  showMessage: boolean
   onJump: (jump: SonarJump) => void
 }) {
   // A local binding, not `finding.path`, so the narrowing survives into the
@@ -246,39 +308,50 @@ function FindingRow({
   const label = path === null ? null : line === null ? path : `${path}:${line}`
 
   return (
-    <li className="border-border flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
-      {path === null || label === null ? (
-        <span className="text-muted-foreground shrink-0 text-xs">project-level</span>
-      ) : changedPaths.has(path) ? (
-        <button
-          type="button"
-          onClick={() => onJump({ path, line })}
-          className="shrink-0 font-mono text-xs underline underline-offset-4"
+    <li className="border-border border-b px-2 py-1 last:border-b-0">
+      {showMessage ? <p className="text-sm">{finding.message}</p> : null}
+      {/* Mono for the whole line: it is a path, a duration and a destination —
+          every one of them a figure rather than prose. */}
+      <div className="flex items-baseline gap-2 font-mono text-xs">
+        {path === null || label === null ? (
+          <span className="text-muted-foreground min-w-0 flex-1 font-sans">project-level</span>
+        ) : changedPaths.has(path) ? (
+          // `aria-label` and not the split text: the name is exactly `path:line`
+          // for a screen reader and for a test, and an accessible name assembled
+          // from two spans is at the mercy of where the accname algorithm decides
+          // to put a space. `rounded-sm` so the global focus ring traces sketch
+          // corners rather than boxing the filename.
+          <button
+            type="button"
+            onClick={() => onJump({ path, line })}
+            aria-label={label}
+            title={label}
+            className="flex min-w-0 flex-1 items-baseline rounded-sm text-left underline underline-offset-4"
+          >
+            <Locator path={path} line={line} />
+          </button>
+        ) : (
+          <span title={label} className="text-muted-foreground flex min-w-0 flex-1 items-baseline">
+            <Locator path={path} line={line} />
+            {/* Sonar analysed a path this pull request did not change, or the line
+                drifted after the last push (note 6). Either way there is no panel
+                to scroll to, and saying so beats a click that appears broken. */}
+            <Chip>not in this diff</Chip>
+          </span>
+        )}
+        {/* Sonar's own estimate, verbatim — nothing parses `"20min"`. */}
+        {finding.effort === null ? null : (
+          <span className="text-muted-foreground shrink-0">{finding.effort}</span>
+        )}
+        <a
+          href={finding.url}
+          target="_blank"
+          rel="noreferrer"
+          className="text-muted-foreground shrink-0 font-sans underline underline-offset-4"
         >
-          {label}
-        </button>
-      ) : (
-        <span className="text-muted-foreground shrink-0 font-mono text-xs">
-          {label}
-          {/* Sonar analysed a path this pull request did not change, or the line
-              drifted after the last push (note 6). Either way there is no panel
-              to scroll to, and saying so beats a click that appears broken. */}
-          <Chip>not in this diff</Chip>
-        </span>
-      )}
-      <span className="min-w-0 flex-1">{finding.message}</span>
-      {/* Sonar's own estimate, verbatim — nothing parses `"20min"`. */}
-      {finding.effort === null ? null : (
-        <span className="text-muted-foreground shrink-0 text-xs">{finding.effort}</span>
-      )}
-      <a
-        href={finding.url}
-        target="_blank"
-        rel="noreferrer"
-        className="text-muted-foreground shrink-0 text-xs underline underline-offset-4"
-      >
-        SonarCloud
-      </a>
+          SonarCloud
+        </a>
+      </div>
     </li>
   )
 }
@@ -305,12 +378,17 @@ function GroupRow({
 }) {
   const [open, setOpen] = useState(false)
 
+  const shared = sharedMessage(group.findings)
+
   // `name` is null for a rule Sonar's repository does not hold —
   // `external_roslyn:CA1861` was requested and simply not returned, because
-  // externally-imported analyser rules are not in it. The bare key is a worse
-  // title and a real one; hiding the group would hide findings the analyser
-  // actually reported.
-  const title = group.name ?? group.rule
+  // externally-imported analyser rules are not in it. Then the message every
+  // finding agrees on is the best title available: "Expression value is never
+  // used" is what `external_roslyn:IDE0058` means, and a reader who has to expand
+  // the group to learn that has been told the key twice and the fact once. The
+  // bare key stays as the last resort — hiding the group would hide findings the
+  // analyser actually reported.
+  const title = group.name ?? shared ?? group.rule
 
   return (
     <li className="border-border border-b last:border-b-0">
@@ -331,9 +409,9 @@ function GroupRow({
         )}
         <span className="min-w-0 flex-1">
           {title}
-          {/* Only when it is not already the title: a group whose name we do not
-              have would otherwise print the key twice. */}
-          {group.name === null ? null : (
+          {/* Only when it is not already the title: a group titled by its own key
+              would otherwise print the key twice. */}
+          {title === group.rule ? null : (
             <span className="text-muted-foreground font-mono text-xs"> {group.rule}</span>
           )}
         </span>
@@ -345,6 +423,12 @@ function GroupRow({
 
       {open ? (
         <div className="flex flex-col gap-3 px-2 pb-2">
+          {/* The message once, when every finding agrees on it and the header is
+              not already showing it. A named rule and its message are two
+              different sentences — "Methods should not have too many parameters"
+              against "Method has 8 parameters, which is greater than the 7
+              authorized" — and the second is the one with the number in it. */}
+          {shared === null || shared === title ? null : <p className="text-sm">{shared}</p>}
           {/* A sunken well, not a fourth outline. This list is already inside the
               open group, which is inside the panel's bordered list — one more box
               and the occurrences of a rule would be a box in a box in a box.
@@ -357,6 +441,7 @@ function GroupRow({
                 key={finding.key}
                 finding={finding}
                 changedPaths={changedPaths}
+                showMessage={shared === null}
                 onJump={onJump}
               />
             ))}
