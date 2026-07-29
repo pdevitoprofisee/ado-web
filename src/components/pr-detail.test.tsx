@@ -870,20 +870,29 @@ describe('PullRequestDetailView tabs', () => {
     expect(screen.getByRole('tab', { name: /Details/ })).toHaveAttribute('tabindex', '-1')
   })
 
-  it('marks the active tab with ink inside the tab itself', async () => {
+  it('draws the underline under the active tab rather than showing it', async () => {
     render(<PullRequestDetailView pr={detail({ files })} />)
 
     const inkIn = (name: RegExp) =>
       screen.getByRole('tab', { name }).querySelector('.prof-tab__ink')
 
-    // The stroke is a background image on this span, so what it looks like is
-    // `styles.css`'s and jsdom loads no stylesheet to check it. What belongs here
-    // is where the span lives: *inside* the button, which is the only reason the
-    // mark is the width of the label rather than of the strip.
-    expect(inkIn(/Details/)).not.toBeNull()
+    // `pathLength="1"` is the contract between this path and the `prof-tab-ink`
+    // keyframes: it normalises the curve to one unit, which is the only reason
+    // `stroke-dasharray: 1` and an offset of `1` in the stylesheet describe an
+    // undrawn stroke at any tab width. Drop it and the dash silently becomes a
+    // one-pixel tick on a 72-pixel line. Asserted here even though jsdom loads no
+    // stylesheet to run the animation itself, because this is the half of it that
+    // lives in the markup.
+    expect(inkIn(/Details/)?.querySelector('path')).toHaveAttribute('pathLength', '1')
 
-    // Exactly one, and the active tab's: it moves by being rendered somewhere
-    // else, so two marks at once would mean two tabs claiming to be current.
+    // The stroke's colour is deliberately not here: a `var()` in an SVG
+    // presentation attribute resolves to nothing in every browser, so it lives in
+    // `styles.css` where the theme rebinds it.
+    expect(inkIn(/Details/)?.querySelector('path')).not.toHaveAttribute('stroke')
+
+    // Exactly one, and the active tab's — the pen lifts and draws again under the
+    // new word rather than sliding across, so two marks at once would mean two
+    // tabs claiming to be current.
     await userEvent.click(screen.getByRole('tab', { name: /Combined/ }))
     expect(inkIn(/Details/)).toBeNull()
     expect(inkIn(/Combined/)).not.toBeNull()

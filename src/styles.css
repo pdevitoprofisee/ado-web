@@ -710,31 +710,62 @@
     font: var(--weight-medium) var(--text-2xs) / 1 var(--font-mono);
     color: var(--text-secondary);
   }
-  /* The stroke is `--stroke-underline-teal` stretched to the label's width — a
-     `<span>` and a background image, which is how Prof marks the active tab and
-     is what this went back to.
+  /* Positioning only. The stroke itself used to be the `--stroke-underline-teal`
+     data URI as a background, which arrives all at once — there is no way to draw
+     half of a background image. It is an inline `<svg>` in `TabStrip` instead, so
+     the same curve can be paid out along its own length, left to right, the way
+     the pen would have put it there. Same `d`, same 160×8 box.
 
-     It was briefly drawn instead: an inline `<svg>` whose curve was paid out
-     left to right, first by framer-motion writing `pathLength` per frame and
-     then by CSS keyframes. Both animate on the main thread, and on the diff tabs
-     this mark appears in the same moment `ChangedFiles` mounts, so the stroke
-     showed about three frames and jumped. A compositor version — two cancelling
-     transforms — was smooth through that, but two elements and four keyframes
-     for an 8px mark is not what this is worth. Shown, not drawn.
-
-     A `<span>` and not an `<svg>`: `left: 0; right: 0` is what sizes this, and
-     it only means the label's width because a span is not a replaced element. An
-     `<svg>` there is over-constrained, so CSS drops `right` and takes the width
-     from the viewBox ratio instead — 160px under every tab however short its
-     label. The background is `100%` wide for the same reason the drawing had
-     `preserveAspectRatio='none'`: a 5-character tab is not a 22-character one. */
+     `width` is explicit and `right` is unused, and that is not a style choice —
+     it is the one mistake this rule has already made once. An `<svg>` is a
+     replaced element: with `width` left at `auto`, `left: 0; right: 0` is
+     over-constrained, so CSS drops `right` and takes the width from the
+     intrinsic ratio instead — the viewBox's 160:8 against `height: 8px`, which
+     is 160px under every tab no matter how short its label. `width: 100%` is the
+     one form that actually asks for the label's width. The `<span>` this
+     replaced could use `right: 0`, because a span is not replaced. */
   .prof-tab__ink {
     position: absolute;
     left: 0;
-    right: 0;
     bottom: 0;
+    width: 100%;
     height: 8px;
-    background: var(--stroke-underline-teal) bottom left / 100% 8px no-repeat;
+  }
+  /* The colour is here and not on the element because a presentation attribute
+     cannot hold a `var()`, in any browser.
+
+     The dash is the pen. `pathLength="1"` on the path — set in `TabInk` — makes
+     the curve one unit long whatever its pixel width, so `stroke-dasharray: 1`
+     means `1 1`: a dash exactly as long as the stroke, then a gap exactly as
+     long again. Offset that pattern by a whole unit and the dash sits off the
+     start of the curve with only gap over it, which is a stroke that has not
+     been drawn yet; slide the offset to 0 and the dash travels in from the left,
+     nib first. No measuring, and no JavaScript per frame.
+
+     `--duration-slow` rather than `--duration-base`: this is the page's one
+     gesture you are meant to watch happen, and 200ms is over before the eye
+     arrives. `--ease-settle` does the rest — off the first letter fast,
+     decelerating into the last, the way a hand underlines a word. */
+  .prof-tab__ink path {
+    stroke: var(--teal-500);
+    stroke-dasharray: 1;
+    animation: prof-tab-ink var(--duration-slow) var(--ease-settle) forwards;
+  }
+  @keyframes prof-tab-ink {
+    from {
+      stroke-dashoffset: 1;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  /* Drawn already, rather than drawn instantly: with no animation to set it,
+     `stroke-dashoffset` is its own initial `0`, which is the finished stroke.
+     The mark still says which tab is active — it just was not paid out. */
+  @media (prefers-reduced-motion: reduce) {
+    .prof-tab__ink path {
+      animation: none;
+    }
   }
 
   /* ---------- Avatar ----------

@@ -730,10 +730,65 @@ function TabStrip({
           {/* Inside the button so it tracks the label's width, and `aria-hidden`
               because the tab already says which one it is through
               `aria-selected`. */}
-          {tab === id ? <span className="prof-tab__ink" aria-hidden /> : null}
+          {tab === id ? <TabInk /> : null}
         </button>
       ))}
     </div>
+  )
+}
+
+/**
+ * The stroke under the active tab, drawn rather than shown.
+ *
+ * A dash paid out along the curve is the whole trick: the round cap is a pen nib
+ * travelling left to right and the ink behind it is already the finished stroke.
+ * Growing a width or a `scaleX` would stretch the *drawing* instead — the whole
+ * line visible from the first frame — which is a rubber band, not a hand.
+ *
+ * `pathLength={1}` is what lets the stylesheet own the animation, and it is the
+ * one attribute here that is load-bearing. It tells the browser to treat the
+ * curve as exactly one unit long however many pixels wide the label is, so the
+ * dash and its offset are fractions that CSS can write without ever measuring
+ * the path. `prof-tab-ink` in `styles.css` slides the offset; there is no
+ * per-frame JavaScript, and no hook needed to ask about reduced motion.
+ *
+ * `preserveAspectRatio` and the explicit `width` in `styles.css` go together:
+ * this is a replaced element, so it has to be *told* the label's width or it
+ * takes 160px from the viewBox ratio, and it has to be told not to letterbox the
+ * curve inside whatever width that is.
+ *
+ * Rendered only inside the active tab, so switching tabs unmounts it and mounts a
+ * new one: the pen lifts and draws again under the new label rather than sliding
+ * across the gap, and a fresh element is also what restarts the animation.
+ *
+ * The `d` and the 160×8 box are `--stroke-underline-teal`'s, so light and dark
+ * still meet at the same curve; `--teal-500` is the one thing that differs
+ * between them and CSS already answers that.
+ */
+function TabInk() {
+  return (
+    <svg
+      className="prof-tab__ink"
+      viewBox="0 0 160 8"
+      // The stroke is set as wide as the label, whatever the label is, and a
+      // 5-character tab is not a 22-character one. Prof's own underline is a
+      // stretched background image for the same reason.
+      preserveAspectRatio="none"
+      aria-hidden
+    >
+      <path
+        d="M3 5.5 C 40 3.2, 95 3.0, 157 4.6"
+        fill="none"
+        pathLength={1}
+        // The colour is in `styles.css`, not a `stroke=` here, because a `var()`
+        // in an SVG presentation attribute is not resolved by any browser — and
+        // an unresolvable `stroke` is `none`, so the first cut of this drew a
+        // perfect invisible line. The stylesheet is where `--teal-500` can be
+        // read anyway, and it is where the theme rebinds it.
+        strokeWidth={2.2}
+        strokeLinecap="round"
+      />
+    </svg>
   )
 }
 
