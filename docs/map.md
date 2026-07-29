@@ -160,6 +160,12 @@ rewrite. Evidence in [`docs/research/`](./research/).
 5. **ADO caps Sonar PR comments at 50.** Read findings from the Sonar API.
 6. **Sonar's line numbers can drift** from the diff if the PR was pushed to after
    analysis. Anchor defensively; don't assume a line exists.
+7. **The 30-second thread poll silently erases anything in the diff that is not a
+   `RowModel` input.** `changed-file.tsx` rebuilds the whole model from its inputs
+   whenever threads arrive, so a composer — or any other transient row — held in
+   component state vanishes mid-sentence, with no error and nothing in the console to
+   look at. Every such thing is an input with a transition beside `setThreads`
+   (T-037's `composer` / `setComposer`), never local state.
 
 ### Structural facts about the ADO API
 

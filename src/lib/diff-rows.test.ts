@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import { diffFile } from './diff'
-import { buildRows, expandGap, setHideDone, setLayout, setThreads } from './diff-rows'
-import type { FileThreads, Thread } from './comment-contract'
+import { buildRows, expandGap, setComposer, setHideDone, setLayout, setThreads } from './diff-rows'
+import type { FileThreads, Thread, ThreadContext } from './comment-contract'
 import type { DiffLine, DiffRow } from './diff-contract'
 
 // A hundred numbered lines with two inserted near the top and one line rewritten
@@ -416,5 +416,170 @@ describe('setThreads', () => {
     expect(under(withThreads.rows, '!7')).toBe('20/20')
     // And the same thread row survives the next poll unchanged.
     expect(setThreads(withThreads, withThreads.threads)).toBe(withThreads)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The composer row (T-037).
+// ---------------------------------------------------------------------------
+
+/** A right-side anchor on one whole line, which is all the gutter button offers. */
+const onLine = (line: number, filePath = '/src/app.ts'): ThreadContext => ({
+  filePath,
+  rightStart: { line, offset: 1 },
+  rightEnd: { line, offset: 1 },
+  leftStart: null,
+  leftEnd: null,
+})
+
+describe('setComposer', () => {
+  it('puts one composer row under the line it is about, in either layout', () => {
+    for (const layout of ['unified', 'split'] as const) {
+      const model = setComposer(buildRows(DIFF, AFTER, layout), onLine(20))
+
+      expect(under(model.rows, '+20')).toBe('20/20')
+      expect(model.rows.filter((row) => row.kind === 'composer')).toEqual([
+        { kind: 'composer', key: '+20', context: onLine(20), line: 20 },
+      ])
+      // The anchor is on the model too, because that is what survives a poll.
+      expect(model.composer).toEqual(onLine(20))
+    }
+  })
+
+  it('is never in the rows until somebody asks for it', () => {
+    const plain = buildRows(DIFF, AFTER, 'unified', fileThreads({ 20: [thread(7)] }))
+
+    expect(plain.composer).toBeNull()
+    expect(plain.rows.filter((row) => row.kind === 'composer')).toEqual([])
+    // The whole array back, not a copy, for the file nobody is writing on.
+    expect(setComposer(plain, null)).toBe(plain)
+  })
+
+  it('keys the row on its line, so it cannot collide with the thread that replaces it', () => {
+    // `+20` and `!7` share no namespace with each other or with the hunk, gap and
+    // line keys. Posting the draft swaps one for the other rather than reusing a
+    // key the virtualizer has already measured at a different height.
+    const model = setComposer(buildRows(DIFF, AFTER, 'unified', fileThreads({ 20: [thread(7)] })), onLine(20))
+
+    expect(new Set(keys(model.rows)).size).toBe(model.rows.length)
+    expect(keys(model.rows).filter((key) => key === '+20' || key === '!7')).toEqual(['!7', '+20'])
+  })
+
+  it('sits under the conversation already on that line, not above it', () => {
+    // The thread reads first and the draft arrives at the bottom of it, the way a
+    // new message would.
+    const model = setComposer(
+      buildRows(DIFF, AFTER, 'unified', fileThreads({ 20: [thread(7), thread(9)] })),
+      onLine(20),
+    )
+
+    expect(under(model.rows, '+20')).toBe('!7')
+  })
+
+  it('leaves the threads below it exactly where they were', () => {
+    // The composer's line is walked by the same forward cursor the threads are, so
+    // opening one on line 20 must not strand the thread on line 24.
+    const threads = fileThreads({ 20: [thread(7)], 24: [thread(9)] })
+    const model = setComposer(buildRows(DIFF, AFTER, 'unified', threads), onLine(20))
+
+    expect(model.rows.filter((row) => row.kind === 'thread').map((row) => row.key)).toEqual(['!7', '!9'])
+    expect(under(model.rows, '!9')).toBe('22/24')
+  })
+
+  it('opens on a line no thread has ever been on', () => {
+    // The line cursor reaches an anchor by walking `byRightLine`; a draft on a line
+    // with no conversation on it is not in that map at all.
+    const model = setComposer(buildRows(DIFF, AFTER, 'unified'), onLine(21))
+
+    expect(under(model.rows, '+21')).toBe('-/21')
+  })
+
+  it('holds one at a time, and moving it takes the old one away', () => {
+    // One field on the model, so "one composer at a time" falls out of the shape
+    // rather than out of a rule somebody has to remember.
+    const model = setComposer(setComposer(buildRows(DIFF, AFTER, 'unified'), onLine(20)), onLine(21))
+
+    expect(model.rows.filter((row) => row.kind === 'composer').map((row) => row.key)).toEqual(['+21'])
+  })
+
+  it('rebuilds nothing when the same line is asked for twice', () => {
+    // The button builds an equal-but-new context each press, so identity is decided
+    // on the anchor. Re-projecting 5,000 rows for a press that changed nothing is
+    // work with nothing on the other side of it.
+    const open = setComposer(buildRows(DIFF, AFTER, 'unified'), onLine(20))
+
+    expect(setComposer(open, onLine(20))).toBe(open)
+    expect(setComposer(open, onLine(20, '/other.ts'))).toBe(open)
+  })
+
+  it('closes on null and leaves the file exactly as it found it', () => {
+    const plain = buildRows(DIFF, AFTER, 'unified', fileThreads({ 20: [thread(7)] }))
+    const closed = setComposer(setComposer(plain, onLine(20)), null)
+
+    expect(closed.composer).toBeNull()
+    expect(closed.rows).toEqual(plain.rows)
+  })
+
+  it('refuses a context with no right-side line rather than anchoring it to nothing', () => {
+    // This is the file-level draft's shape, and it has a home above the diff — see
+    // `FileThreadList`. It is also the one shape that could put a thread on line 0,
+    // which ADO answers 200 to and then files nowhere.
+    const plain = buildRows(DIFF, AFTER, 'unified')
+    const refused = setComposer(plain, {
+      filePath: '/src/app.ts',
+      rightStart: null,
+      rightEnd: null,
+      leftStart: { line: 50, offset: 1 },
+      leftEnd: { line: 50, offset: 1 },
+    })
+
+    expect(refused).toBe(plain)
+    expect(refused.composer).toBeNull()
+  })
+
+  it('survives the poll that rebuilds the rows under it', () => {
+    // The reason the composer is a model input at all: the rows are rebuilt from
+    // their inputs every time the thirty-second poll answers, and a draft outside
+    // those inputs is erased by the next tick with somebody's paragraph in it.
+    const open = setComposer(buildRows(DIFF, AFTER, 'unified'), onLine(20))
+    const polled = setThreads(open, fileThreads({ 20: [thread(7)] }))
+
+    expect(polled.composer).toEqual(onLine(20))
+    expect(under(polled.rows, '+20')).toBe('!7')
+  })
+
+  it('survives a layout switch, a hide-done toggle and an expansion', () => {
+    const open = setComposer(buildRows(DIFF, AFTER, 'unified', fileThreads({ 20: [thread(7)] })), onLine(20))
+    const moved = expandGap(setHideDone(setLayout(open, 'split'), true), '~24,26', 'top', 5)
+
+    expect(moved.composer).toEqual(onLine(20))
+    expect(under(moved.rows, '+20')).toBe('!7')
+  })
+
+  it('is closed by new bytes for the file, because the line may not be the same line', () => {
+    // `buildRows` takes no composer: a fresh iteration renumbers the file, and a
+    // draft still hanging on old line 20 would be a comment about whatever is
+    // there now.
+    expect(buildRows(DIFF, AFTER, 'unified').composer).toBeNull()
+  })
+
+  it('follows its line out of a gap when the gap is opened', () => {
+    // Same rule the thread rows follow, and for the same reason: the key is the
+    // line, so the row moves rather than one unmounting and another appearing —
+    // which for a composer would mean the draft in it disappearing.
+    const open = setComposer(buildRows(DIFF, AFTER, 'unified'), onLine(5))
+
+    expect(under(open.rows, '+5')).toBe('~1,1')
+    expect(under(expandGap(open, '~1,1', 'all').rows, '+5')).toBe('5/5')
+  })
+
+  it('has nowhere to go on a file with no rows', () => {
+    // A binary file, or one the diff gave up on. `FileThreadList` is the composer
+    // that still works there.
+    const unchanged = setComposer(buildRows(diffFile(BEFORE, BEFORE), BEFORE, 'unified'), onLine(20))
+
+    expect(unchanged.rows).toEqual([])
+    // The anchor is still recorded, so nothing silently disagrees about state.
+    expect(unchanged.composer).toEqual(onLine(20))
   })
 })

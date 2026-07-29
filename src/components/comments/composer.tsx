@@ -36,6 +36,7 @@ export function Composer({
   submitLabel = 'Comment',
   placeholder = 'Leave a comment',
   autoFocus = false,
+  onDraftChange,
 }: {
   /** Names the textarea; there is more than one composer on a page. */
   label: string
@@ -51,6 +52,16 @@ export function Composer({
   submitLabel?: string
   placeholder?: string
   autoFocus?: boolean
+  /**
+   * Told each character, so a caller can keep the draft when this unmounts.
+   *
+   * Only one caller needs it: the composer in the diff is a virtualized row, so it
+   * is unmounted both when it is closed and — with nobody deciding anything — when
+   * it scrolls out of the overscan window. Every other call site outlives its own
+   * draft and passes nothing. The text stays owned here either way; this reports
+   * it, and `initial` is how it comes back.
+   */
+  onDraftChange?: (content: string) => void
 }) {
   const [text, setText] = useState(initial)
   const [pane, setPane] = useState<Pane>('write')
@@ -61,13 +72,20 @@ export function Composer({
   // submitted blank would be a comment with no body and no way to fix it.
   const empty = text.trim() === ''
 
+  // Every write to `text` goes through here, so a caller keeping the draft is never
+  // told a stale version of it — including the clear after a successful post.
+  function change(next: string) {
+    setText(next)
+    onDraftChange?.(next)
+  }
+
   async function submit() {
     if (empty || busy) return
     setBusy(true)
     setError(null)
     try {
       await onSubmit(text)
-      setText('')
+      change('')
       setPane('write')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Azure DevOps did not take that comment.')
@@ -138,7 +156,7 @@ export function Composer({
           placeholder={placeholder}
           autoFocus={autoFocus}
           rows={4}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => change(event.target.value)}
           onKeyDown={onKeyDown}
           // No `ring-*` and no `focus-visible:border-*`: styles.css draws focus
           // once, globally, as a teal box-shadow with a paper gap inside it, and a

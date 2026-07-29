@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DiffView, blobNotice } from './diff-view'
 
-import type { Comment, Thread } from '@/lib/comment-contract'
+import type { Comment, Thread, ThreadContext } from '@/lib/comment-contract'
 import type { BlobSide, DiffLine, DiffRow, FileBlobs } from '@/lib/diff-contract'
 
 // jsdom lays nothing out and has no ResizeObserver, so a virtualizer left to
@@ -313,6 +313,244 @@ describe('a thread row', () => {
 
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Starting a thread on a line (T-037).
+// ---------------------------------------------------------------------------
+
+/** The anchor `ChangedFileDiff` builds: right-side, one-based, the whole line. */
+const anchor = (line: number): ThreadContext => ({
+  filePath: '/src/app.ts',
+  rightStart: { line, offset: 1 },
+  rightEnd: { line, offset: 1 },
+  leftStart: null,
+  leftEnd: null,
+})
+
+/** `ROWS` with a composer under the add, which is new line 2. */
+const withComposer = (): readonly DiffRow[] => [
+  ...ROWS.slice(0, 4),
+  { kind: 'composer', key: '+2', context: anchor(2), line: 2 },
+  ...ROWS.slice(4),
+]
+
+const ITERATIONS = { firstComparingIteration: 2, secondComparingIteration: 3, changeTrackingId: 41 }
+
+describe('the button that starts a thread on a line', () => {
+  it('is on every row with a right-side line, and names which line', () => {
+    render(
+      <DiffView rows={ROWS} layout="unified" label="/src/app.ts" onCompose={vi.fn()} />,
+    )
+
+    // Named rather than "Comment", because "Comment" repeated down a tab order
+    // says nothing about where you are.
+    expect(screen.getByRole('button', { name: 'Comment on line 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Comment on line 2' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^Comment on line/ })).toHaveLength(2)
+  })
+
+  it('is absent from a deleted line, rather than posting a wrong anchor', () => {
+    // A delete has no line in the file as it now stands; ADO would need a
+    // left-side anchor, and this codebase puts left-side threads in `unanchored`.
+    // Nothing to press is the clear refusal.
+    const { container } = render(
+      <DiffView rows={ROWS} layout="unified" label="/src/app.ts" onCompose={vi.fn()} />,
+    )
+
+    const deleted = container.querySelector('.diff-delete')
+    expect(deleted).toHaveTextContent('was here')
+    expect(deleted?.querySelector('button')).toBeNull()
+  })
+
+  it('is absent altogether on a diff that cannot post', () => {
+    render(<DiffView rows={ROWS} layout="unified" label="/src/app.ts" />)
+
+    expect(screen.queryByRole('button', { name: /Comment on line/ })).not.toBeInTheDocument()
+  })
+
+  it('reports the line it was pressed on, in either layout', async () => {
+    for (const layout of ['unified', 'split'] as const) {
+      const onCompose = vi.fn()
+      const { unmount } = render(
+        <DiffView rows={ROWS} layout={layout} label="/src/app.ts" onCompose={onCompose} />,
+      )
+
+      await userEvent.click(screen.getByRole('button', { name: 'Comment on line 2' }))
+      expect(onCompose).toHaveBeenCalledWith(2)
+      unmount()
+    }
+  })
+})
+
+describe('a composer row', () => {
+  it('offers a box named for the line it hangs under', () => {
+    render(
+      <DiffView
+        rows={withComposer()}
+        layout="unified"
+        label="/src/app.ts"
+        onCompose={vi.fn()}
+        threadActions={{ viewerId: null, onNewThread: vi.fn() }}
+      />,
+    )
+
+    expect(screen.getByRole('textbox', { name: 'New comment on line 2' })).toBeInTheDocument()
+  })
+
+  it('joins the thread row as a row the virtualizer measures', () => {
+    // "Only thread rows are measured" is now "only these two are". A composer given
+    // a fixed height would measure its estimate straight back and never converge,
+    // and one measured without `data-index` files the measurement under the wrong
+    // row.
+    const rows: readonly DiffRow[] = [
+      ...ROWS.slice(0, 2),
+      { kind: 'thread', key: '!7', threads: [thread(7, 'open', [comment(1, 'Prose.')])], line: 1 },
+      ...ROWS.slice(2, 4),
+      { kind: 'composer', key: '+2', context: anchor(2), line: 2 },
+      ...ROWS.slice(4),
+    ]
+    const { container } = render(
+      <DiffView
+        rows={rows}
+        layout="unified"
+        label="/src/app.ts"
+        onCompose={vi.fn()}
+        threadActions={{ viewerId: null, onNewThread: vi.fn() }}
+      />,
+    )
+
+    const rendered = [...container.querySelectorAll('[style*="translateY"]')]
+    const measured = rendered.filter((element) => element.hasAttribute('data-index'))
+
+    expect(rendered.length).toBe(rows.length)
+    expect(measured).toHaveLength(2)
+    for (const element of measured) expect((element as HTMLElement).style.height).toBe('')
+    for (const element of rendered.filter((one) => !one.hasAttribute('data-index'))) {
+      expect((element as HTMLElement).style.height).toBe('20px')
+    }
+  })
+
+  it('posts the anchor the row was given, and then closes', async () => {
+    const onNewThread = vi.fn().mockResolvedValue(undefined)
+    const onCompose = vi.fn()
+    render(
+      <DiffView
+        rows={withComposer()}
+        layout="unified"
+        label="/src/app.ts"
+        onCompose={onCompose}
+        iterationContext={ITERATIONS}
+        threadActions={{ viewerId: null, onNewThread }}
+      />,
+    )
+
+    await userEvent.type(
+      screen.getByRole('textbox', { name: 'New comment on line 2' }),
+      'This allocates on every keystroke.',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Comment' }))
+
+    // The context whole and unexamined, the iterations the caller is looking at,
+    // and `active` — the only status a thread somebody just opened can have.
+    expect(onNewThread).toHaveBeenCalledWith({
+      content: 'This allocates on every keystroke.',
+      context: anchor(2),
+      iterationContext: ITERATIONS,
+      status: 'active',
+    })
+    // Closed by the same call that opens it, with `null` for the line. The thread
+    // itself arrives as a thread row on the next poll.
+    expect(onCompose).toHaveBeenCalledWith(null)
+  })
+
+  it('renders nothing at all when there is nowhere to post it', () => {
+    // The row model only gains a composer because something called `onCompose`, so
+    // this is a caller handing a read-only view a row it made up.
+    render(<DiffView rows={withComposer()} layout="unified" label="/src/app.ts" />)
+
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+
+  it('closes on Escape and gives the draft back when the row returns', async () => {
+    // Two things unmount this box: closing it, and scrolling it out of the
+    // virtualizer's overscan window — which is not a decision anybody made. Losing
+    // a paragraph to either is the worst outcome available here.
+    const onCompose = vi.fn()
+    const view = (rows: readonly DiffRow[]) => (
+      <DiffView
+        rows={rows}
+        layout="unified"
+        label="/src/app.ts"
+        onCompose={onCompose}
+        threadActions={{ viewerId: null, onNewThread: vi.fn() }}
+      />
+    )
+    const { rerender } = render(view(withComposer()))
+
+    await userEvent.type(
+      screen.getByRole('textbox', { name: 'New comment on line 2' }),
+      'half a thought',
+    )
+    await userEvent.keyboard('{Escape}')
+    expect(onCompose).toHaveBeenCalledWith(null)
+
+    // The row goes away, as it would once the model closed the composer, and comes
+    // back when the same line is pressed again.
+    rerender(view(ROWS))
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+
+    rerender(view(withComposer()))
+    expect(screen.getByRole('textbox', { name: 'New comment on line 2' })).toHaveValue(
+      'half a thought',
+    )
+  })
+
+  it('starts a different line empty rather than inheriting the last one', async () => {
+    // Inheriting would be worse than losing it: the text reads as a comment about
+    // the line you are now looking at.
+    const view = (rows: readonly DiffRow[]) => (
+      <DiffView
+        rows={rows}
+        layout="unified"
+        label="/src/app.ts"
+        onCompose={vi.fn()}
+        threadActions={{ viewerId: null, onNewThread: vi.fn() }}
+      />
+    )
+    const { rerender } = render(view(withComposer()))
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'New comment on line 2' }), 'about two')
+    rerender(
+      view([
+        ...ROWS.slice(0, 2),
+        { kind: 'composer', key: '+1', context: anchor(1), line: 1 },
+        ...ROWS.slice(2),
+      ]),
+    )
+
+    expect(screen.getByRole('textbox', { name: 'New comment on line 1' })).toHaveValue('')
+  })
+
+  it('forgets the draft once it has been posted', async () => {
+    const view = (rows: readonly DiffRow[]) => (
+      <DiffView
+        rows={rows}
+        layout="unified"
+        label="/src/app.ts"
+        onCompose={vi.fn()}
+        threadActions={{ viewerId: null, onNewThread: vi.fn().mockResolvedValue(undefined) }}
+      />
+    )
+    const { rerender } = render(view(withComposer()))
+
+    await userEvent.type(screen.getByRole('textbox', { name: 'New comment on line 2' }), 'said it')
+    await userEvent.click(screen.getByRole('button', { name: 'Comment' }))
+
+    rerender(view(ROWS))
+    rerender(view(withComposer()))
+    expect(screen.getByRole('textbox', { name: 'New comment on line 2' })).toHaveValue('')
   })
 })
 

@@ -5,7 +5,14 @@ import { FileDiffPanel } from './file-diff'
 import { changeKind } from './file-tree'
 import { fileBlobsOptions } from '@/lib/blob-query'
 import { diffFile } from '@/lib/diff'
-import { buildRows, expandGap, setHideDone, setLayout, setThreads } from '@/lib/diff-rows'
+import {
+  buildRows,
+  expandGap,
+  setComposer,
+  setHideDone,
+  setLayout,
+  setThreads,
+} from '@/lib/diff-rows'
 import { fileAnchor } from '@/lib/file-anchor'
 import { sharedHighlighter } from '@/lib/highlight/shared'
 import { useNearViewport } from '@/lib/near-viewport'
@@ -212,6 +219,37 @@ export function ChangedFileDiff({
         after={tokens.after}
         onExpand={(row) =>
           setModel((current) => (current === null ? current : expandGap(current, row.key, 'all')))
+        }
+        // The anchor is built here and only here: this is the lowest thing in the
+        // tree that knows both the file's path and that the number it was handed is
+        // a right-side line. `offset: 1` on both ends — the whole line from its
+        // first column — because a gutter button offers no way to mean less than
+        // that, and `rightEnd` is set rather than left to the server's
+        // `rightEnd ?? rightStart` fallback so the anchor says what it means.
+        //
+        // Withheld entirely on a page that cannot post, which is what takes the
+        // compose buttons off every row: a diff with no `onNewThread` would
+        // otherwise offer 5,000 invitations to write something that goes nowhere.
+        onCompose={
+          threadActions?.onNewThread === undefined
+            ? undefined
+            : (line) =>
+                setModel((current) =>
+                  current === null
+                    ? current
+                    : setComposer(
+                        current,
+                        line === null
+                          ? null
+                          : {
+                              filePath: file.path,
+                              rightStart: { line, offset: 1 },
+                              rightEnd: { line, offset: 1 },
+                              leftStart: null,
+                              leftEnd: null,
+                            },
+                      ),
+                )
         }
         // The same two the rows were built from. The panel does not filter — it
         // renders the rows it is given and puts the unplaceable threads above

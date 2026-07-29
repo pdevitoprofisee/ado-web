@@ -1,13 +1,15 @@
 import { useMemo, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { UnfoldMoreIcon } from '@hugeicons/core-free-icons'
+import { CommentAdd01Icon, UnfoldMoreIcon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 
 import { LineText } from './line-text'
+import { Composer } from '@/components/comments/composer'
 import { ThreadCard } from '@/components/comments/thread-card'
-import { THREAD_ROW_ESTIMATE } from '@/lib/comment-contract'
+import { COMPOSER_ROW_ESTIMATE, THREAD_ROW_ESTIMATE } from '@/lib/comment-contract'
 import { cn } from '@/lib/utils'
 
+import type { ReactNode } from 'react'
 import type {
   DiffLayout,
   DiffLine,
@@ -16,6 +18,7 @@ import type {
   HighlightToken,
   HighlightedLines,
 } from '@/lib/diff-contract'
+import type { IterationContext } from '@/lib/comment-contract'
 import type { ThreadActions } from '@/components/comments/thread-actions'
 
 // The diff, on screen. Everything above it — fetching, diffing, flattening,
@@ -41,9 +44,26 @@ import type { ThreadActions } from '@/components/comments/thread-actions'
  * kind — 12 anchored threads across four whole pull requests — so the sentence
  * above stays true of every row that is actually numerous.
  *
+ * T-037 added the second, for the same reason and with a harder bound on how many
+ * there can be: a composer is prose being typed, and `RowModel.composer` holds one
+ * anchor, so there is at most one of these in the file. See `measured`.
+ *
  * Keep in step with `leading-5` on the row.
  */
 const ROW_HEIGHT = 20
+
+/**
+ * Whether the virtualizer is allowed to read this row's real height.
+ *
+ * One predicate rather than the same two-arm test written at each of the four
+ * places that need it — the estimate, `data-index`, the `ref`, and the row's own
+ * class and style — because those four have to agree. A row measured without
+ * `data-index` has its measurement filed under the wrong index, and a row given a
+ * fixed `height` measures its estimate straight back and never converges.
+ */
+function measured(row: DiffRow): boolean {
+  return row.kind === 'thread' || row.kind === 'composer'
+}
 
 const MARK: Record<DiffLine['op'], string> = { context: ' ', add: '+', delete: '-' }
 
@@ -182,6 +202,56 @@ function Gutter({ line, className }: { line: number | null; className?: string }
   )
 }
 
+/**
+ * "Start a thread on this line", over the left edge of the new-side gutter.
+ *
+ * A button on the row rather than a keyboard shortcut in the registry, because the
+ * registry's commands act on a selection and the diff has no line cursor for one
+ * to act on — there is nothing for `c` to mean until the pointer or the tab order
+ * has said which line.
+ *
+ * Hidden until the row is hovered or the button itself is focused, and hidden with
+ * `opacity` rather than by not rendering it: it stays in the tab order, so the
+ * whole affordance is reachable without a pointer, and the row's geometry never
+ * moves — 5,000 rows that reflow on hover is the one thing this component cannot
+ * afford. Absolutely positioned for the same reason: a flex child here would push
+ * every line of code 16px to the right.
+ *
+ * Deliberately absent from a row with no right-side line. A delete has no line in
+ * the file as it now stands, ADO would need a left-side anchor for it, and this
+ * codebase puts left-side threads in `unanchored` — so no button is the clear
+ * refusal, rather than a button that posts a wrong anchor.
+ */
+function ComposeButton({
+  line,
+  className,
+  onCompose,
+}: {
+  line: number
+  /** Where the new-side gutter starts: the row in unified, the right `Cell` in split. */
+  className?: string
+  onCompose: (line: number) => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onCompose(line)}
+      // Names the line, because "Comment" repeated 5,000 times down a tab order
+      // says nothing about where you are.
+      aria-label={`Comment on line ${line}`}
+      title={`Comment on line ${line}`}
+      className={cn(
+        // The teal wash the app uses for "this is what you are about to press",
+        // opaque so it reads against whichever of the three row tints is under it.
+        'bg-accent text-ink absolute top-0 flex size-4 items-center justify-center rounded-sm opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+        className,
+      )}
+    >
+      <HugeiconsIcon icon={CommentAdd01Icon} size={12} aria-hidden />
+    </button>
+  )
+}
+
 /** One side of one line: number, marker, text. The unit both layouts are built from. */
 function Cell({
   line,
@@ -189,6 +259,7 @@ function Cell({
   tokens,
   className,
   width,
+  compose,
 }: {
   line: DiffLine | null
   /** Which of the line's two numbers this column shows. */
@@ -202,12 +273,21 @@ function Cell({
    * its two halves grow to fill it evenly.
    */
   width?: string
+  /**
+   * A `ComposeButton` for this column, or nothing. Passed in rather than decided
+   * here because only the right-hand column of a row with a new-side line has one,
+   * and `Cell` is not told which of the two columns it is.
+   */
+  compose?: ReactNode
 }) {
   return (
     <span
       style={width === undefined ? undefined : { flexBasis: width }}
       className={cn(
         'flex min-w-0 flex-1 items-baseline',
+        // Only so `compose` has something to be positioned against. Harmless on
+        // the cells that have none.
+        'relative',
         line === null
           ? // Not a gap and not a zero-height row: side-by-side needs a blank
             // of the same height opposite an unmatched line, or the two columns
@@ -238,8 +318,29 @@ function Cell({
       <span className="whitespace-pre">
         {line === null ? '' : <LineText text={line.text} tokens={tokens} edits={line.edits} />}
       </span>
+      {compose}
     </span>
   )
+}
+
+/**
+ * Everything the composer row needs that is not on the row itself, in one prop.
+ *
+ * Bundled because `Row` already takes seven and four more would make the composer
+ * the biggest thing in a signature it is one arm of. Its absence is also the
+ * switch: no bundle, no draft can be written, which is what a `DiffView` with no
+ * `onCompose` means.
+ */
+interface Composing {
+  /** Which iterations the new thread is written against. */
+  iterationContext: IterationContext | null
+  /** What was in the box last time it was open on this line. See `DiffView`. */
+  draft: string
+  onDraft: (text: string) => void
+  /** Close and keep the draft — Cancel, and Escape. */
+  onCancel: () => void
+  /** Close and forget it: the thread exists now, and the poll will bring it back. */
+  onPosted: () => void
 }
 
 function Row({
@@ -250,6 +351,8 @@ function Row({
   after,
   onExpand,
   threadActions,
+  onCompose,
+  composing,
 }: {
   row: DiffRow
   layout: DiffLayout
@@ -259,12 +362,53 @@ function Row({
   after: HighlightedLines | null
   onExpand?: (row: Extract<DiffRow, { kind: 'gap' }>) => void
   threadActions?: ThreadActions
+  /** Open a composer on a right-side line. Absent renders no compose buttons. */
+  onCompose?: (line: number) => void
+  composing?: Composing
 }) {
   // One row spanning both columns in side-by-side, not one per side: a
   // conversation about a line is one conversation, and splitting it in half
   // would make a two-column diff of a discussion.
   if (row.kind === 'thread') {
     return <ThreadCard threads={row.threads} actions={threadActions} />
+  }
+
+  // Same shape as a thread row, and next to one when the line already has a
+  // conversation on it: full width, both columns, prose.
+  if (row.kind === 'composer') {
+    const onNewThread = threadActions?.onNewThread
+    // Neither of these can be missing while the row exists — the row model only
+    // gains a composer because something called `onCompose` — but the row is a
+    // plain data structure and a caller can hand one to a read-only view.
+    if (onNewThread === undefined || composing === undefined) return null
+
+    return (
+      // `py-1 pr-2 pl-12`, which is exactly what `ThreadCard` indents by: the
+      // draft has to start where the conversation it is joining starts, or posting
+      // it would shift the box it was written in.
+      <div className="w-full py-1 pr-2 pl-12">
+        <Composer
+          label={`New comment on line ${row.line}`}
+          autoFocus
+          submitLabel="Comment"
+          initial={composing.draft}
+          onDraftChange={composing.onDraft}
+          onSubmit={async (content) => {
+            // `row.context` whole and unexamined: the caller that opened this knew
+            // the file's path and chose the anchor, and re-deriving either here is
+            // how the two come to disagree.
+            await onNewThread({
+              content,
+              context: row.context,
+              iterationContext: composing.iterationContext,
+              status: 'active',
+            })
+            composing.onPosted()
+          }}
+          onCancel={composing.onCancel}
+        />
+      </div>
+    )
   }
 
   if (row.kind === 'hunk') {
@@ -304,6 +448,17 @@ function Row({
     )
   }
 
+  // The right-side line this row could hold a thread on, if it has one. Both
+  // layouts read it off the same field, because the row model put it there. The
+  // offset differs and only the offset does: in split the right column is its own
+  // positioning context and the gutter starts at its left edge, in unified there is
+  // one row and the new-side gutter is the second of two.
+  const newLine = row.right?.newLine ?? null
+  function composeAt(className: string): ReactNode {
+    if (onCompose === undefined || newLine === null) return null
+    return <ComposeButton line={newLine} onCompose={onCompose} className={className} />
+  }
+
   // Unified and side-by-side are the same row read twice. The row model already
   // decided the pairing; the only difference here is how many columns of it get
   // rendered, which is why there is no second code path for either.
@@ -322,6 +477,7 @@ function Row({
           number={row.right?.newLine ?? null}
           tokens={row.right === null ? null : tokensFor(row.right, before, after)}
           width={column}
+          compose={composeAt('left-0')}
         />
       </>
     )
@@ -340,7 +496,8 @@ function Row({
   return (
     <span
       className={cn(
-        'flex w-full items-baseline',
+        // `relative` for the compose button and nothing else — see `composeAt`.
+        'relative flex w-full items-baseline',
         line.op === 'add' ? 'diff-add' : line.op === 'delete' ? 'diff-delete' : undefined,
       )}
     >
@@ -352,6 +509,7 @@ function Row({
       <span className="whitespace-pre">
         <LineText text={line.text} tokens={tokensFor(line, before, after)} edits={line.edits} />
       </span>
+      {composeAt('left-12')}
     </span>
   )
 }
@@ -364,6 +522,8 @@ export function DiffView({
   after = null,
   onExpand,
   threadActions,
+  onCompose,
+  iterationContext = null,
 }: {
   rows: readonly DiffRow[]
   layout: DiffLayout
@@ -378,8 +538,35 @@ export function DiffView({
    * read-only, which is what the diff does until the server layer is wired.
    */
   threadActions?: ThreadActions
+  /**
+   * Open a composer on this right-side line, or `null` to close the open one.
+   *
+   * The same shape as `setComposer`, and for the same reason: the composer is a
+   * row, so the caller that owns the row model is the only thing that can put one
+   * there. Absent renders no compose buttons at all — a read-only diff.
+   */
+  onCompose?: (line: number | null) => void
+  /** Which iterations a thread started from a row is written against. */
+  iterationContext?: IterationContext | null
 }) {
   const scroller = useRef<HTMLDivElement>(null)
+
+  // The draft, kept here rather than inside `Composer`, and this is not a duplicate
+  // of that component's own state — it is what survives the box being unmounted.
+  // Two things unmount it: closing it, which must not silently eat the paragraph
+  // somebody just wrote, and scrolling it out of the virtualizer's overscan window,
+  // which is not a decision anybody made at all. Both put the text back when the
+  // row comes round again.
+  //
+  // Carried with its line, so reopening a *different* line starts empty. Inheriting
+  // the last line's text would be worse than losing it: it reads as a comment about
+  // the line you are now looking at.
+  //
+  // A ref and not state, deliberately. Nothing on screen is derived from this —
+  // `Composer` owns the text while it is open and reads this once, as it mounts —
+  // and `useState` would re-render every visible row on every keystroke, which is
+  // the one cost this whole component exists to avoid.
+  const draft = useRef<{ line: number; text: string } | null>(null)
 
   // Once per file rather than once per row: it walks every line's text, and a row
   // is rendered again every time it scrolls past. Recomputed when a gap expands,
@@ -391,8 +578,12 @@ export function DiffView({
     getScrollElement: () => scroller.current,
     // Per-index rather than constant, because a thread row is prose and every
     // other row is one line of code. See `ROW_HEIGHT`.
-    estimateSize: (index) =>
-      rows[index].kind === 'thread' ? THREAD_ROW_ESTIMATE : ROW_HEIGHT,
+    estimateSize: (index) => {
+      const row = rows[index]
+      if (row.kind === 'thread') return THREAD_ROW_ESTIMATE
+      if (row.kind === 'composer') return COMPOSER_ROW_ESTIMATE
+      return ROW_HEIGHT
+    },
     overscan: 16,
     // The whole reason T-018 gives every row a stable key: expanding a gap in
     // the middle of a file shifts every index below it, and keying on index
@@ -413,47 +604,72 @@ export function DiffView({
     >
       <div className="relative w-full" style={{ height: virtual.getTotalSize() }}>
         {virtual.getVirtualItems().map((item) => {
-          const thread = rows[item.index].kind === 'thread'
+          const row = rows[item.index]
+          const tall = measured(row)
 
           return (
             <div
               key={item.key}
-              // Measured on thread rows and nowhere else. `data-index` is not
-              // decoration: `measureElement` reads it to know which row it just
-              // measured, and without it the measurement is applied to the
+              // Measured on thread and composer rows and nowhere else. `data-index`
+              // is not decoration: `measureElement` reads it to know which row it
+              // just measured, and without it the measurement is applied to the
               // wrong index.
-              data-index={thread ? item.index : undefined}
-              ref={thread ? virtual.measureElement : undefined}
+              data-index={tall ? item.index : undefined}
+              ref={tall ? virtual.measureElement : undefined}
               className={cn(
                 'absolute top-0 left-0',
-                thread
-                  ? // Full width and not `w-max`: a thread wraps, and a row that
-                    // grows to fit its widest word would widen the file's
-                    // horizontal scroll by the length of a paragraph.
+                tall
+                  ? // Full width and not `w-max`: prose wraps, and a row that grows
+                    // to fit its widest word would widen the file's horizontal
+                    // scroll by the length of a paragraph.
                     'w-full'
                   : // `w-max min-w-full` is what gives the container one
                     // horizontal scrollbar for the whole file instead of one per
                     // line: an absolute child still contributes to its scroll
                     // width.
-                    'flex w-max min-w-full',
+                    //
+                    // `group` is what the compose button watches for a hover. On
+                    // the row rather than on the button so that pointing anywhere
+                    // along the line reveals it — a 16px target you have to find
+                    // before it appears is not a target.
+                    'group flex w-max min-w-full',
               )}
               // Height is set on the rows whose height is known. A measured row
               // must be free to be as tall as it is, or it would measure the
               // estimate back and never converge.
               style={
-                thread
+                tall
                   ? { transform: `translateY(${item.start}px)` }
                   : { height: item.size, transform: `translateY(${item.start}px)` }
               }
             >
               <Row
-                row={rows[item.index]}
+                row={row}
                 layout={layout}
                 column={column}
                 before={before}
                 after={after}
                 onExpand={onExpand}
                 threadActions={threadActions}
+                onCompose={onCompose}
+                // Built for the composer row and no other, so the 5,000 rows that
+                // are lines do not each allocate a bundle they will not read.
+                composing={
+                  row.kind !== 'composer' || onCompose === undefined
+                    ? undefined
+                    : {
+                        iterationContext,
+                        draft: draft.current?.line === row.line ? draft.current.text : '',
+                        onDraft: (text) => {
+                          draft.current = { line: row.line, text }
+                        },
+                        onCancel: () => onCompose(null),
+                        onPosted: () => {
+                          draft.current = null
+                          onCompose(null)
+                        },
+                      }
+                }
               />
             </div>
           )

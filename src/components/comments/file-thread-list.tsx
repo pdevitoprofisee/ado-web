@@ -99,9 +99,11 @@ export function FileThreadList({
           autoFocus
           onSubmit={async (content) => {
             // A file-level thread: `context` names the file and no position.
-            // T-025 does not open a *line* thread, because a draft on a line
-            // would need a second new `DiffRow` kind and the union took its one
-            // addition this round — see `diff-contract.ts`.
+            // A thread on a *line* is started from the line, in `DiffView` —
+            // T-037 added the `ComposerRow` that made it possible. This stays the
+            // home of the comment that is about the file rather than about any
+            // line of it, which is also why `setComposer` refuses an anchorless
+            // context instead of forwarding one here.
             await onNewThread({
               content,
               context: {

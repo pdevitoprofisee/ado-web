@@ -269,7 +269,7 @@ and stays the answer for a missing, failed or slow avatar.
 
 ## T-037 — A new thread on a line
 
-**Type:** feature · **Status:** open · **Blocked by:** —
+**Type:** feature · **Status:** resolved · **Blocked by:** —
 
 Phase 10. [T-025](./round-4.md#t-025--inline-threads) shipped file-level threads and stopped:
 anchoring a *new* thread to a line needs a second new `DiffRow` kind, so today you can say
@@ -295,6 +295,43 @@ What must not break, because it is measured and paid for:
   rather than post a wrong anchor.
 - One composer open at a time, `Escape` closes it, and closing a composer with text in it does
   not silently discard the text.
+
+### Resolution
+
+A fifth `DiffRow` kind, `ComposerRow`, keyed `+<line>` — content-derived like the other four, and
+it cannot collide with the thread row that replaces it once the draft posts, because that one is
+`!<threadId>`. The row is emitted by `attach` **below** any thread already on the same line, so a
+new comment lands under the conversation it is joining, and both cursors run through one forward
+pass so the order never depends on map iteration order.
+
+The composer is a sixth **input** to `RowModel` (`composer: ThreadContext | null`) with a
+`setComposer(model, context)` transition, not local component state. That is forced by the poll:
+`changed-file.tsx` rebuilds the whole model from its six inputs every 30 seconds when threads
+arrive, so anything that is not an input is erased mid-sentence. `setComposer` identity-returns
+when the anchored line has not moved — pressing the same button twice builds an equal-but-new
+context — and refuses a context with no `rightStart`, which is what keeps a file-level comment in
+`FileThreadList` where it belongs.
+
+How the reviewer opens it: a per-line gutter button (`CommentAdd01Icon`, `aria-label="Comment on
+line N"`), not a keyboard shortcut, because the diff has no line cursor for a shortcut to act on.
+It is absolutely positioned and `opacity-0` until `group-hover`/`focus-visible`, so 5,000 rows
+neither reflow on hover nor leave the tab order. It is **absent on a delete-only row** — nothing
+to press is the clearest refusal of a left-side anchor — and withheld from every row on a page
+with no `onNewThread`, rather than offering 5,000 invitations that go nowhere.
+
+Two things the ticket asked for that cost more than they look. `COMPOSER_ROW_ESTIMATE = 160`
+joins `THREAD_ROW_ESTIMATE` in the measured set, so "only thread rows are measured" is now "only
+these two are" and the other three are still flat 20 px. And the draft survives a close: the text
+is stashed in a `useRef` in `DiffView` and fed back through `Composer`'s `initial` on reopen —
+a ref rather than state because a `useState` there re-renders all ~56 visible rows on every
+keystroke. Reopening a *different* line starts empty, since inheriting the text would misattribute
+it. That same ref also fixes losing a draft when the row scrolls out of the overscan window.
+
+**744 tests over 41 files**, up from 718: 15 new in `diff-rows.test.ts` for the transition
+(placement in both layouts, key uniqueness and order, one at a time, identity returns, survival
+of `setThreads`/`setLayout`/`setHideDone`/`expandGap`, following its line out of an expanded gap)
+and 11 in `diff-view.test.tsx` for the behaviour (the button's presence and absence, the posted
+`NewThread`, the measured-row count, `Escape` keeping the draft).
 
 ---
 

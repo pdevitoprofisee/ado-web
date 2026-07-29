@@ -1,4 +1,4 @@
-import type { FileThreads } from './comment-contract'
+import type { ComposerRow, FileThreads, Thread, ThreadContext } from './comment-contract'
 import type { DiffHunk, DiffLayout, DiffLine, DiffRow, FileDiff } from './diff-contract'
 import { formatHunkHeader } from './diff'
 
@@ -17,10 +17,17 @@ import { formatHunkHeader } from './diff'
 // reveals meet is just a union of adjacent ranges, and a row's key never
 // depends on where the row sits, so nothing above the click is re-keyed.
 //
-// T-025 added the last two inputs, and "hide done" is one of them rather than a
+// T-025 added the middle two inputs, and "hide done" is one of them rather than a
 // class on a rendered row for the same reason the reveals are inputs: a hidden
 // thread that still occupies a row is a row the virtualizer still measures, and
 // a measured row is the expensive kind.
+//
+// T-037 added the last one, and it is the only input that is not about the file.
+// An open composer looks like local UI state and cannot be kept as any: the rows
+// are rebuilt from these inputs every time the thirty-second poll answers, so
+// anything outside them is erased by the next tick — with somebody's draft in it.
+// A sixth input is what makes the draft survive a poll, and it costs the same
+// identity-return every other input already has.
 
 /** Lines revealed by one click, matching what GitHub's expander shows. */
 export const GAP_EXPAND_LINES = 20
@@ -48,6 +55,13 @@ export interface RowModel {
   /** This file's conversations, or `null` for a file nobody has commented on. */
   readonly threads: FileThreads | null
   readonly hideDone: boolean
+  /**
+   * Where the reviewer is writing a new thread, or `null` when they are not.
+   *
+   * One field, so one composer at a time comes out of the shape rather than out
+   * of a rule somebody has to remember to enforce.
+   */
+  readonly composer: ThreadContext | null
 }
 
 export function buildRows(
@@ -57,13 +71,24 @@ export function buildRows(
   threads: FileThreads | null = null,
   hideDone: boolean = false,
 ): RowModel {
-  return rebuild(diff, lines, layout, [], threads, hideDone)
+  // No composer parameter: a file's rows are never built with a draft already in
+  // them. New bytes for this file rebuild through here, which is also what closes
+  // a composer anchored to a line that may no longer be the same line.
+  return rebuild(diff, lines, layout, [], threads, hideDone, null)
 }
 
 /** The same diff and the same expansions, projected the other way. */
 export function setLayout(model: RowModel, layout: DiffLayout): RowModel {
   if (layout === model.layout) return model
-  return rebuild(model.diff, model.lines, layout, model.revealed, model.threads, model.hideDone)
+  return rebuild(
+    model.diff,
+    model.lines,
+    layout,
+    model.revealed,
+    model.threads,
+    model.hideDone,
+    model.composer,
+  )
 }
 
 /**
@@ -76,13 +101,60 @@ export function setLayout(model: RowModel, layout: DiffLayout): RowModel {
  */
 export function setThreads(model: RowModel, threads: FileThreads | null): RowModel {
   if (threads === model.threads) return model
-  return rebuild(model.diff, model.lines, model.layout, model.revealed, threads, model.hideDone)
+  return rebuild(
+    model.diff,
+    model.lines,
+    model.layout,
+    model.revealed,
+    threads,
+    model.hideDone,
+    model.composer,
+  )
 }
 
 /** Toggle the per-PR "hide done" flag for this file's rows. */
 export function setHideDone(model: RowModel, hideDone: boolean): RowModel {
   if (hideDone === model.hideDone) return model
-  return rebuild(model.diff, model.lines, model.layout, model.revealed, model.threads, hideDone)
+  return rebuild(
+    model.diff,
+    model.lines,
+    model.layout,
+    model.revealed,
+    model.threads,
+    hideDone,
+    model.composer,
+  )
+}
+
+/**
+ * Open a composer on a line, or close the one that is open.
+ *
+ * A transition like the other four rather than a prop on the view, because the
+ * composer has to be a row before the virtualizer will place it, and it has to be
+ * a row model *input* before it will survive the next poll.
+ *
+ * A `context` with no `rightStart` is refused rather than coerced. That is the
+ * anchor this whole ticket exists for, and a draft about the file rather than
+ * about a line already has a home above the diff — see `FileThreadList`. It is
+ * also the one shape that could put a thread on line 0, which ADO answers 200 to
+ * and then files nowhere (`threads-fn.ts`).
+ */
+export function setComposer(model: RowModel, context: ThreadContext | null): RowModel {
+  const next = context === null || context.rightStart === null ? null : context
+  // Compared by anchor rather than by identity: pressing the same line's button
+  // twice builds an equal-but-new context, and rebuilding the file's rows for it
+  // would be work with nothing on the other side of it.
+  if ((next?.rightStart?.line ?? null) === (model.composer?.rightStart?.line ?? null)) return model
+
+  return rebuild(
+    model.diff,
+    model.lines,
+    model.layout,
+    model.revealed,
+    model.threads,
+    model.hideDone,
+    next,
+  )
 }
 
 /**
@@ -118,6 +190,7 @@ export function expandGap(
     union(model.revealed, span),
     model.threads,
     model.hideDone,
+    model.composer,
   )
 }
 
@@ -128,15 +201,17 @@ function rebuild(
   revealed: readonly Span[],
   threads: FileThreads | null,
   hideDone: boolean,
+  composer: ThreadContext | null,
 ): RowModel {
   return {
-    rows: attach(project(flatten(diff, lines, revealed), layout), threads, hideDone),
+    rows: attach(project(flatten(diff, lines, revealed), layout), threads, hideDone, composer),
     layout,
     diff,
     lines,
     revealed,
     threads,
     hideDone,
+    composer,
   }
 }
 
@@ -329,6 +404,19 @@ function row(left: DiffLine | null, right: DiffLine | null): DiffRow {
 // Threads.
 // ---------------------------------------------------------------------------
 
+const NO_THREADS: ReadonlyMap<number, readonly Thread[]> = new Map()
+
+/**
+ * A composer row's key, derived from the line it hangs on and nothing else.
+ *
+ * The same content-derived rule the other four kinds follow, and it cannot
+ * collide with the thread row that will replace it once the draft posts: that one
+ * is `!<threadId>`.
+ */
+function composerKey(line: number): string {
+  return `+${line}`
+}
+
 /**
  * Thread rows, under the lines they hang on. Layout-independent on purpose: in
  * side-by-side a conversation is one row spanning both columns, because it is
@@ -345,33 +433,71 @@ function row(left: DiffLine | null, right: DiffLine | null): DiffRow {
  * it, so it is somewhere rather than nowhere. Expanding that gap moves it onto
  * its real line without remounting it, because its key is the thread's id and
  * nothing about where the row sits.
+ *
+ * T-037 puts the composer row through the same cursor, and **under** whatever is
+ * already on its line: the conversation that exists reads first and the draft
+ * arrives at the bottom of it, the way a new message would. Deterministic either
+ * way — what matters is that it does not depend on which of the two the map
+ * happened to be iterating.
  */
 function attach(
   rows: readonly DiffRow[],
   threads: FileThreads | null,
   hideDone: boolean,
+  composer: ThreadContext | null,
 ): readonly DiffRow[] {
-  // The same array back, not a copy, for the file nobody has commented on —
-  // which is most of them. A file with no threads pays nothing.
-  if (threads === null || threads.byRightLine.size === 0) return rows
+  const byLine = threads?.byRightLine ?? NO_THREADS
+  // Built here rather than where it is emitted so the anchor is narrowed once, and
+  // so `draft === null` is the single answer to "is anybody writing on this file".
+  const draft: ComposerRow | null =
+    composer === null || composer.rightStart === null
+      ? null
+      : {
+          kind: 'composer',
+          key: composerKey(composer.rightStart.line),
+          context: composer,
+          line: composer.rightStart.line,
+        }
+
+  // The same array back, not a copy, for the file nobody has commented on and is
+  // not writing on — which is most of them. A file with no threads pays nothing.
+  if (byLine.size === 0 && draft === null) return rows
   // No hunks means no rows, and a thread has nothing to sit under; the panel
   // renders every one of them next to its notice instead. See `FileThreadList`.
   if (rows.length === 0) return rows
 
-  const byLine = threads.byRightLine
   const anchors = [...byLine.keys()].sort((a, b) => a - b)
   const out: DiffRow[] = []
   let at = 0
+  // Cleared once the draft has been placed, which is what lets the thread cursor
+  // stop deferring to it and carry on down the rest of the file.
+  let pending = draft
 
   function emitBelow(end: number): void {
-    for (; at < anchors.length && anchors[at] < end; at++) {
-      const line = anchors[at]
-      const all = byLine.get(line) ?? []
-      const shown = hideDone ? all.filter((thread) => thread.resolution === 'open') : all
-      if (shown.length === 0) continue
-      // First thread's id, which is the oldest: `byRightLine` is chronological,
-      // so a new reply or a second thread on the line appends and the key holds.
-      out.push({ kind: 'thread', key: `!${shown[0].id}`, threads: shown, line })
+    for (;;) {
+      const anchor = at < anchors.length ? anchors[at] : null
+
+      // The thread first whenever the two are on the same line, so the draft
+      // lands under the conversation it is being added to.
+      if (anchor !== null && anchor < end && (pending === null || anchor <= pending.line)) {
+        at++
+        const all = byLine.get(anchor) ?? []
+        const shown = hideDone ? all.filter((thread) => thread.resolution === 'open') : all
+        // First thread's id, which is the oldest: `byRightLine` is chronological,
+        // so a new reply or a second thread on the line appends and the key holds.
+        if (shown.length > 0) {
+          out.push({ kind: 'thread', key: `!${shown[0].id}`, threads: shown, line: anchor })
+        }
+        continue
+      }
+
+      if (pending !== null && pending.line < end) {
+        out.push(pending)
+        pending = null
+        continue
+      }
+
+      return
     }
   }
 

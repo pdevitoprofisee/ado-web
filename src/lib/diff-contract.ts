@@ -1,4 +1,4 @@
-import type { ThreadRow } from './comment-contract'
+import type { ComposerRow, ThreadRow } from './comment-contract'
 import type { Theme } from './theme'
 
 // The types phase 3 is built around, in one place because four otherwise
@@ -145,12 +145,17 @@ export type DiffRow =
       readonly newStart: number
     }
   /**
-   * A conversation, under the line it is about. Added in T-025 and the only
-   * addition this union takes — the shape is frozen in `comment-contract.ts`
-   * because four workstreams read it, and it is the one row kind that is not
-   * `ROW_HEIGHT` tall.
+   * A conversation, under the line it is about. Added in T-025 — the shape is
+   * frozen in `comment-contract.ts` because four workstreams read it, and it was
+   * the first row kind that is not `ROW_HEIGHT` tall.
    */
   | ThreadRow
+  /**
+   * A conversation being started, under the line it will be about. T-037, and
+   * the second row kind that is not `ROW_HEIGHT` tall — so "only thread rows are
+   * measured" is now "only these two are", and the other three still are not.
+   */
+  | ComposerRow
 
 export type DiffLayout = 'unified' | 'split'
 

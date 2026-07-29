@@ -91,6 +91,7 @@ export function FileDiffPanel({
   before = null,
   after = null,
   onExpand,
+  onCompose,
   threads = null,
   threadActions,
   hideDone = false,
@@ -142,6 +143,11 @@ export function FileDiffPanel({
   before?: HighlightedLines | null
   after?: HighlightedLines | null
   onExpand?: (row: Extract<DiffRow, { kind: 'gap' }>) => void
+  /**
+   * Open a composer on a right-side line, or `null` to close it. Passed straight
+   * through: the composer is a row, so only whoever owns the row model can add one.
+   */
+  onCompose?: (line: number | null) => void
   /**
    * This file's conversations. The anchored ones are already in `rows` — the
    * caller built those with `buildRows(…, threads)` — and this is passed as well
@@ -316,7 +322,9 @@ export function FileDiffPanel({
                 before={before}
                 after={after}
                 onExpand={onExpand}
+                onCompose={onCompose}
                 threadActions={threadActions}
+                iterationContext={iterationContext}
               />
               {noNewline === null ? null : (
                 // The marker is part of the file's text, not chrome around it, so

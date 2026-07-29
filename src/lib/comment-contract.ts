@@ -348,3 +348,41 @@ export interface ThreadRow {
  * less visible than a jump the other way.
  */
 export const THREAD_ROW_ESTIMATE = 120
+
+/**
+ * A draft, under the line it is going to be about. T-037, and the second and
+ * last addition `DiffRow` takes.
+ *
+ * It is a **row** rather than local state beside the row model because the rows
+ * are virtualized: a composer the virtualizer does not know about has nowhere to
+ * be placed. And it lives on `RowModel` rather than in a `useState` next to it
+ * because the rows are rebuilt from their inputs on every thirty-second poll —
+ * anything not an input to that rebuild is erased by the next tick, draft and
+ * all.
+ *
+ * `context` is carried whole rather than reduced to a line so that the one thing
+ * that distinguishes this from the file-level composer — the anchor — is decided
+ * once, by the caller that knows the file's path, and read back unchanged when
+ * the thread is posted.
+ */
+export interface ComposerRow {
+  readonly kind: 'composer'
+  /** `+<line>` — `@`, `~`, `/` and `!` are taken by the other four row kinds. */
+  readonly key: string
+  /** Right-side and one-based, and never `null` on `rightStart`: see `setComposer`. */
+  readonly context: ThreadContext
+  /** The right-side line the draft hangs under, for its label and its gutter. */
+  readonly line: number
+}
+
+/**
+ * The height a composer row is assumed to be before it has been measured.
+ *
+ * Read off `Composer`'s own minimums rather than guessed at from a thread:
+ * `min-h-20` of textarea, a toolbar and a footer of about 28px each, 3px of pen,
+ * and the row's own `py-1`. Too small in the same safe direction
+ * `THREAD_ROW_ESTIMATE` is, and only ever wrong for the one frame before the
+ * textarea — which is `resize-y` and `field-sizing-content`, so it has no
+ * predictable height at all — reports what it actually is.
+ */
+export const COMPOSER_ROW_ESTIMATE = 160
