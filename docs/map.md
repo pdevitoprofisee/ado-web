@@ -194,6 +194,14 @@ rewrite. Evidence in [`docs/research/`](./research/).
    list entry mislabels without erroring. Events that live in `threads` or
    `policy/evaluations` are therefore diffed only on a *fetched* hydration; doing it
    per poll restores the 1+3N the commit-keyed cache exists to remove.
+10. **Voting and adding a reviewer are the same request.**
+   `PUT .../pullRequests/{id}/reviewers/{reviewerId}` is documented as *create or update* a
+   reviewer, so a vote addressed to somebody who is not on the pull request **adds them** —
+   quietly, with a 200, and with no way to tell the two intents apart from the wire. ADO does
+   not re-judge a vote the way it re-judges a merge, so this is the one write where the app is
+   the only guard there is: `castVote` re-reads the reviewer list and refuses rather than
+   sending. Not live-verified — from the "Pull Request Reviewers" reference at 7.1 — and no
+   write on this path has been sent yet (T-040).
 
 ### Structural facts about the ADO API
 

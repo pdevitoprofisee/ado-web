@@ -238,7 +238,7 @@ Non-negotiables:
 
 ## T-033 — Vote, abandon, reactivate
 
-**Type:** feature · **Status:** open · **Blocked by:** —
+**Type:** feature · **Status:** resolved, unproven against the live API · **Blocked by:** —
 
 **Success:** I can set my own vote on a pull request from its header — approve, approve with
 suggestions, wait for author, reject, and reset to no vote — and I can abandon a pull request I
@@ -264,6 +264,75 @@ Two things must stay true:
 - **Nothing is optimistic**, and invalidation happens `onSettled`, not `onSuccess` — a write
   that timed out may already have applied (note 2). `useRequeue`, `useSquashMerge` and
   `useRename` are the pattern; follow them rather than inventing a fourth.
+
+### Resolution
+
+Three writes in `pull-request.ts` — `castVote`, `abandon`, `reactivate` — three server functions
+beside `squashMerge`, two hooks (`src/lib/vote.ts`, `src/lib/lifecycle.ts`), and one header row
+holding both controls. **No write was ever sent to Azure DevOps.** Every path below is proven
+against captured writes and unproven against the live API; the first real one is T-040.
+
+| action | request |
+|---|---|
+| vote | `PUT {pr}/reviewers/{viewerId}` · body `{ vote }` · api-version 7.1 |
+| abandon | `PATCH {pr}` · body `{ status: 'abandoned' }` |
+| reactivate | `PATCH {pr}` · body `{ status: 'active' }` |
+
+Learned in-repo rather than by probing: the vote route and its five wire values are this
+ticket's own text and map note "Reviewer votes"; the status transition is corroborated by
+`setTitle`'s own comment that the same `PATCH` completes, abandons, retargets and undrafts a pull
+request, and by `completePullRequest`, which is that `PATCH` with `status: 'completed'`. Each body
+is asserted **whole**, for `setTitle`'s reason — this one route is four actions, and a key that
+leaked into the abandon body would be a different one.
+
+**`{me}` is enforced by absence.** `castVote(client, ref, vote)` has no parameter for a reviewer
+id: it resolves the viewer from `connectionData` through `pull-request.ts`' memoised
+`resolveViewer` and refuses outright when ADO will not say. `VoteRequest` has no such field
+either, and `voteRequest` rebuilds its answer out of `pullRequestRef(input)` plus the vote, so a
+`reviewerId` in the body never reaches a variable — that is a test rather than a claim.
+
+**The vote is guarded server-side, unlike the merge, and for a reason peculiar to it.** ADO does
+not re-judge a vote: `PUT .../reviewers/{id}` *creates* the reviewer row when there is none, so a
+vote on a pull request you are not on silently becomes an add-reviewer write, which is T-034's
+scope and not this one's. So `castVote` re-reads the pull request and refuses when the viewer is
+neither on the list nor reachable through a container — the container exception is what keeps the
+guard from killing the dominant case, since a group is the reviewer on 119 of 163 active PRs and
+its members are legitimately absent until they vote.
+
+**`approvalReset` is on the detail page now, and it survives voting.** It was in
+`hydrate`'s cache and nowhere the header could see it; `loadPullRequest` cannot read SQLite and
+its five-call budget cannot afford a `threads` call, so `pullRequestQuery` reads
+`readPrCache<Hydration>(id, lastMergeSourceCommit)` — no network, and commit-keyed, so a push
+makes it miss. `PullRequestDetail.approvalReset` is `boolean | null` where **`null` renders as
+silence**: the ticket prefers nothing to a stale approval, and that cuts both ways. The notice is
+gated on the vote the page last *read*, not on the vote just sent, so pressing Approve does not
+take it down — until the re-read comes back, "a push reset your approval" is still the true
+sentence. That is tested directly.
+
+**Five states, presented as five actions plus one fact.** The buttons are imperative and the
+badge is past tense — "Approve" against "approved" — because a row of five buttons that all read
+like statuses is a row nobody can tell they may press. They sit in ADO's own order so the group
+reads yes to no with the neutral in the middle, the current one is `aria-pressed` and filled in,
+and the state is *also* said in words in the badge: colour is never the only thing telling
+"approved" from "waiting for author". "No vote" keeps ADO's phrase rather than "Clear", because
+`0` is a position on the scale and not the absence of one. All five go quiet while one is in
+flight, and the pending label names which — on a scale where only the last write survives, two
+queued votes is a race a reviewer would lose.
+
+**Reactivate does not confirm, deliberately.** The ticket's line is what is correctable: a vote
+does not ask because voting again fixes it, abandoning does because it closes work other people
+are waiting on. Reactivating reopens work rather than closing it and abandoning again undoes it
+exactly, so a dialog would be asking whether you meant to press the button you pressed.
+Abandon's dialog names the pull request and says what abandoning does **not** do — the word
+sounds like a delete, and a reviewer who believes it is one will not use it when it is the right
+answer. Neither verb is on the command palette: no unmodified keystroke should close a pull
+request.
+
+Both controls stay on the page when they do not apply, disabled with the sentence saying why
+(`voteBlocker`, `lifecycleAction`), which is `mergeBlocker`'s shape. Abandon and reactivate are
+offered on your own pull request only — this app's rule rather than a claim about ADO's
+permissions, and the refusal is worded that way. **44 files / 796 tests**, up from 41 / 718;
+`tsc --noEmit` clean.
 
 ---
 
