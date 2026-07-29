@@ -710,13 +710,24 @@
     font: var(--weight-medium) var(--text-2xs) / 1 var(--font-mono);
     color: var(--text-secondary);
   }
+  /* Positioning only. The stroke itself used to be the `--stroke-underline-teal`
+     data URI as a background, which arrives all at once — there is no way to draw
+     half of a background image. It is now an inline `<svg>` in `TabStrip` so the
+     same curve can be drawn along its own length, left to right, the way the pen
+     would have put it there. Same `d`, same 160×8 box. */
   .prof-tab__ink {
     position: absolute;
     left: 0;
     right: 0;
     bottom: 0;
     height: 8px;
-    background: var(--stroke-underline-teal) bottom left / 100% 8px no-repeat;
+    overflow: visible;
+  }
+  /* Here and not on the element: a presentation attribute cannot hold a `var()`,
+     in any browser. Everything else about the stroke is on the path, where
+     framer-motion also writes the dash it draws it with. */
+  .prof-tab__ink path {
+    stroke: var(--teal-500);
   }
 
   /* ---------- Avatar ----------

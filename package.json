@@ -28,6 +28,7 @@
     "@tanstack/react-virtual": "^3.14.8",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "framer-motion": "^12.42.2",
     "lucide-react": "^1.27.0",
     "nitro": "3.0.260610-beta",
     "react": "^19.2.0",

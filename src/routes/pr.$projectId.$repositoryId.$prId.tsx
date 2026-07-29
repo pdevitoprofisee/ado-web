@@ -83,10 +83,17 @@ function PullRequestPage() {
     <main
       className={cn(
         'mx-auto flex flex-col items-start gap-5 p-8',
-        // Prose width for the details tab, and as much as the diff asks for on
-        // the other two: 1600px for two 80-column halves, and 1200px for one
-        // plus the 256px tree.
-        tab === 'details' ? 'max-w-4xl' : layout === 'split' ? 'max-w-[1600px]' : 'max-w-[1200px]',
+        // **One width for all three tabs.** This used to narrow to prose width on
+        // the details tab, which meant the header card, the title and the tab strip
+        // itself all resized when you switched — so the tab you were aiming at
+        // moved while you were clicking it, and every switch was a 150px shove in
+        // both directions. Nothing under here caps its measure either: a page that
+        // holds still while its content changes width is still a page that jumps.
+        //
+        // The split-layout widening stays, and is not the same problem: it changes
+        // width because you asked for room, from a control that is on screen when
+        // you ask, and it does not change when the tab does.
+        layout === 'split' ? 'max-w-[1600px]' : 'max-w-[1200px]',
       )}
     >
       <header className="flex w-full items-baseline justify-between gap-4">
