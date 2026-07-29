@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { CommentAdd01Icon, UnfoldMoreIcon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
@@ -7,6 +7,7 @@ import { LineText } from './line-text'
 import { Composer } from '@/components/comments/composer'
 import { ThreadCard } from '@/components/comments/thread-card'
 import { COMPOSER_ROW_ESTIMATE, THREAD_ROW_ESTIMATE } from '@/lib/comment-contract'
+import { rowIndexForLine } from '@/lib/diff-rows'
 import { cn } from '@/lib/utils'
 
 import type { ReactNode } from 'react'
@@ -524,6 +525,7 @@ export function DiffView({
   threadActions,
   onCompose,
   iterationContext = null,
+  jumped = null,
 }: {
   rows: readonly DiffRow[]
   layout: DiffLayout
@@ -548,6 +550,13 @@ export function DiffView({
   onCompose?: (line: number | null) => void
   /** Which iterations a thread started from a row is written against. */
   iterationContext?: IterationContext | null
+  /**
+   * The right-side line a jump landed on — `RowModel.jumped`, straight through.
+   *
+   * Scrolled to and marked. `null` on every file nobody jumped into, which is all
+   * of them until somebody clicks a finding.
+   */
+  jumped?: number | null
 }) {
   const scroller = useRef<HTMLDivElement>(null)
 
@@ -591,6 +600,33 @@ export function DiffView({
     getItemKey: (index) => rows[index].key,
   })
 
+  // Which line this has already carried the reader to. The guard, not the deps: a
+  // rebuilt `rows` is the normal state of this component — the thread poll answers
+  // every thirty seconds — and an effect that scrolled whenever the rows changed
+  // would haul the file back to the finding every half minute, out from under
+  // whoever had scrolled away from it. Comparing the line instead means the rows
+  // may change as often as they like, and a mark arriving on a row that did not
+  // exist yet (the bytes, a revealed gap) is still followed the moment it does.
+  const landed = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (jumped === null || jumped === landed.current) return
+
+    // `scrollToIndex` and not `getElementById` on the row, which cannot work here
+    // and fails in the quietest possible way: the row for line 214 is in the DOM
+    // only if 214 is one of the ~56 lines currently rendered, so a lookup answers
+    // `null` for exactly the jumps that had somewhere to go. The virtualizer is the
+    // only thing that knows where an unrendered row *would* be.
+    const index = rowIndexForLine(rows, jumped)
+    if (index === -1) return
+
+    landed.current = jumped
+    // Centred rather than at the top, because a finding is read with the lines
+    // around it: `align: 'start'` puts the one line you were sent to against the
+    // edge of a 70vh window with all of its context below the fold.
+    virtual.scrollToIndex(index, { align: 'center' })
+  }, [jumped, rows, virtual])
+
   return (
     <div
       ref={scroller}
@@ -606,6 +642,10 @@ export function DiffView({
         {virtual.getVirtualItems().map((item) => {
           const row = rows[item.index]
           const tall = measured(row)
+          // One number compared per rendered row — 56 of them, not 5,000 — which is
+          // why this is a prop and not a flag on `DiffRow`: marking a row in the
+          // model would rebuild the file to move a box.
+          const here = jumped !== null && row.kind === 'line' && row.right?.newLine === jumped
 
           return (
             <div
@@ -633,6 +673,17 @@ export function DiffView({
                     // along the line reveals it — a 16px target you have to find
                     // before it appears is not a target.
                     'group flex w-max min-w-full',
+                // An outline and not a border: every row of code is exactly
+                // `ROW_HEIGHT` tall and `box-sizing: border-box`, so 1.5px of border
+                // would eat 3px out of a 20px line and shift the text of the one row
+                // you were sent to look at. An outline draws in the same place and
+                // costs no layout at all.
+                //
+                // Teal at pen weight, and never the only thing that says so: the
+                // panel above prints "Jumped to line 214." in words, because a mark
+                // that is a colour is a mark half the readers of this diff do not
+                // have (see `ChangedFileDiff`).
+                here && 'outline-teal-500 outline-[1.5px] -outline-offset-[1.5px]',
               )}
               // Height is set on the rows whose height is known. A measured row
               // must be free to be as tall as it is, or it would measure the

@@ -554,6 +554,115 @@ describe('a composer row', () => {
   })
 })
 
+describe('a jumped-to line', () => {
+  // Two hundred context lines, numbered from 1, so the line asked for and the
+  // index it sits at differ by one — the off-by-one that would land the reader a
+  // row away and look right.
+  const rows: readonly DiffRow[] = Array.from({ length: 200 }, (_, at) => ({
+    kind: 'line',
+    key: `l${at}`,
+    left: line('context', `line ${at + 1}`, at + 1, at + 1),
+    right: line('context', `line ${at + 1}`, at + 1, at + 1),
+  }))
+
+  const view = (jumped: number | null, some: readonly DiffRow[] = rows) => (
+    <DiffView rows={some} layout="unified" label="/src/app.ts" jumped={jumped} />
+  )
+
+  // jsdom implements no scrolling, so the `scrollTo` the virtualizer makes on the
+  // scroll container is the only place the jump is visible: picking an offset for a
+  // row that is not rendered yet is the whole of what `scrollToIndex` does.
+  let scrolled: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    scrolled = vi.fn()
+    // Defined rather than assigned because jsdom has no `scrollTo` at all — there
+    // is no overload here to assign a one-argument spy to.
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: scrolled,
+    })
+    // Both of these, or every assertion below is `top: 0`: virtual-core clamps the
+    // offset it computed to `scrollHeight - clientHeight`, and jsdom answers 0 to
+    // both of those for every element there is.
+    for (const [property, value] of [
+      ['scrollHeight', rows.length * 20],
+      ['clientHeight', VIEWPORT.height],
+    ] as const) {
+      Object.defineProperty(HTMLElement.prototype, property, { configurable: true, value })
+    }
+  })
+
+  /**
+   * Mounts the file, then jumps — the order it happens in, since the model has to
+   * exist before anything can ask it for a line. Returns `rerender`, and drops the
+   * scroll to 0 that the virtualizer makes for itself the moment it attaches.
+   */
+  const jumpTo = (line: number, some?: readonly DiffRow[]) => {
+    const { rerender } = render(view(null, some))
+    scrolled.mockClear()
+    rerender(view(line, some))
+    return rerender
+  }
+
+  it('scrolls the row into the middle of the viewport', () => {
+    // 150 rows of 20px, less half of the 800px viewport, plus half a row. The
+    // arithmetic is asserted rather than merely "it scrolled", because that is what
+    // tells a centred jump from one that put the line against the top edge with all
+    // of its context below the fold.
+    jumpTo(151)
+
+    expect(scrolled).toHaveBeenCalledWith(expect.objectContaining({ top: 150 * 20 + 10 - 400 }))
+  })
+
+  it('marks the row it arrived at, without moving the text on it', () => {
+    // An outline rather than a border, because a 20px row with `box-sizing:
+    // border-box` loses 3px of its line to one and the text of the row you were
+    // sent to look at shifts. Line 2, because jsdom scrolls nowhere and only the
+    // rows already on screen are in the DOM to be marked.
+    const { container } = render(view(2))
+    const marked = container.querySelectorAll('.outline-teal-500')
+
+    expect(marked).toHaveLength(1)
+    expect(marked[0]).toHaveTextContent('line 2')
+  })
+
+  it('does not haul the file back when the poll rebuilds the rows', () => {
+    // The thread poll answers every thirty seconds and reprojects the model. A
+    // scroll that watched the rows would drag the reader back to the finding on
+    // every tick, out from under whatever they had scrolled to since.
+    const rerender = jumpTo(151)
+    scrolled.mockClear()
+
+    rerender(view(151, rows.slice()))
+
+    expect(scrolled).not.toHaveBeenCalled()
+  })
+
+  it('scrolls nowhere for a line these rows do not have', () => {
+    // The miss. Scrolling to the nearest row that does exist would read as a jump
+    // onto the wrong line, which is worse than not moving at all — and the sentence
+    // saying why is the panel's job, not this component's.
+    jumpTo(9_999)
+
+    expect(scrolled).not.toHaveBeenCalled()
+    expect(document.querySelectorAll('.outline-teal-500')).toHaveLength(0)
+  })
+
+  it('follows the line to a row that only appears later', () => {
+    // How a revealed gap arrives, and a slow fetch with it: the line is asked for
+    // against rows that do not contain it, and the row turns up on a later render.
+    // Guarding on the line rather than on the rows is what still catches this.
+    const rerender = jumpTo(151, rows.slice(0, 20))
+
+    expect(scrolled).not.toHaveBeenCalled()
+
+    rerender(view(151))
+
+    expect(scrolled).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('blobNotice', () => {
   const text: BlobSide = { kind: 'text', lines: ['a'], bytes: 1, noFinalNewline: false }
   const blobs = (partial: Partial<FileBlobs>): FileBlobs => ({

@@ -96,6 +96,7 @@ export function FileDiffPanel({
   threadActions,
   hideDone = false,
   iterationContext = null,
+  jumped = null,
 }: {
   blobs: FileBlobs
   diff: FileDiff
@@ -163,6 +164,11 @@ export function FileDiffPanel({
   hideDone?: boolean
   /** Which iterations a new thread on this file is written against. */
   iterationContext?: IterationContext | null
+  /**
+   * The right-side line a jump landed on. Passed straight through for the same
+   * reason `rows` is: the row model is the caller's, and this is one of its inputs.
+   */
+  jumped?: number | null
 }) {
   // Seeded from `viewed` and then owned here: a file marked read closes, and
   // reopening it does not mark it unread. Those are two different statements —
@@ -325,6 +331,7 @@ export function FileDiffPanel({
                 onCompose={onCompose}
                 threadActions={threadActions}
                 iterationContext={iterationContext}
+                jumped={jumped}
               />
               {noNewline === null ? null : (
                 // The marker is part of the file's text, not chrome around it, so
