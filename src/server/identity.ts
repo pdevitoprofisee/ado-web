@@ -102,7 +102,9 @@ export interface Directory {
   readonly complete: boolean
 }
 
-const usable = (subject: GraphSubject): subject is NamedSubject =>
+const usable = (subject: GraphSubject | null | undefined): subject is NamedSubject =>
+  subject !== null &&
+  subject !== undefined &&
   typeof subject.descriptor === 'string' &&
   subject.descriptor !== '' &&
   typeof subject.displayName === 'string' &&
@@ -193,7 +195,10 @@ const candidate = (user: NamedSubject, identityId: string): ReviewerCandidate =>
  * reviewer autocomplete) get the same order without agreeing on one.
  */
 export async function loadDirectory(client: AdoClient): Promise<Directory> {
-  const page = await client.get<{ value?: readonly GraphSubject[] }>(
+  // `(GraphSubject | null)[]`, because `identities` answers a null in place of a
+  // subject it has nothing for and there is no reason to assume the graph list is
+  // stricter about it. One null entry must cost one person, not the directory.
+  const page = await client.get<{ value?: readonly (GraphSubject | null)[] }>(
     '_apis/graph/users',
     // Preview-only, permanently: plain `7.1` answers 400 on every `graph/*` path.
     { 'api-version': GRAPH_API_VERSION },
