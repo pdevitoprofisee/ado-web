@@ -19,15 +19,32 @@ concurrent session skips it.
 | **1** | Live API inventory · scaffold · hardening · secrets · ADO client · SQLite · inbox spine · command registry | **complete** — all ten tickets resolved |
 | **2** | PR detail shell: header, conflicts, policy checklist, votes, commits, file list | **complete** — all four tickets resolved, [round 2](./round-2.md) |
 | **3** | The diff: blob fetch, local diff, virtualized rows, Shiki workers, viewed flags, side-by-side | **complete** — all seven tickets closed, [round 3](./round-3.md); nothing yet opened against a live PR |
-| 4 | Comments: inline threads, collapse-when-done, composer, mentions, likes, status setters | after 3 |
-| 5 | Checks: statuses, build timeline, failed step logs, failed tests, re-run actions | after 2 |
-| 6 | Sonar: findings from the Sonar API, grouped by rule, gate panel, rule detail | after 5 |
-| 7 | Write actions: vote, add reviewers w/ autocomplete, squash merge, abandon/reactivate | after 2 |
-| 8 | Notifications: event detection, activity centre, per-type sounds | after 5 |
+| **4** | Comments: inline threads, collapse-when-done, composer, likes, status setters | **complete** — all six tickets resolved, [round 4](./round-4.md); mentions and likes deferred to phase 10, and **no write has yet been sent to ADO** |
+| 5 | Checks: statuses, build timeline, failed step logs, failed tests, re-run actions | [round 5](./round-5.md) — requeue-the-policy landed early, out of band |
+| **6** | Sonar: findings from the Sonar API, grouped by rule, gate panel, rule detail | **complete, early** — delivered inside [round 4](./round-4.md) as T-027 and T-028; three known shortfalls moved to phase 10 |
+| 7 | Write actions: vote, add reviewers w/ autocomplete, squash merge, abandon/reactivate | [round 5](./round-5.md) — squash merge and rename landed early, out of band |
+| 8 | Notifications: event detection, activity centre, per-type sounds | [round 5](./round-5.md) — after 5 |
 | 9 | Repository list | any time after 3 |
+| **10** | **The deferred**: what phases 3, 4 and 6 shipped without, on purpose | [round 5](./round-5.md) — see below |
 | — | Local repositories (phase 2 proper) | [fog](../map.md#the-fog) |
 
 Phases 3 and 4 are the reason this project exists; phase 1 exists to make them cheap.
+
+### Phase 10 — the deferred
+
+Six things earlier phases decided not to build, each with the reason and the price already
+written down in the ticket that declined it. This phase exists so that list stops living in
+six Resolutions and starts being work. **None of these is a defect** — every one is a
+deliberate shortfall that was measured, named, and left.
+
+| What | Why it was left | What it costs to finish |
+|---|---|---|
+| **@mentions** in the composer | [T-026](./round-4.md#t-026--the-composer) — `POST graph/subjectquery` was never probed, so there is no measured identity-search surface, and both the request and ADO's stored `<a href="#mention:…">` markup would have been invented | one read-only probe pass, then a token-aware textarea — which is the larger half |
+| **Avatars** on a comment | [T-026](./round-4.md#t-026--the-composer) — `imageUrl` needs a credential the browser has not got | an image-proxying server function: a new endpoint class for a cosmetic gain |
+| **Line-anchored new threads** | [T-025](./round-4.md#t-025--threads-in-the-diff) — needs a second new `DiffRow` kind (a composer row under a line with no thread yet) and the union took its one addition that round | you can say "this file is wrong" from the diff but not "line 41 is wrong"; reply-to-an-existing-thread is today's only anchored write |
+| **Sonar paging past 500 findings** | [T-027](./round-4.md#t-027--sonar-findings-read) — `ps` ceiling is hard at 500 and the largest live sample had 4 findings | a paging loop that keeps per-project degradation intact; today the report is *knowingly* short rather than accidentally so |
+| **Line-level Sonar jump** | [T-028](./round-4.md#t-028--the-sonar-panel) — Sonar's lines drift from the diff when the branch was pushed to after analysis (note 6), so a line anchor was a promise the panel could not keep | addressing a line inside a virtualized row list, and an honest answer when the line is no longer there |
+| **Sonar's compliant/non-compliant `<pre>` pairing** | [T-028](./round-4.md#t-028--the-sonar-panel) — `defaultSchema` drops `data-diff-id` and `data-diff-type`, and allowing arbitrary `data-*` back in is a bigger door than the gain | a *narrow* schema extension rather than a wide one — the two attributes by name, nothing else |
 
 ---
 
