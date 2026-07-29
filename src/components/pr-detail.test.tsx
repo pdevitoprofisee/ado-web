@@ -874,13 +874,14 @@ describe('PullRequestDetailView tabs', () => {
     render(<PullRequestDetailView pr={detail({ files })} />)
 
     const ink = () => document.querySelector('.prof-tab__ink path')
-    // `stroke-dasharray="0 1"` against `pathLength="1"` is an undrawn stroke:
-    // framer pays it out to `1 1` over the animation, which is what makes it read
-    // as a pen rather than as an underline that was already there. Asserted on the
-    // attributes because that is where framer writes them — and because the whole
-    // point is that this is *not* a static background any more.
-    expect(ink()).toHaveAttribute('pathLength', '1')
-    expect(ink()).toHaveAttribute('stroke-dasharray', '0 1')
+    // The sweep itself is two cancelling transforms in `styles.css`, and jsdom
+    // loads no stylesheet to run them. What is checkable here is the structure
+    // they need: a clipping wrapper with the stroke as its own element inside,
+    // because each carries one half of the pair. Flatten it back to a single
+    // `<svg>` — the shape this had twice before — and there is nothing left to
+    // animate against, so the nesting is the assertion.
+    expect(ink()).not.toBeNull()
+    expect(document.querySelector('.prof-tab__ink > .prof-tab__ink-stroke')).not.toBeNull()
 
     // The stroke's colour is deliberately not here: a `var()` in an SVG
     // presentation attribute resolves to nothing in every browser, so it lives in

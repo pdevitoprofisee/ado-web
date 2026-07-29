@@ -716,26 +716,69 @@
      same curve can be drawn along its own length, left to right, the way the pen
      would have put it there. Same `d`, same 160×8 box.
 
-     `width` is explicit and `right` is not used, which for anything else here
-     would be the long way round. An `<svg>` is a replaced element: with `width`
-     left at `auto`, `left: 0; right: 0` is over-constrained, so CSS drops
-     `right` and takes the width from the intrinsic ratio instead — the
-     viewBox's 160:8 against `height: 8px`, which is 160px under every tab no
-     matter how short its label. `width: 100%` is the one form that actually
-     asks for the label's width. */
+     Two elements, and both are load-bearing — see `TabInk`. This one is the
+     window: it clips, and it is what sweeps. The `<svg>` inside holds the
+     finished stroke and slides the opposite way by the same amount, so the two
+     transforms cancel and the stroke stays put while only the clip moves.
+     Transforms because they animate off the main thread, which on the diff tabs
+     is busy mounting the diff at exactly this moment.
+
+     `width` on the `<svg>` is explicit, and that is not tidiness. An `<svg>` is
+     a replaced element: with `width` left at `auto`, `left: 0; right: 0` is
+     over-constrained, so CSS drops `right` and takes the width from the
+     intrinsic ratio instead — the viewBox's 160:8 against an 8px height, which
+     is 160px under every tab no matter how short its label. */
   .prof-tab__ink {
     position: absolute;
     left: 0;
     bottom: 0;
     width: 100%;
     height: 8px;
-    overflow: visible;
+    overflow: hidden;
+    animation: prof-tab-ink-window var(--duration-slow) var(--ease-settle) forwards;
+  }
+  .prof-tab__ink-stroke {
+    display: block;
+    width: 100%;
+    height: 100%;
+    animation: prof-tab-ink-stroke var(--duration-slow) var(--ease-settle) forwards;
   }
   /* Here and not on the element: a presentation attribute cannot hold a `var()`,
-     in any browser. Everything else about the stroke is on the path, where
-     framer-motion also writes the dash it draws it with. */
+     in any browser. */
   .prof-tab__ink path {
     stroke: var(--teal-500);
+  }
+
+  /* `--duration-slow` rather than `--duration-base`: this is the page's one
+     gesture you are meant to watch happen, and 200ms is over before the eye
+     arrives. `--ease-settle` does the rest — off the first letter fast,
+     decelerating into the last, the way a hand underlines a word. The pair have
+     to agree on both, or the stroke drifts under its own clip. */
+  @keyframes prof-tab-ink-window {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+  @keyframes prof-tab-ink-stroke {
+    from {
+      transform: translateX(100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+  /* Drawn already, rather than drawn instantly: with no animation to move them,
+     both transforms are their own initial `none` — window over the label, stroke
+     at rest inside it, which is the finished mark. It still says which tab is
+     active; it just was not laid down while you watched. */
+  @media (prefers-reduced-motion: reduce) {
+    .prof-tab__ink,
+    .prof-tab__ink-stroke {
+      animation: none;
+    }
   }
 
   /* ---------- Avatar ----------

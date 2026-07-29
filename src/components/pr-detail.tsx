@@ -1,6 +1,5 @@
 import { Check, CircleHelp, Clock, Minus, TriangleAlert, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { motion, useReducedMotion } from 'framer-motion'
 
 import type { ReactNode } from 'react'
 
@@ -741,59 +740,62 @@ function TabStrip({
 /**
  * The stroke under the active tab, drawn rather than shown.
  *
- * `pathLength` is the whole trick, and the reason this is framer-motion and not a
- * CSS transition on a width: animating `pathLength` from 0 pays out the curve
- * along itself, so the round cap is a pen nib travelling left to right and the
- * ink behind it is already the finished stroke. A width or a `scaleX` would grow
- * the *drawing* instead — the whole line visible from the first frame, stretching
- * — which is a rubber band, not a hand.
+ * The finished stroke is always there; what moves is the window it is seen
+ * through, sweeping left to right. The ink behind the edge is already the whole
+ * curve, which is what makes it read as a pen laying it down rather than as a
+ * line stretching into place.
+ *
+ * The wrapper is not decoration, and this is the one thing to know before
+ * touching it. `.prof-tab__ink` clips, and the two elements carry transform
+ * animations that cancel: the window slides in from `-100%` while the stroke
+ * slides the same distance the other way, so the stroke never actually moves and
+ * only the clip travels. It is written that way because `transform` is one of the
+ * two properties a browser can animate off the main thread. The three earlier
+ * cuts of this all animated a main-thread property — framer-motion writing
+ * `pathLength` per frame, then a CSS `stroke-dashoffset` — and both stall dead
+ * when the thread is busy. It is busy exactly here: on the diff tabs this mark is
+ * drawn in the same moment `ChangedFiles` mounts, and a stalled 320ms animation
+ * does not slow down, it shows three frames and jumps. On the compositor it does
+ * not care what the diff is doing.
+ *
+ * Both keyframes must keep the same duration and easing or the cancellation comes
+ * apart mid-sweep and the stroke visibly drifts. Any easing is safe as long as it
+ * is the *same* easing: the two translations are equal and opposite at every
+ * point on the timeline, so they sum to zero however the curve is shaped.
  *
  * Rendered only inside the active tab, so switching tabs unmounts it and mounts a
  * new one: the pen lifts and draws again under the new label rather than sliding
- * across the gap. That is the honest gesture for a strip whose stroke is exactly
- * as wide as the word above it, and it is why there is no `layoutId` here.
+ * across the gap, and a fresh element is also what restarts the animation.
  *
  * The `d` and the 160×8 box are `--stroke-underline-teal`'s, so light and dark
  * still meet at the same curve; `--teal-500` is the one thing that differs
- * between them and CSS already answers that.
+ * between them and CSS already answers that — as it does `prefers-reduced-motion`,
+ * which no longer needs a hook to ask about.
  */
 function TabInk() {
-  // `null` under jsdom, where `matchMedia` does not exist — see `lib/theme.ts`.
-  // Falsy either way, and a test that cannot measure an animation is not the
-  // reader we are drawing for.
-  const still = useReducedMotion()
-
   return (
-    <motion.svg
-      className="prof-tab__ink"
-      viewBox="0 0 160 8"
-      // The stroke is set as wide as the label, whatever the label is, and a
-      // 5-character tab is not a 22-character one. Prof's own underline is a
-      // stretched background image for the same reason.
-      preserveAspectRatio="none"
-      aria-hidden
-    >
-      <motion.path
-        d="M3 5.5 C 40 3.2, 95 3.0, 157 4.6"
-        fill="none"
-        // The colour is in `styles.css`, not a `stroke=` here, because a `var()`
-        // in an SVG presentation attribute is not resolved by any browser — and
-        // an unresolvable `stroke` is `none`, so the first cut of this drew a
-        // perfect invisible line. The stylesheet is where `--teal-500` can be
-        // read anyway, and it is where the theme rebinds it.
-        strokeWidth={2.2}
-        strokeLinecap="round"
-        initial={{ pathLength: still === true ? 1 : 0 }}
-        animate={{ pathLength: 1 }}
-        // `--duration-slow` and `--ease-settle`, as literals, because framer
-        // reads neither a CSS variable nor a `cubic-bezier()` string. The slow
-        // token rather than the base one: this is the page's one gesture you are
-        // meant to watch happen, and 200ms is over before the eye arrives. The
-        // curve does the rest — off the first letter fast, decelerating into the
-        // last, which is how a hand underlines a word.
-        transition={{ duration: still === true ? 0 : 0.32, ease: [0.25, 0.6, 0.3, 1] }}
-      />
-    </motion.svg>
+    <span className="prof-tab__ink" aria-hidden>
+      <svg
+        className="prof-tab__ink-stroke"
+        viewBox="0 0 160 8"
+        // The stroke is set as wide as the label, whatever the label is, and a
+        // 5-character tab is not a 22-character one. Prof's own underline is a
+        // stretched background image for the same reason.
+        preserveAspectRatio="none"
+      >
+        <path
+          d="M3 5.5 C 40 3.2, 95 3.0, 157 4.6"
+          fill="none"
+          // The colour is in `styles.css`, not a `stroke=` here, because a `var()`
+          // in an SVG presentation attribute is not resolved by any browser — and
+          // an unresolvable `stroke` is `none`, so the first cut of this drew a
+          // perfect invisible line. The stylesheet is where `--teal-500` can be
+          // read anyway, and it is where the theme rebinds it.
+          strokeWidth={2.2}
+          strokeLinecap="round"
+        />
+      </svg>
+    </span>
   )
 }
 
