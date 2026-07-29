@@ -71,6 +71,7 @@ const report = (over: Partial<SonarReport> = {}): SonarReport => ({
   groups: [group()],
   gate: { status: 'OK', conditions: passing },
   failed: [],
+  truncated: [],
   ...over,
 })
 
@@ -188,6 +189,52 @@ describe('SonarPanel', () => {
     const failures = within(panel().getByRole('list', { name: 'Projects Sonar could not read' }))
     expect(failures.getByText(/profisee_connex/)).toBeVisible()
     expect(failures.getByText(/HTTP 403/)).toBeVisible()
+  })
+
+  it('says how short a truncated list is, and why it stops', () => {
+    // Two different sentences on purpose. The API's ceiling is arithmetic and
+    // there is nothing to do about it; a refused request means the rest of the
+    // list might be there on a reload, and a reader deciding whether to trust
+    // this panel needs to know which happened.
+    draw({
+      report: report({
+        truncated: [
+          { projectKey: 'profisee_matching', fetched: 10000, total: 24312, message: null },
+          {
+            projectKey: 'profisee_connex',
+            fetched: 1500,
+            total: 4000,
+            message: 'SonarCloud rate-limited this token.',
+          },
+        ],
+      }),
+    })
+
+    const short = within(
+      panel().getByRole('list', { name: 'Projects with more findings than are shown' }),
+    )
+    expect(short.getByText(/Showing 10000 of 24312 findings for profisee_matching/)).toBeVisible()
+    expect(short.getByText(/will not page past 10000/)).toBeVisible()
+    expect(short.getByText(/Showing 1500 of 4000 findings for profisee_connex/)).toBeVisible()
+    expect(short.getByText(/could not be read: SonarCloud rate-limited this token\./)).toBeVisible()
+    // Not filed as a failure: these findings are on the screen, and the panel
+    // still lists them.
+    expect(panel().queryByRole('list', { name: 'Projects Sonar could not read' })).toBeNull()
+    expect(panel().getByRole('list', { name: 'Findings by rule' })).toBeVisible()
+  })
+
+  it('names the count it has when Sonar sent no total at all', () => {
+    draw({
+      report: report({
+        truncated: [
+          { projectKey: 'profisee_matching', fetched: 500, total: null, message: 'HTTP 500' },
+        ],
+      }),
+    })
+
+    // "the first 500", not "500 of null": a count it does not have is a sentence
+    // it does not write.
+    expect(panel().getByText(/Showing the first 500 findings for profisee_matching/)).toBeVisible()
   })
 
   it('falls back to the bare rule key for a rule Sonar will not describe', () => {

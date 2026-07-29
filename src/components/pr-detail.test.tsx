@@ -1449,6 +1449,7 @@ describe('PullRequestDetailView Sonar', () => {
       ],
       gate: { status: 'OK', conditions: [] },
       failed: [],
+      truncated: [],
     },
     rules: [],
     error: null,
@@ -1476,7 +1477,9 @@ describe('PullRequestDetailView Sonar', () => {
     render(
       <PullRequestDetailView
         pr={detail()}
-        sonar={result({ report: { projects: [], groups: [], gate: null, failed: [] } })}
+        sonar={result({
+          report: { projects: [], groups: [], gate: null, failed: [], truncated: [] },
+        })}
       />,
     )
 

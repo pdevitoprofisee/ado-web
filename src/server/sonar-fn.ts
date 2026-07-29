@@ -17,7 +17,13 @@ import type { SonarProjectRef, SonarReport, SonarRule } from '../lib/sonar-contr
  * A pull request with no Sonar status: not an error, not a failure, just nothing
  * to render. Distinct from `report: null`, which means we tried and could not.
  */
-const EMPTY_REPORT: SonarReport = { projects: [], groups: [], gate: null, failed: [] }
+const EMPTY_REPORT: SonarReport = {
+  projects: [],
+  groups: [],
+  gate: null,
+  failed: [],
+  truncated: [],
+}
 
 /**
  * What the findings panel renders from.

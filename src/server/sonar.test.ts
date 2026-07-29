@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SonarError, createSonarClient, loadSonarProjects, loadSonarReport, sonarProjects } from './sonar'
-import { SONAR_BACKOFF_MS } from '../lib/sonar-contract'
+import { SONAR_BACKOFF_MS, SONAR_MAX_PAGES } from '../lib/sonar-contract'
 
 import type { AdoClient, QueryValue } from './ado-client'
 import type { PullRequestRef } from './pull-request'
@@ -212,7 +212,7 @@ describe('the projects a pull request is analysed as', () => {
 })
 
 describe('the issues request', () => {
-  it('filters to open statuses, asks for one page and for the components block', async () => {
+  it('filters to open statuses, asks for the biggest page and for the components block', async () => {
     const { client, calls } = fakeSonar({
       'issues/search': { total: 0, issues: [], components: [] },
       project_status: GATE_OK,
@@ -227,8 +227,179 @@ describe('the issues request', () => {
     // `componentKeys`, not `components` — the latter 400s on Cloud.
     expect(issues?.params.componentKeys).toBe('profisee_matching')
     expect(issues?.params.pullRequest).toBe('24809')
+    expect(issues?.params.p).toBe(1)
+    // 500 and not 1000: `ps=501` answers 400 `'ps' value (501) must be less than
+    // 500`, so this is the maximum and paging is the only way past it.
     expect(issues?.params.ps).toBe(500)
     expect(issues?.params.additionalFields).toBe('_all')
+  })
+})
+
+describe('paging past one page', () => {
+  it('reads every page, and keeps the paths each page described', async () => {
+    // The pages are one issue long where real ones are five hundred: what is
+    // under test is that a second request happens and that both answers survive
+    // it, and `total` is what says so — not a page's length.
+    const { client, calls } = fakeSonar({
+      'issues/search': (params) =>
+        params.p === 1
+          ? {
+              total: 2,
+              // A second colon in the key, which is what makes `components[]`
+              // load-bearing: split on the first one this reads
+              // `Services.Matching:Stats/StatTrakReader.cs`, so a path map that
+              // page 2 rebuilt would show up here as a mangled path rather than
+              // as a missing one.
+              issues: [openIssue({ component: 'profisee_matching:Services.Matching:Stats/StatTrakReader.cs' })],
+              components: [
+                { key: 'profisee_matching', qualifier: 'TRK', name: 'profisee_matching' },
+                {
+                  key: 'profisee_matching:Services.Matching:Stats/StatTrakReader.cs',
+                  qualifier: 'FIL',
+                  path: 'Stats/StatTrakReader.cs',
+                },
+              ],
+            }
+          : {
+              total: 2,
+              issues: [
+                openIssue({ key: 'second', component: 'profisee_matching:Services.Matching/Program.cs' }),
+              ],
+              // Page 2 describes only its own file. Sonar does not repeat page
+              // one's components, which is the whole reason the map accumulates.
+              components: componentBlock('profisee_matching', 'Services.Matching/Program.cs'),
+            },
+      'rules/search': { rules: [] },
+      project_status: GATE_OK,
+    })
+
+    const { report } = await loadSonarReport(client, [MATCHING])
+    const issues = calls.filter((call) => call.path.endsWith('issues/search'))
+
+    expect(issues.map((call) => call.params.p)).toEqual([1, 2])
+    expect(report.groups.flatMap((group) => group.findings).map((finding) => finding.path)).toEqual([
+      '/Stats/StatTrakReader.cs',
+      '/Services.Matching/Program.cs',
+    ])
+    // Two of two: a list that is whole says nothing.
+    expect(report.truncated).toEqual([])
+  })
+
+  it('stops when it has the whole list rather than asking for a page after the end', async () => {
+    const { client, calls } = fakeSonar({
+      'issues/search': (params) => ({
+        total: 4,
+        issues: [
+          openIssue({ key: `a${String(params.p)}` }),
+          openIssue({ key: `b${String(params.p)}` }),
+        ],
+        components: [],
+      }),
+      'rules/search': { rules: [] },
+      project_status: GATE_OK,
+    })
+
+    const { report } = await loadSonarReport(client, [MATCHING])
+
+    expect(calls.filter((call) => call.path.endsWith('issues/search'))).toHaveLength(2)
+    expect(report.groups[0].findings).toHaveLength(4)
+    expect(report.truncated).toEqual([])
+  })
+
+  it('takes a page shorter than the maximum as the end when no total arrived', async () => {
+    // `total` was on every 200 measured, so this is the unmeasured case: with
+    // nothing to count against, a page that came back short is the only end
+    // signal there is, and asking twenty times to be sure is worse.
+    const { client, calls } = fakeSonar({
+      'issues/search': { issues: [openIssue()], components: [] },
+      'rules/search': { rules: [] },
+      project_status: GATE_OK,
+    })
+
+    const { report } = await loadSonarReport(client, [MATCHING])
+
+    expect(calls.filter((call) => call.path.endsWith('issues/search'))).toHaveLength(1)
+    expect(report.truncated).toEqual([])
+  })
+
+  it('stops at the API’s own ceiling and says how short the list is', async () => {
+    // `p * ps` cannot exceed 10 000 — page 21 at ps=500 answers 400 — so a
+    // project with more findings than that has an unreachable tail and the only
+    // honest thing to do is say so. Two issues a page rather than five hundred:
+    // the bound under test is the page count, and fabricating 10 000 issues to
+    // assert one number would test the fixture.
+    const { client, calls } = fakeSonar({
+      'issues/search': (params) => ({
+        total: 12_000,
+        issues: [
+          openIssue({ key: `a${String(params.p)}` }),
+          openIssue({ key: `b${String(params.p)}` }),
+        ],
+        components: [],
+      }),
+      'rules/search': { rules: [] },
+      project_status: GATE_OK,
+    })
+
+    const { report } = await loadSonarReport(client, [MATCHING])
+    const issues = calls.filter((call) => call.path.endsWith('issues/search'))
+
+    expect(issues).toHaveLength(SONAR_MAX_PAGES)
+    expect(issues.at(-1)?.params.p).toBe(SONAR_MAX_PAGES)
+    // `message: null` is the ceiling: nothing went wrong, there is just no
+    // request that reads the rest. Not in `failed`, because these findings are on
+    // the screen.
+    expect(report.truncated).toEqual([
+      { projectKey: 'profisee_matching', fetched: 40, total: 12_000, message: null },
+    ])
+    expect(report.failed).toEqual([])
+    // Still a project that answered, so its gate is still worth asking for.
+    expect(report.gate?.status).toBe('OK')
+  })
+
+  it('keeps the pages it got when a later one is refused, and says it backed off', async () => {
+    // The failure this whole thing exists for. One throw on page 3 used to
+    // discard pages 1 and 2 with it, and the report said the project could not be
+    // read at all — of a project whose findings had already arrived.
+    const { client, calls } = fakeSonar({
+      'issues/search': (params) => {
+        if (Number(params.p) >= 3) {
+          throw new SonarError(429, 'SonarCloud rate-limited this token. Backing off for 2 minutes.')
+        }
+
+        return {
+          total: 12_000,
+          issues: [
+            openIssue({ key: `a${String(params.p)}` }),
+            openIssue({ key: `b${String(params.p)}` }),
+          ],
+          components: [],
+        }
+      },
+      'rules/search': { rules: [] },
+      project_status: GATE_OK,
+    })
+
+    const { report } = await loadSonarReport(client, [MATCHING])
+
+    expect(calls.filter((call) => call.path.endsWith('issues/search'))).toHaveLength(3)
+    expect(report.groups[0].findings.map((finding) => finding.key)).toEqual(['a1', 'b1', 'a2', 'b2'])
+    // The distinction the panel repeats to the reader: this list stopped because
+    // a request was refused, not because it ran out.
+    expect(report.truncated).toEqual([
+      {
+        projectKey: 'profisee_matching',
+        fetched: 4,
+        total: 12_000,
+        message: 'SonarCloud rate-limited this token. Backing off for 2 minutes.',
+      },
+    ])
+    expect(report.failed).toEqual([])
+    // The gate is skipped on a back-off even though pages answered first: the
+    // client is closed to every further request and asking only manufactures a
+    // second identical failure.
+    expect(calls.some((call) => call.path.endsWith('project_status'))).toBe(false)
+    expect(report.gate).toBeNull()
   })
 })
 
@@ -547,5 +718,8 @@ describe('a 429', () => {
     ])
     expect(report.groups).toEqual([])
     expect(report.gate).toBeNull()
+    // Nothing arrived, so nothing is truncated: a project with no findings on the
+    // screen is `failed`, and the two lists never describe the same project.
+    expect(report.truncated).toEqual([])
   })
 })

@@ -2,7 +2,12 @@ import { createHash } from 'node:crypto'
 
 import { serviceDetail } from './connection-test'
 import { readSonarCredential } from './credentials'
-import { SECTION_ORDER, SONAR_BACKOFF_MS, SONAR_PAGE_SIZE } from '../lib/sonar-contract'
+import {
+  SECTION_ORDER,
+  SONAR_BACKOFF_MS,
+  SONAR_MAX_PAGES,
+  SONAR_PAGE_SIZE,
+} from '../lib/sonar-contract'
 
 import type { AdoClient, QueryValue } from './ado-client'
 import type { SonarCredential } from './credentials'
@@ -21,6 +26,7 @@ import type {
   SonarRule,
   SonarSeverity,
   SonarTextRange,
+  SonarTruncation,
 } from '../lib/sonar-contract'
 
 // Server-only. Everything the app knows about SonarCloud.
@@ -182,8 +188,22 @@ interface SonarIssue {
 }
 
 interface SonarIssuesResponse {
+  /**
+   * How many issues match, which is the only thing that says where the list ends.
+   *
+   * Measured on the top level of every `issues/search` response that answered
+   * 200 — `total: 0` on a clean pull request, `total: 3` on one with issues, and
+   * `total: 10000` on a project's main branch. The same number arrives again
+   * inside `paging` (`{pageIndex, pageSize, total}`), which is why `paging` is not
+   * modelled: it is a second copy of this field, and modelling both would invite a
+   * reader to wonder which one is authoritative.
+   */
   readonly total?: number
   readonly issues?: readonly SonarIssue[]
+  /**
+   * **Only the components this page's own issues mention.** Page 2 does not repeat
+   * page 1's files, so the path map has to accumulate — see `loadIssues`.
+   */
   readonly components?: readonly SonarComponent[]
 }
 
@@ -490,34 +510,88 @@ interface ProjectIssues {
    * issue carries it, and the `rules` call cannot be made without it.
    */
   readonly organization: string | null
+  /**
+   * Why `findings` is not the whole list, or `null` when it is.
+   *
+   * `loadIssues` does not throw, which is the point: a failure on page 3 with
+   * pages 1 and 2 in hand used to discard both, and preserving them is the whole
+   * reason to page at all. The caller decides what a shortfall means — `error` is
+   * handed back unwrapped so it can still ask `backedOff` about it.
+   */
+  readonly shortfall: {
+    /** Sonar's `total`, or `null` when no page that answered carried one. */
+    readonly total: number | null
+    /** What stopped the loop, or `null` when it stopped at the API's own ceiling. */
+    readonly error: unknown
+  } | null
 }
 
+/**
+ * Every open finding in one project, in as many pages as the API allows.
+ *
+ * **Two hard ceilings, and neither is negotiable.** `ps` maxes out at 500 (`ps=501`
+ * and `ps=1000` both 400), and `p * ps` cannot exceed 10 000, so twenty pages is
+ * the end of the road: there is no request that reads a project's 10 001st issue.
+ * A project with more findings than that comes back short and *says so* — see
+ * `SonarTruncation` — which is the honest half of this function.
+ *
+ * **No sleep between pages.** A 429 arms the client's gate, and every request
+ * after that is refused instantly without waiting, so pacing the loop would buy
+ * nothing. What that does mean is that the instant refusal is a *failure*, not the
+ * end of the list, and the two leave by different doors below.
+ */
 async function loadIssues(client: SonarClient, project: SonarProjectRef): Promise<ProjectIssues> {
-  const response = await client.get<SonarIssuesResponse>('api/issues/search', {
-    // `componentKeys`, not `components`: the latter answers 400 on Cloud
-    // ("At least one of the following parameters must be specified…"), which is
-    // a confusing way to be told the parameter name is wrong.
-    componentKeys: project.projectKey,
-    pullRequest: project.pullRequest,
-    issueStatuses: OPEN_STATUSES,
-    // One page. The ceiling is hard — `ps=501` answers 400 `'ps' value (501)
-    // must be less than 500` — and 500 is well past the 300 findings this
-    // project exists for. A pull request with more than 500 open findings is
-    // knowingly unhandled rather than accidentally so.
-    ps: SONAR_PAGE_SIZE,
-    // What produced the `components[]` block `findingPath` reads. Measured 200
-    // on every probe pass that asked for it.
-    additionalFields: '_all',
-  })
-
+  // Accumulated across pages, never rebuilt per page: `components[]` describes
+  // only the files the current page's issues live in, so a map replaced on page 2
+  // loses every path on page 1 and those findings all render as project-level.
   const paths = new Map<string, string>()
-  for (const component of response.components ?? []) {
-    if (typeof component.key === 'string' && typeof component.path === 'string') {
-      paths.set(component.key, component.path)
+  const issues: SonarIssue[] = []
+  let total: number | null = null
+  let complete = false
+  let stopped: unknown = null
+
+  for (let page = 1; page <= SONAR_MAX_PAGES && !complete; page += 1) {
+    let response: SonarIssuesResponse
+    try {
+      response = await client.get<SonarIssuesResponse>('api/issues/search', {
+        // `componentKeys`, not `components`: the latter answers 400 on Cloud
+        // ("At least one of the following parameters must be specified…"), which is
+        // a confusing way to be told the parameter name is wrong.
+        componentKeys: project.projectKey,
+        pullRequest: project.pullRequest,
+        issueStatuses: OPEN_STATUSES,
+        p: page,
+        ps: SONAR_PAGE_SIZE,
+        // What produced the `components[]` block `findingPath` reads. Measured 200
+        // on every probe pass that asked for it.
+        additionalFields: '_all',
+      })
+    } catch (error) {
+      stopped = error
+      break
     }
+
+    for (const component of response.components ?? []) {
+      if (typeof component.key === 'string' && typeof component.path === 'string') {
+        paths.set(component.key, component.path)
+      }
+    }
+
+    const batch = response.issues ?? []
+    issues.push(...batch)
+    if (typeof response.total === 'number') total = response.total
+
+    // `total` decides when it is there, and it was there on every 200 measured.
+    // It is asked *first* rather than as a tie-break because a short page is not
+    // proof of a last page — the ADO side measured a service that filters after
+    // applying its page size, so a page of 3 out of 500 still had more behind it.
+    // A missing `total` is unmeasured, and there a short page is the only end
+    // signal there is; an empty page is a short page, so that covers a service
+    // that counts differently than it pages.
+    complete = total !== null ? issues.length >= total : batch.length < SONAR_PAGE_SIZE
   }
 
-  const findings = (response.issues ?? [])
+  const findings = issues
     .filter((issue): issue is SonarIssue & { key: string; rule: string } =>
       typeof issue.key === 'string' && typeof issue.rule === 'string',
     )
@@ -538,11 +612,23 @@ async function loadIssues(client: SonarClient, project: SonarProjectRef): Promis
       url: issueUrl(project, issue.key),
     }))
 
-  const organization = (response.issues ?? []).find(
+  const organization = issues.find(
     (issue) => typeof issue.organization === 'string' && issue.organization !== '',
   )?.organization
 
-  return { findings, organization: organization ?? null }
+  // Three outcomes, and the middle one is the one worth being careful about. A
+  // request threw, so the list stops early and *why* travels with it. Nothing
+  // threw but the loop ran out of pages, so the list stops at the API's ceiling
+  // and there is no error to report. Or it read to the end and there is no
+  // shortfall at all.
+  const shortfall =
+    stopped !== null
+      ? { total, error: stopped }
+      : complete
+        ? null
+        : { total, error: null }
+
+  return { findings, organization: organization ?? null, shortfall }
 }
 
 /** Worst impact in the group, for the badge. `null` when nothing declared one. */
@@ -759,6 +845,12 @@ const backedOff = (error: unknown): boolean =>
  * away: partial failure is the normal case for a multi-project repository, and a
  * panel that shows three projects and silently omits the fourth is worse than
  * one that says what it lost.
+ *
+ * **A project that half fails is named in `truncated` instead**, and the two lists
+ * are not interchangeable. `failed` means "these findings are not on your screen";
+ * `truncated` means "these are, and there are more". Page 3 failing after pages 1
+ * and 2 answered is the second kind, and calling it the first would tell a
+ * reviewer to ignore 1 000 findings they can see.
  */
 export async function loadSonarReport(
   client: SonarClient,
@@ -767,18 +859,38 @@ export async function loadSonarReport(
   const findings: SonarFinding[] = []
   const gates: QualityGate[] = []
   const failed: { projectKey: string; message: string }[] = []
+  const truncated: SonarTruncation[] = []
   let organization: string | null = null
 
   for (const project of projects) {
     let lostToBackOff = false
 
-    try {
-      const issues = await loadIssues(client, project)
-      findings.push(...issues.findings)
-      organization ??= issues.organization
-    } catch (error) {
-      failed.push({ projectKey: project.projectKey, message: message(error) })
+    const issues = await loadIssues(client, project)
+    findings.push(...issues.findings)
+    organization ??= issues.organization
+
+    if (issues.shortfall !== null) {
+      const { total, error } = issues.shortfall
+      // A back-off closes the client whether or not any page answered first, so
+      // the gate is skipped either way — the difference between the two branches
+      // below is only what the panel is told.
       lostToBackOff = backedOff(error)
+
+      if (error !== null && issues.findings.length === 0) {
+        // Nothing arrived at all, so this is the plain failure it has always
+        // been: there is no partial list to describe.
+        failed.push({ projectKey: project.projectKey, message: message(error) })
+      } else {
+        truncated.push({
+          projectKey: project.projectKey,
+          fetched: issues.findings.length,
+          total,
+          // `null` for the ceiling, and a request's own words for a failure —
+          // which is what keeps "we backed off" from reading as "that was the
+          // last page".
+          message: error === null ? null : message(error),
+        })
+      }
     }
 
     // The gate is asked for even when the issues failed — they are two
@@ -813,6 +925,7 @@ export async function loadSonarReport(
       groups: toGroups(findings, names),
       gate: mergeGates(gates),
       failed,
+      truncated,
     },
     // A failed rules call costs names and descriptions, not findings — so it is
     // swallowed above rather than added to `failed`, which is per project and

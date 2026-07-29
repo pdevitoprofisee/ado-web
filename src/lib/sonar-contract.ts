@@ -152,6 +152,39 @@ export interface RuleGroup {
   readonly findings: readonly SonarFinding[]
 }
 
+/**
+ * A project whose findings are in the report but not all of them.
+ *
+ * **Not a failure, which is why this is not `SonarReport.failed`.** Those two
+ * lists answer different questions — `failed` is "which project did we lose",
+ * this is "which project's list is short" — and a project can be in this one
+ * while every finding it did answer with renders normally. Filing a truncation as
+ * a failure would make the panel say it could not read a project whose findings
+ * are on the screen.
+ *
+ * Both reasons it happens are real. `issues/search` will not page past
+ * `SONAR_ISSUE_CEILING` issues, and a request can fail on page 3 with pages 1 and
+ * 2 already in hand — the second is the one worth keeping partials for, and the
+ * one that must not read as "that was the end of the list".
+ */
+export interface SonarTruncation {
+  readonly projectKey: string
+  /** How many findings the report actually carries for this project. */
+  readonly fetched: number
+  /**
+   * Sonar's own count of matching issues, so the panel can say how short the list
+   * is. `null` when no page that answered carried one.
+   */
+  readonly total: number | null
+  /**
+   * Why the list stops, or `null` when it stopped at the API's own ceiling —
+   * which is arithmetic rather than something going wrong. A message here is the
+   * request that ended the paging loop, and the difference between "backed off"
+   * and "finished" lives in it.
+   */
+  readonly message: string | null
+}
+
 /** Everything Sonar says about one pull request. */
 export interface SonarReport {
   readonly projects: readonly SonarProjectRef[]
@@ -164,8 +197,13 @@ export interface SonarReport {
    * project's token scope or analysis can fail while the others answer. A panel
    * that shows four projects' findings and silently omits the fifth is worse
    * than one that says which one it lost.
+   *
+   * A project that answered *some* pages before failing is not here — it is in
+   * `truncated`, because its findings are in the report.
    */
   readonly failed: readonly { readonly projectKey: string; readonly message: string }[]
+  /** A project whose findings are here but incomplete. See `SonarTruncation`. */
+  readonly truncated: readonly SonarTruncation[]
 }
 
 // ---------------------------------------------------------------------------
@@ -278,11 +316,36 @@ export interface SonarRule {
  * The most issues one `issues/search` call will return.
  *
  * A hard ceiling, not a suggestion: `ps=501` and `ps=1000` both answer 400
- * `'ps' value (501) must be less than 500`. No sampled pull request came close —
- * the largest had 4 — but the PR this project exists for has 300 Sonar comments,
- * and 300 findings is well inside one page.
+ * `'ps' value (501) must be less than 500`. So this is the page size *and* the
+ * maximum page size — there is no larger value to ask for, and a paging loop is
+ * the only way past it.
+ *
+ * Shared with the `rules/search` call, which sends it as a plain limit on a single
+ * request rather than as a page size. That call is bounded by the number of
+ * *distinct rules* in a pull request, which no sampled repository put anywhere
+ * near 500, so it stays one call and this constant stays one number.
  */
 export const SONAR_PAGE_SIZE = 500
+
+/**
+ * The most pages of findings one project will be asked for.
+ *
+ * **Arithmetic, not policy.** On `issues/search`, `p * ps` cannot exceed 10 000,
+ * so at the maximum page size the twenty-first page is a 400 — page 20 is where
+ * the API stops, whatever the loop would like. `SONAR_ISSUE_CEILING` is the same
+ * fact counted in issues.
+ *
+ * This is also the bound that keeps a pathological repository from hanging the
+ * panel: 20 sequential requests at 145–1177 ms each is the worst case, and it only
+ * happens on a project with more than 9 500 open findings.
+ */
+export const SONAR_MAX_PAGES = 20
+
+/**
+ * The most findings this app can ever show for one project, and it cannot be
+ * defeated — only admitted, which is what `SonarTruncation` is for.
+ */
+export const SONAR_ISSUE_CEILING = SONAR_PAGE_SIZE * SONAR_MAX_PAGES
 
 /**
  * How long to wait after a Sonar 429, in milliseconds.

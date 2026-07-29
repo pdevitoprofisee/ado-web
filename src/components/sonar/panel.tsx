@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 
 import { RuleDetail } from './rule-detail'
 import { fileAnchor } from '@/lib/file-anchor'
+import { SONAR_ISSUE_CEILING } from '@/lib/sonar-contract'
 import { cn } from '@/lib/utils'
 
 import type { ReactNode } from 'react'
@@ -15,6 +16,7 @@ import type {
   SonarReport,
   SonarRule,
   SonarSeverity,
+  SonarTruncation,
 } from '@/lib/sonar-contract'
 
 // What Sonar says about a pull request, on the page.
@@ -49,6 +51,44 @@ function Failed({ children }: { children: ReactNode }) {
       {children}
     </p>
   )
+}
+
+/**
+ * And "there are more of them than this" is a third fact, drawn between the two.
+ *
+ * Not `Failed`: the findings this is about are on the screen, and putting them
+ * behind a red alert says the opposite. **The words are in ink and only the mark
+ * is amber**, because `--pen-amber` is 3.39:1 on this paper — enough for a stroke
+ * or a glyph, and short of the 4.5:1 a sentence needs. Colour is the annotation
+ * here, never the message.
+ */
+function Short({ children }: { children: ReactNode }) {
+  return (
+    <p className="flex items-center gap-1.5 px-2 py-1.5 text-sm">
+      <HugeiconsIcon icon={Alert02Icon} size={14} className="text-pen-amber shrink-0" aria-hidden />
+      {children}
+    </p>
+  )
+}
+
+/**
+ * What to say about a list that stops early, in one sentence.
+ *
+ * Two numbers and a reason, and the reason is the part that matters: the API's own
+ * ceiling is arithmetic and nothing went wrong, while a request that failed part
+ * way through means the missing findings might be there on a reload. A reader
+ * deciding whether to trust the list needs to know which of those happened, so
+ * they are different sentences rather than one hedged one.
+ */
+const shortfallText = (short: SonarTruncation): string => {
+  const shown =
+    short.total === null ? `the first ${short.fetched}` : `${short.fetched} of ${short.total}`
+  const reason =
+    short.message === null
+      ? `Sonar will not page past ${SONAR_ISSUE_CEILING} findings in one project.`
+      : `The rest could not be read: ${short.message}`
+
+  return `Showing ${shown} findings for ${short.projectKey}. ${reason}`
 }
 
 /**
@@ -553,6 +593,19 @@ export function SonarPanel({
                 <Failed>
                   Could not read {failure.projectKey}&rsquo;s findings. {failure.message}
                 </Failed>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* Above the findings, not below them: a list that is short is short from
+            its first row, and a reader who scrolls a thousand findings to find
+            that out has already drawn conclusions from an incomplete list. */}
+        {report.truncated.length === 0 ? null : (
+          <ul aria-label="Projects with more findings than are shown" className="w-full">
+            {report.truncated.map((short) => (
+              <li key={short.projectKey}>
+                <Short>{shortfallText(short)}</Short>
               </li>
             ))}
           </ul>
