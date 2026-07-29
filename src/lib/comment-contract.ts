@@ -63,9 +63,12 @@ export type ThreadResolution = 'open' | 'done'
  *
  * `id` is the GUID identity, and it is the field that decides whether a thread
  * is a person's or a robot's — see `SonarAuthorship` in `sonar-contract.ts`.
- * `imageUrl` points back at ADO and needs the credential the browser does not
- * have, so an avatar has to be proxied or dropped; the type carries the URL and
- * leaves that decision to the renderer.
+ * `imageUrl` points back at ADO, and T-030 measured that on a comment author it
+ * is the `MemberAvatars/{descriptor}` form on **42 of 42** — the form that
+ * answers 200 with no auth header at all, so the browser loads it unaided and no
+ * proxy was needed. It is still only a *candidate*: the same field on a reviewer
+ * and on a PR author is the redirecting `identityImage` form, so the renderer
+ * checks the URL rather than the field. `avatar.tsx` owns that check.
  */
 export interface CommentAuthor {
   readonly id: string

@@ -2,10 +2,10 @@ import { useState } from 'react'
 
 import { Composer } from './composer'
 import { isMine, isOwn } from './thread-actions'
+import { Avatar } from '@/components/avatar'
 import { Markdown } from '@/components/markdown'
 import { Button } from '@/components/ui/button'
 import { age } from '@/components/pr-list'
-import { initials } from '@/lib/people'
 import { cn } from '@/lib/utils'
 
 import type { Comment } from '@/lib/comment-contract'
@@ -20,10 +20,12 @@ import type { ThreadActions } from './thread-actions'
 // where it matters. Side is the cheapest possible answer to "who said that", and
 // it is free: no ink, no chrome, nothing to read.
 //
-// The image is still not the avatar. `imageUrl` points at ADO and needs the
-// credential the browser has not got, so the blob is a monogram — the same
-// `.prof-avatar` treatment, and for the same reason, as the reviewers list, where
-// the names come down with no image at all.
+// The image is the avatar now, where ADO has one. T-030 measured that a comment
+// author's `imageUrl` is the `MemberAvatars` form on 42 of 42 — the form that
+// answers 200 with no auth header at all — so it loads straight from the browser
+// with no proxy and no credential. It is still `Avatar` and not an `<img>`,
+// because a reviewer's `imageUrl` is the *other* form and rendering either on
+// trust is how you get a broken glyph; see `avatar.tsx`.
 //
 // Two things this still does not render. **No like control**: `usersLiked` was
 // present on 59 of 59 sampled comments and non-empty on none of them, and the
@@ -106,11 +108,13 @@ export function CommentView({
     <div className={cn('flex items-start gap-2 py-1', mine && 'flex-row-reverse')}>
       {/* `mt-0.5` against the header's 16px line box: a 20px circle on a text
           baseline hangs, the same problem `ReviewerRow` fixes with `items-center`.
-          `aria-hidden`, because the name is already in the header underneath — a
-          screen reader reading "PD Paul DeVito" is worse than no blob at all. */}
-      <span className="prof-avatar mt-0.5 size-5" aria-hidden>
-        {initials(comment.author.displayName)}
-      </span>
+          Sized here rather than inside `Avatar`, so the box exists before the
+          image does and a face arriving late moves nothing. */}
+      <Avatar
+        href={comment.author.imageUrl}
+        name={comment.author.displayName}
+        className="mt-0.5 size-5"
+      />
 
       {/* Capped rather than full width, or a one-word reply would draw a bubble
           across the whole card and the sides would stop reading as sides. 85%

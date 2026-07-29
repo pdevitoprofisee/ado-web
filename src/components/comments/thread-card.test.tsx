@@ -220,9 +220,26 @@ describe('ThreadCard', () => {
     expect(screen.getByText('edited')).toBeInTheDocument()
   })
 
-  it('draws a monogram, not the image, because the image needs a credential the browser has not got', () => {
+  it('draws the author’s face, which on a comment is the URL a browser can load', () => {
+    // 42 of 42 comment authors carried the `MemberAvatars` form, which answers 200
+    // with no auth header at all — so this is the one of ADO's two avatar URLs
+    // that goes straight into an `<img src>`.
     const one = thread({
-      comments: [{ ...comment(1, 'Hello.'), author: { id: 'writer', displayName: 'Ada Lovelace', uniqueName: null, imageUrl: 'https://dev.azure.com/avatar' } }],
+      comments: [{ ...comment(1, 'Hello.'), author: { id: 'writer', displayName: 'Ada Lovelace', uniqueName: null, imageUrl: 'https://dev.azure.com/profisee/_apis/GraphProfile/MemberAvatars/aad.OWY0NTIwYTMtMzc' } }],
+    })
+    const { container } = render(<ThreadCard threads={[one]} />)
+
+    expect(container.querySelector('img')).toHaveAttribute(
+      'src',
+      'https://dev.azure.com/profisee/_apis/GraphProfile/MemberAvatars/aad.OWY0NTIwYTMtMzc',
+    )
+    // Underneath it either way, so a slow one does not arrive into a blank circle.
+    expect(container.querySelector('.prof-avatar')).toHaveTextContent('AL')
+  })
+
+  it('refuses a URL that redirects to a sign-in page, and draws the monogram instead', () => {
+    const one = thread({
+      comments: [{ ...comment(1, 'Hello.'), author: { id: 'writer', displayName: 'Ada Lovelace', uniqueName: null, imageUrl: 'https://dev.azure.com/profisee/_api/_common/identityImage?id=writer' } }],
     })
     const { container } = render(<ThreadCard threads={[one]} />)
 
