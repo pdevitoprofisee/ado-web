@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ArrowDown01Icon, ArrowRight01Icon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 
 import { DiffView, blobNotice } from './diff-view'
 import { FileThreadList } from '@/components/comments/file-thread-list'
@@ -211,11 +212,12 @@ export function FileDiffPanel({
           // rather than drawing a mechanical rectangle around the filename.
           className="flex min-w-0 flex-1 items-baseline gap-1.5 rounded-sm text-left"
         >
-          {open ? (
-            <ChevronDown className="size-3 shrink-0 self-center" aria-hidden />
-          ) : (
-            <ChevronRight className="size-3 shrink-0 self-center" aria-hidden />
-          )}
+          <HugeiconsIcon
+            icon={open ? ArrowDown01Icon : ArrowRight01Icon}
+            size={12}
+            className="shrink-0 self-center"
+            aria-hidden
+          />
           {/* Same rule as the file list: the directory gives way, never the
               name, because the end of a 90-column path is the part that says
               which file this is. */}

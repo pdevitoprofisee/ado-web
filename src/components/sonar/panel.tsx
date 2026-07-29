@@ -1,4 +1,5 @@
-import { ChevronDown, ChevronRight, TriangleAlert } from 'lucide-react'
+import { Alert02Icon, ArrowDown01Icon, ArrowRight01Icon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 import { useMemo, useState } from 'react'
 
 import { RuleDetail } from './rule-detail'
@@ -44,7 +45,7 @@ function Empty({ children }: { children: ReactNode }) {
 function Failed({ children }: { children: ReactNode }) {
   return (
     <p className="text-destructive flex items-center gap-1.5 px-2 py-1.5 text-sm">
-      <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
+      <HugeiconsIcon icon={Alert02Icon} size={14} className="shrink-0" aria-hidden />
       {children}
     </p>
   )
@@ -402,11 +403,12 @@ function GroupRow({
         // hover would leave selection with nothing left to say.
         className="hover:bg-muted flex w-full items-baseline gap-2 px-2 py-1 text-left text-sm"
       >
-        {open ? (
-          <ChevronDown className="size-3.5 shrink-0 self-center" aria-hidden />
-        ) : (
-          <ChevronRight className="size-3.5 shrink-0 self-center" aria-hidden />
-        )}
+        <HugeiconsIcon
+          icon={open ? ArrowDown01Icon : ArrowRight01Icon}
+          size={14}
+          className="shrink-0 self-center"
+          aria-hidden
+        />
         <span className="min-w-0 flex-1">
           {title}
           {/* Only when it is not already the title: a group titled by its own key

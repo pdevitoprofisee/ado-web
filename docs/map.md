@@ -245,6 +245,10 @@ line text — useful only to make our hunk boundaries match theirs. It's preview
 - No existing React diff library virtualizes. react-diff-view's own published
   benchmark: **26,072 ms render** on a 375-file diff. Rolling our own is the cheap
   option, not the ambitious one.
+- **Icons are hugeicons, not lucide.** `<HugeiconsIcon icon={Tick02Icon} size={14} />`,
+  with the icon objects from `@hugeicons/core-free-icons`. `lucide-react` is gone from
+  the dependencies, so anything shadcn generates — it writes lucide imports — has to be
+  translated by hand.
 
 ### Sonar
 

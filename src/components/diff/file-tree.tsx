@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ArrowDown01Icon, ArrowRight01Icon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 
 import { fileAnchor } from '@/lib/file-anchor'
 import { cn } from '@/lib/utils'
@@ -127,11 +128,12 @@ function Directory({
         title={node.path}
         className="text-ink-500"
       >
-        {open ? (
-          <ChevronDown className="size-3 shrink-0" aria-hidden />
-        ) : (
-          <ChevronRight className="size-3 shrink-0" aria-hidden />
-        )}
+        <HugeiconsIcon
+          icon={open ? ArrowDown01Icon : ArrowRight01Icon}
+          size={12}
+          className="shrink-0"
+          aria-hidden
+        />
         <span className="truncate">{node.name}</span>
         <span className="text-ink-300 ml-auto shrink-0 tabular-nums">{node.files}</span>
       </Row>

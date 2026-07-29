@@ -1,6 +1,7 @@
 import { useMemo, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ChevronsUpDown } from 'lucide-react'
+import { UnfoldMoreIcon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 
 import { LineText } from './line-text'
 import { ThreadCard } from '@/components/comments/thread-card'
@@ -297,7 +298,7 @@ function Row({
         // pointer instead.
         className="bg-muted text-muted-foreground hover:bg-accent flex w-full items-baseline gap-1.5 px-2 text-left disabled:hover:bg-muted"
       >
-        <ChevronsUpDown className="size-3 shrink-0" aria-hidden />
+        <HugeiconsIcon icon={UnfoldMoreIcon} size={12} className="shrink-0" aria-hidden />
         {label}
       </button>
     )

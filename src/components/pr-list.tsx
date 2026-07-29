@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import {
-  Check,
-  Clock,
-  ExternalLink,
-  GitMerge,
-  Merge,
-  MessageSquare,
-  RotateCcw,
-  TriangleAlert,
-  X,
-} from 'lucide-react'
+  Alert02Icon,
+  Cancel01Icon,
+  Clock01Icon,
+  GitMergeConflictIcon,
+  GitMergeIcon,
+  LinkSquare02Icon,
+  Message01Icon,
+  RefreshIcon,
+  Tick02Icon,
+} from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 
 import { useCommand } from '@/commands/command-provider'
 import { cn } from '@/lib/utils'
@@ -77,14 +78,14 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
       {/* Free from the list call, so it is the one badge that never waits. */}
       {row.conflicted ? (
         <Badge label="Merge conflicts">
-          <GitMerge className="text-destructive size-3" aria-hidden />
+          <HugeiconsIcon icon={GitMergeConflictIcon} size={12} className="text-destructive" aria-hidden />
         </Badge>
       ) : null}
 
       {/* Amber, not red: the pull request is not in trouble, our data is. */}
       {result?.ok === false ? (
         <Badge label={`Could not load: ${result.error}`}>
-          <TriangleAlert className="text-pen-amber size-3" aria-hidden />
+          <HugeiconsIcon icon={Alert02Icon} size={12} className="text-pen-amber" aria-hidden />
         </Badge>
       ) : null}
 
@@ -105,37 +106,37 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
           they answer the same question, opposite ways. */}
       {ready ? (
         <Badge label="Ready to merge">
-          <Merge className="text-pen-green size-3" aria-hidden />
+          <HugeiconsIcon icon={GitMergeIcon} size={12} className="text-pen-green" aria-hidden />
         </Badge>
       ) : null}
 
       {checks && checks.failed > 0 ? (
         <Badge label={`${checks.failed} checks failed`}>
-          <X className="text-destructive size-3" aria-hidden />
+          <HugeiconsIcon icon={Cancel01Icon} size={12} className="text-destructive" aria-hidden />
           {checks.failed}
         </Badge>
       ) : checks && checks.pending > 0 ? (
         <Badge label={`${checks.pending} checks running`}>
-          <Clock className="text-pen-amber size-3" aria-hidden />
+          <HugeiconsIcon icon={Clock01Icon} size={12} className="text-pen-amber" aria-hidden />
           {checks.pending}
         </Badge>
       ) : checks && checks.passed > 0 && !ready ? (
         // Not while the ready mark is up: it already implies this, and says more.
         <Badge label="All checks passed">
-          <Check className="text-pen-green size-3" aria-hidden />
+          <HugeiconsIcon icon={Tick02Icon} size={12} className="text-pen-green" aria-hidden />
         </Badge>
       ) : null}
 
       {result?.ok === true && result.data.unresolved > 0 ? (
         <Badge label={`${result.data.unresolved} unresolved comments`}>
-          <MessageSquare className="text-ink size-3" aria-hidden />
+          <HugeiconsIcon icon={Message01Icon} size={12} className="text-ink" aria-hidden />
           {result.data.unresolved}
         </Badge>
       ) : null}
 
       {result?.ok === true && result.data.approvalReset ? (
         <Badge label="A push reset your approval">
-          <RotateCcw className="text-destructive size-3" aria-hidden />
+          <HugeiconsIcon icon={RefreshIcon} size={12} className="text-destructive" aria-hidden />
         </Badge>
       ) : null}
     </span>
@@ -278,7 +279,7 @@ function Row({
             title={`Open !${row.id} in Azure DevOps`}
             className="text-muted-foreground hover:text-teal-600 flex shrink-0 items-center rounded-sm px-2"
           >
-            <ExternalLink className="size-3.5" aria-hidden />
+            <HugeiconsIcon icon={LinkSquare02Icon} size={14} aria-hidden />
             <span className="sr-only">Open in Azure DevOps</span>
           </a>
         </>

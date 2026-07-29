@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Check } from 'lucide-react'
+import { Tick02Icon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 
 import { CommentView } from './comment'
 import { Composer } from './composer'
@@ -73,7 +74,7 @@ export function DoneStub({
     // The tick is the only coloured mark on it, and it is the whole message — the
     // words beside it stay in secondary ink so a column of stubs scans as quiet.
     <div className="text-muted-foreground flex items-center gap-2 px-2 py-0.5 text-xs">
-      <Check className="text-pen-green size-3 shrink-0" aria-hidden />
+      <HugeiconsIcon icon={Tick02Icon} size={12} className="text-pen-green shrink-0" aria-hidden />
       <span>
         {threads.length === 1
           ? statusLabel(first.status)

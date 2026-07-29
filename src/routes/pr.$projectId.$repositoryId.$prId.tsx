@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft01Icon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 
 import { pullRequestQuery } from '@/server/pull-request-fn'
 import { sonarReportQuery } from '@/server/sonar-fn'
@@ -106,7 +107,7 @@ function PullRequestPage() {
           to="/"
           className="text-muted-foreground hover:text-primary flex items-center gap-1.5 text-sm"
         >
-          <ArrowLeft className="size-3.5" aria-hidden />
+          <HugeiconsIcon icon={ArrowLeft01Icon} size={14} aria-hidden />
           Inbox
         </Link>
         <p className="text-muted-foreground text-xs">

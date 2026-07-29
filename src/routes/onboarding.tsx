@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { TextField } from 'react-aria-components'
-import { CircleAlert, CircleCheck } from 'lucide-react'
+import { AlertCircleIcon, CheckmarkCircle02Icon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 
 import {
   credentialStatus,
@@ -96,7 +97,7 @@ function Outcome({ result }: { result: ConnectionResult }) {
   if (result.ok) {
     return (
       <Alert>
-        <CircleCheck />
+        <HugeiconsIcon icon={CheckmarkCircle02Icon} />
         <AlertTitle>
           {result.account ? (
             // An account name is an identifier, so it is set in mono.
@@ -114,7 +115,7 @@ function Outcome({ result }: { result: ConnectionResult }) {
 
   return (
     <Alert variant="destructive">
-      <CircleAlert />
+      <HugeiconsIcon icon={AlertCircleIcon} />
       <AlertTitle>
         {result.reason === 'auth' ? 'Authentication failed' : 'Could not connect'}
       </AlertTitle>
@@ -127,7 +128,7 @@ function Outcome({ result }: { result: ConnectionResult }) {
 function ThrownError({ error }: { error: Error }) {
   return (
     <Alert variant="destructive">
-      <CircleAlert />
+      <HugeiconsIcon icon={AlertCircleIcon} />
       <AlertTitle>Could not connect</AlertTitle>
       <AlertDescription>{error.message}</AlertDescription>
     </Alert>

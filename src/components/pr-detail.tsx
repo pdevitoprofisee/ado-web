@@ -1,9 +1,19 @@
-import { Check, CircleHelp, Clock, Minus, TriangleAlert, Users, X } from 'lucide-react'
-import { Cancel01Icon, Copy01Icon, PencilEdit02Icon, Tick02Icon } from '@hugeicons/core-free-icons'
+import {
+  Alert02Icon,
+  Cancel01Icon,
+  Clock01Icon,
+  Copy01Icon,
+  HelpCircleIcon,
+  MinusSignIcon,
+  PencilEdit02Icon,
+  Tick02Icon,
+  UserMultipleIcon,
+} from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useEffect, useMemo, useState } from 'react'
 import { TextField } from 'react-aria-components'
 
+import type { IconSvgElement } from '@hugeicons/react'
 import type { KeyboardEvent, ReactNode } from 'react'
 
 import { age } from './pr-list'
@@ -400,7 +410,7 @@ function Empty({ children }: { children: ReactNode }) {
 function Failed({ children }: { children: ReactNode }) {
   return (
     <p className="text-destructive flex items-center gap-1.5 px-2 py-1.5 text-sm">
-      <TriangleAlert className="size-3.5 shrink-0" aria-hidden />
+      <HugeiconsIcon icon={Alert02Icon} size={14} className="shrink-0" aria-hidden />
       {children}
     </p>
   )
@@ -422,7 +432,7 @@ function MergeBanner({ merge, conflictsError }: { merge: MergeState; conflictsEr
   if (merge.conflicted) {
     return (
       <Alert variant="destructive">
-        <TriangleAlert aria-hidden />
+        <HugeiconsIcon icon={Alert02Icon} aria-hidden />
         <AlertTitle>Merge conflicts</AlertTitle>
         <AlertDescription>
           {/* Three states, not two. "It conflicts, and we could not read which
@@ -662,20 +672,25 @@ const POLICY_WORDS: Record<PolicyStatus, string> = {
 // ("not yet satisfied" vs "a build is going"): the word beside the icon already
 // separates them, and inventing a fourth pen to say so would put a colour in
 // this system that nothing else uses.
+// Five marks at one size, so the switch below says only which mark and which pen.
+function Glyph({ icon, className }: { icon: IconSvgElement; className: string }) {
+  return <HugeiconsIcon icon={icon} size={14} className={cn('shrink-0', className)} aria-hidden />
+}
+
 function PolicyIcon({ status }: { status: PolicyStatus }) {
   switch (status) {
     case 'approved':
-      return <Check className="text-pen-green size-3.5 shrink-0" aria-hidden />
+      return <Glyph icon={Tick02Icon} className="text-pen-green" />
     case 'rejected':
     case 'broken':
-      return <X className="text-destructive size-3.5 shrink-0" aria-hidden />
+      return <Glyph icon={Cancel01Icon} className="text-destructive" />
     case 'queued':
     case 'running':
-      return <Clock className="text-pen-amber size-3.5 shrink-0" aria-hidden />
+      return <Glyph icon={Clock01Icon} className="text-pen-amber" />
     case 'notApplicable':
-      return <Minus className="text-ink-300 size-3.5 shrink-0" aria-hidden />
+      return <Glyph icon={MinusSignIcon} className="text-ink-300" />
     default:
-      return <CircleHelp className="text-muted-foreground size-3.5 shrink-0" aria-hidden />
+      return <Glyph icon={HelpCircleIcon} className="text-muted-foreground" />
   }
 }
 
@@ -911,7 +926,11 @@ function ReviewerRow({ reviewer, viewerId }: { reviewer: Reviewer; viewerId: str
           is not a downgrade here: containers outnumber people 127 to 23 on this
           org, and a group of people has no face to show anyway. */}
       <span className="prof-avatar size-5" aria-hidden>
-        {reviewer.isContainer ? <Users className="size-3" /> : initials(reviewer.displayName)}
+        {reviewer.isContainer ? (
+          <HugeiconsIcon icon={UserMultipleIcon} size={12} />
+        ) : (
+          initials(reviewer.displayName)
+        )}
       </span>
       <span className="min-w-0 flex-1">
         {reviewer.displayName}
