@@ -1,11 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 
+import { MentionPicker } from '@/components/comments/mention-picker'
 import { Markdown } from '@/components/markdown'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
+import { insertMention, mentionQuery } from '@/lib/mention-draft'
 import { cn } from '@/lib/utils'
 
-import type { KeyboardEvent } from 'react'
+import type { ChangeEvent, KeyboardEvent } from 'react'
+import type { MentionPickerHandle } from '@/components/comments/mention-picker'
+import type { ReviewerCandidate } from '@/lib/identity-contract'
+import type { MentionQuery } from '@/lib/mention-draft'
 
 // T-026. Where a reply, an edit and a new thread all get written — one component,
 // three call sites, because they differ in what happens to the text and in
