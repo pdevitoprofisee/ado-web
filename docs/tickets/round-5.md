@@ -185,7 +185,7 @@ authorised POST here is on `vssps`.
 
 ## T-031 — Checks: the server layer
 
-**Type:** feature · **Status:** open · **Blocked by:** T-029
+**Type:** feature · **Status:** resolved · **Blocked by:** T-029
 
 **Success:** one call from the client gets everything the checks panel needs for a pull request,
 and a failure in any part of it costs only that part. Concretely: the checks for a pull request,
@@ -209,11 +209,54 @@ Two things this ticket must decide with numbers rather than taste, using T-029's
 The re-run writes are typed and reachable but **unproven** — same standing as round 4's five.
 `requeueEvaluation` already exists in `pull-request.ts` and is not duplicated here.
 
+### Resolution
+
+`src/server/checks.ts` (1071 lines) and `src/server/checks-fn.ts` (309) against the frozen
+`src/lib/checks-contract.ts` (558). **33 tests** in `checks.test.ts`, all against a local fake
+client, no live call of any kind.
+
+| what | shipped |
+|---|---|
+| the only route to a build | `policy/evaluations` at **`7.1-preview.1`** — 0 of 286 sampled statuses carried a build id, so `pullRequests/{id}/statuses` cannot answer this at all |
+| eager, per page | **1 + N**: the evaluations call, then one `build/builds/{id}` per *distinct* build through `fanOut` (up to five build policies on one PR) |
+| on demand, per opened row | **5 or 6**: the build again, `timeline`, the `logs` collection, one log, `test/runs?buildUri=…`, and `results?outcomes=Failed&$top=25` **only** for a run whose failure count is non-zero |
+| what is cached | timeline · log slice · test runs — keyed `projectId/buildId` plus the section, in a `WeakMap` per `AdoClient`, for `LOG_CACHE_MS` (**1 hour**) |
+| what is never cached | the build read itself. It is the validity token, so it is the one call that repeats |
+| what invalidates | a completed build only — a running one is not cached at all — and `clearBuildCache` on the way out of either retry |
+| log ceiling | `MAX_LOG_BYTES = 1_000_000` on `getBytes`, and at most `LOG_TAIL_LINES` (200) lines ever cross to the browser |
+
+**Eager/on-demand was decided by the byte counts, not by taste.** A timeline is 9.7–69.1 KB and a
+failed-test list reached 191 KB on one build, against a page that can hold five build policies —
+so a panel that fetched detail eagerly would spend a quarter of a megabyte and thirty calls to
+draw a list of five rows nobody has opened. The evaluations call and the build reads are eager
+because they are what the *rows* say; everything inside a row is a second read.
+
+**The cache key says why it is still true.** `pr_cache`'s commit-id idiom does not fit a build,
+so the condition is the build's own `status`: `completed` is cacheable because a finished
+build's timeline, logs and test results can never change again, and anything else is not cached
+at all. That is also why the build read is excluded — it is the thing that tells us whether the
+rest may be reused.
+
+**Two writes ship unproven**, and no request of any kind was sent to Azure DevOps for this
+ticket: `retryBuild` — `PATCH build/builds/{id}` with `{}` and `retry=true` — and `retryStage` —
+`PATCH build/builds/{id}/stages/{ref}` with `{ state: 'retry', forceRetryAllJobs }`. Both are
+written from Microsoft's reference, both are exercised only against the fake, and the stored PAT
+was only ever proved to hold `vso.build` rather than `vso.build_execute`, so **403 is a
+realistic first answer**. [T-040](#t-040--the-first-real-write) makes the first live attempt.
+The third granularity, requeueing the policy, is `pull-request.ts`' existing `requeueEvaluation`
+reused rather than reimplemented — one act, one implementation.
+
+Two things a human should check when the first live retry happens, written down here because
+this branch would not probe for them: whether a retry **mints a new build id** (if it does, the
+invalidation is right but the row's id is stale until the next evaluations read), and whether
+`retry=true` on an *unfinished* build cancels it. The control is disabled for unfinished builds
+on the assumption that it might.
+
 ---
 
 ## T-032 — Checks: the panel
 
-**Type:** feature · **Status:** open · **Blocked by:** T-031
+**Type:** feature · **Status:** resolved · **Blocked by:** T-031
 
 **Success:** on a pull request whose build failed, the failing step is on screen without a
 click, its log is readable in the app, and the failed tests are listed with name, class,
@@ -233,6 +276,53 @@ Non-negotiables:
   [T-024](./round-4.md#t-024--writing)'s contract.
 - Prof, throughout: existing tokens and existing `ui/` primitives, no new colours, and the
   `Empty`/`Failed` pair reused rather than triplicated.
+
+### Resolution
+
+`src/components/checks/panel.tsx` (304 lines) and `detail.tsx` (525), on `src/lib/checks.ts`
+(263) as the query seam. **50 tests**: 7 in `panel.test.tsx`, 24 in `detail.test.tsx`, 19 in
+`lib/checks.test.tsx`.
+
+| what | shipped |
+|---|---|
+| a failed build | its row **arrives open** — the failing step, its log and its failed tests are on screen with no click |
+| a passing build | one line, shut, and **never fetched**: `checkDetailQuery` is not called for it at all |
+| a running build | opens itself and names the **deepest** `inProgress` record — the sampled in-flight timeline said `inProgress` on four at once (Stage, Phase, Job, Task) and only the innermost one is an answer |
+| a queued build | opens and says no step has started yet, rather than "no failing step" about a build that has not had the chance to fail |
+| the log | the last **200 lines** in a scrolling `<pre>`, a caption that names the window (`the last 200 of 2727 lines`), and a link to ADO's own log tab when lines were withheld |
+| failed tests | failures only, 25 of them, count by subtraction, stack cut at 1200 characters and labelled twice — ours and the 4000 ADO had already cut |
+| re-runs | three granularities, each disabled **with a reason beside it** rather than absent; nothing optimistic, every one settles on a re-read |
+| polling | only while something is unsettled — `isRunning` asks the policies *and* the builds, because they disagree — and it stops in a hidden tab through `useCadence` |
+
+**"The failing step is on screen without a click" and "opening a row is five ADO calls" are the
+two halves that had to be reconciled.** The rule is `opensItself`: `inProgress`, or completed and
+not `succeeded`. So the reads happen exactly for the rows that have news, a green pull request
+costs the evaluations call plus one build read per policy and nothing else, and the seed is taken
+**once** — a poll that turns a running build into a failed one must not reopen a row somebody
+just closed.
+
+**The log is a tail plus a link, and not virtualisation.** 200 lines is a `<pre>` the tab does
+not notice, so the third option in the non-negotiable ("the tail, virtualized, or both") was not
+needed. The honest control for the remainder is a link to `…/_build/results?buildId=N&view=logs`,
+because ADO's log viewer pages 2727 lines better than anything this panel could grow, and
+because a "load more" here would be a second windowed read of a log the server already caches by
+window. The rule for *whether* to offer it is not `lines.length < totalLines` — those two counts
+disagree by one on a log nothing was withheld from, since the text form ends in a newline — it
+is "was a window applied", which is `truncated` or a full 200-line slice of a longer log.
+
+**No new `ui/` primitive.** The disclosure is this repo's existing idiom — a `<button
+type="button">` with `aria-expanded`/`aria-controls` and a conditionally mounted panel, as
+`diff/file-diff.tsx`, `diff/file-tree.tsx` and `sonar/panel.tsx` all do — and not a `<details>`
+and not RAC's `Disclosure`. Conditional mounting is load-bearing rather than cosmetic here: the
+detail's `useQuery` lives inside the panel, so mounting *is* the fetch. Colour is never the only
+channel (every row prints its verdict as a word beside the glyph), and the running-step line is
+plain text rather than a live region — it re-renders on every poll, and a politeness
+announcement every few seconds would talk over the reader it is meant to help.
+
+**The panel is not wired into the page on this branch.** `src/components/pr-detail.tsx` was owned
+by another agent for the duration, so `<ChecksPanel prRef={prRef} />` is handed back as a
+one-line insertion between the Sonar block and the Conversation section of the details tabpanel.
+Until that lands, the component is complete and tested but not on screen.
 
 ---
 
