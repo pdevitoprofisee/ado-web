@@ -109,6 +109,31 @@ vi.mock('@/server/threads-fn', () => ({
   deleteThreadComment: vi.fn(async () => ok()),
 }))
 
+// The checks panel, which reads for itself the way the conversation does. Mocked
+// to "nothing has run", which is the answer none of the tests here are about: the
+// panel draws one sentence and no rows, so the page they were written against is
+// the page they see.
+//
+// The module has to be mocked whether or not anything reads it, and for a reason
+// the mocks above do not have: `checks-fn` validates with `pullRequestRef` from
+// `@/server/pull-request-fn`, which is itself mocked here — so an unmocked
+// `checks-fn` fails at *import* time on the missing export, before a single test
+// runs. Mocking the module the panel imports keeps the real one out of the bundle
+// and leaves the mock above listing only what the page actually calls.
+vi.mock('@/server/checks-fn', () => ({
+  checksReportQuery: vi.fn(async () => ({
+    report: null,
+    error: null,
+    connected: true,
+    rateLimit: null,
+  })),
+  // `useCheckDetail` and `useRetryBuild` are closed over by the panel on every
+  // render, the same way the writes above are. Neither is reachable without a row
+  // to open, and there are no rows.
+  checkDetailQuery: vi.fn(),
+  retryBuildRun: vi.fn(),
+}))
+
 /**
  * What a write answers with when it worked.
  *
@@ -2008,5 +2033,49 @@ describe('PullRequestDetailView conversation', () => {
     expect(await screen.findByText(/Comments could not be read/)).toBeVisible()
     expect(list().getByTitle('/src/log.ts')).toBeVisible()
     expect(screen.getByText('0 of 1 read')).toBeVisible()
+  })
+})
+
+// The two seams: a panel and a component that were both finished, tested, and not
+// on screen. Everything about either one is tested where it lives — this is only
+// about the wiring, which is the part that has no other test and the part that was
+// missing for a whole round.
+describe('PullRequestDetailView checks and avatars', () => {
+  it('draws the checks panel on the details tab', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    // Scoped to the region, because "Checks" as bare text would also be satisfied
+    // by a heading with no panel under it. And awaited, because the panel owns its
+    // own read: the first paint says "Reading the builds…", which is the seam
+    // working — the panel is on screen and asking.
+    const checks = within(screen.getByRole('region', { name: 'Checks' }))
+    expect(checks.getByText('Reading the builds…')).toBeVisible()
+    expect(await checks.findByText('No build policy has run on this pull request.')).toBeVisible()
+  })
+
+  it('loads the face when there is one, for the author and the reviewers alike', () => {
+    // The credential-free form, which is the only one `Avatar` puts in the DOM.
+    const author = 'https://dev.azure.com/Profisee/_apis/GraphProfile/MemberAvatars/aad.YXV0aG9y'
+    const rev = 'https://dev.azure.com/Profisee/_apis/GraphProfile/MemberAvatars/aad.cmV2aWV3ZXI'
+
+    const { container } = render(
+      <PullRequestDetailView
+        pr={detail({
+          author: { id: 'author-1', displayName: 'Paul DeVito', avatarHref: author },
+          reviewers: [reviewer({ avatarHref: rev })],
+        })}
+      />,
+    )
+
+    // Queried off the container and not by role: every avatar is `aria-hidden`
+    // with an empty `alt`, on purpose — the name is already text beside it.
+    expect([...container.querySelectorAll('img')].map((img) => img.getAttribute('src'))).toEqual([
+      author,
+      rev,
+    ])
+    // And the monogram is still under both of them, which is what makes a slow
+    // avatar and a missing one look the same.
+    expect(screen.getByText('PD')).toBeVisible()
+    expect(screen.getByText('NA')).toBeVisible()
   })
 })

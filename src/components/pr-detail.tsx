@@ -18,7 +18,9 @@ import type { IconSvgElement } from '@hugeicons/react'
 import type { KeyboardEvent, ReactNode } from 'react'
 
 import { age } from './pr-list'
+import { Avatar } from './avatar'
 import { Markdown } from './markdown'
+import { ChecksPanel } from './checks/panel'
 import { Composer } from './comments/composer'
 import { ThreadCard } from './comments/thread-card'
 import { ChangedFileDiff } from './diff/changed-file'
@@ -41,7 +43,6 @@ import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
 import { lifecycleAction, useAbandon, useReactivate } from '@/lib/lifecycle'
 import { useSquashMerge } from '@/lib/merge'
-import { initials } from '@/lib/people'
 import { useRename } from '@/lib/rename'
 import { useRequeue } from '@/lib/requeue'
 import { cn } from '@/lib/utils'
@@ -1131,17 +1132,19 @@ function ReviewerRow({ reviewer, viewerId }: { reviewer: Reviewer; viewerId: str
     // this one holds a blob and a pill rather than three runs of text, and a
     // circle sitting on a text baseline hangs.
     <li className="border-border flex items-center gap-2 border-b px-2 py-1.5 text-sm last:border-b-0">
-      {/* No avatar URLs come down from ADO — `Reviewer` carries a display name
-          and a vote, nothing else — so the blob is a monogram or a glyph. That
-          is not a downgrade here: containers outnumber people 127 to 23 on this
-          org, and a group of people has no face to show anyway. */}
-      <span className="prof-avatar size-5" aria-hidden>
-        {reviewer.isContainer ? (
-          <HugeiconsIcon icon={UserMultipleIcon} size={12} />
-        ) : (
-          initials(reviewer.displayName)
-        )}
-      </span>
+      {/* A face when ADO gave us a link a browser can actually load, and the
+          monogram underneath it otherwise — `Avatar` decides which, because the
+          same `imageUrl` field carries two URL shapes and only one of them answers
+          without a credential (note 11). A container keeps its glyph: 127 of the
+          150 reviewers on this org are groups, and a group has no face to show. */}
+      <Avatar
+        href={reviewer.avatarHref}
+        name={reviewer.displayName}
+        className="size-5"
+        fallback={
+          reviewer.isContainer ? <HugeiconsIcon icon={UserMultipleIcon} size={12} /> : undefined
+        }
+      />
       <span className="min-w-0 flex-1">
         {reviewer.displayName}
         {reviewer.isContainer ? <Chip>team</Chip> : null}
@@ -2025,7 +2028,15 @@ export function PullRequestDetailView({
             {pr.project}/{pr.repository}
           </span>
           {' · '}
-          {pr.author.displayName}
+          {/* `inline-flex` with `align-middle`, and both are load-bearing on a 12px
+              line: a 16px circle dropped into it as a bare inline child sits on the
+              baseline and pushes the line's own descenders down, and without the
+              wrapper a wrap could put the face at the end of one line and the name
+              at the start of the next. */}
+          <span className="inline-flex items-center gap-1 align-middle">
+            <Avatar href={pr.author.avatarHref} name={pr.author.displayName} className="size-4" />
+            {pr.author.displayName}
+          </span>
           {' · '}
           <span className="font-mono tabular-nums">{age(pr.createdAt)}</span>
           {' · '}
@@ -2120,6 +2131,11 @@ export function PullRequestDetailView({
               onJump={goToFile}
             />
           )}
+
+          {/* Beside Sonar and above the conversation: both of these answer "is this
+              pull request in a state to be read", and the panel owns both of its own
+              reads — there is no plumbing to pass it beyond the ref. */}
+          <ChecksPanel prRef={prRef} />
 
           {/* After the two gates and before the people, which is where it sits in
               the order this page is read in: what is blocking the merge, then what

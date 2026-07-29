@@ -42,8 +42,10 @@ import type { PullRequestRef } from '@/server/pull-request'
  * they are private to that module and this panel is not allowed to reach into it.
  * That is now **three** modules holding the same eight lines, which is one more
  * than the note in `sonar/panel.tsx` said would be the moment to lift them into a
- * shared place. Left as a copy here only because moving them means editing
- * `pr-detail.tsx`, which this branch must not touch.
+ * shared place. The reason it stayed a copy — that this branch was not allowed to
+ * touch `pr-detail.tsx` — is gone as of the commit that wired this panel in, so
+ * the third copy is now a deliberate debt and not a constraint. Lift all three
+ * when a fourth wants them.
  */
 function Empty({ children }: { children: ReactNode }) {
   return <p className="text-muted-foreground px-2 py-1.5 text-sm">{children}</p>
