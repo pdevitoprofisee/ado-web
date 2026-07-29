@@ -16,7 +16,7 @@ import {
 } from './checks'
 import { buildRetryRequest, checkDetailRequest, stageRetryRequest } from './checks-fn'
 
-import type { AdoClient, AdoHost, AdoWriteMethod, QueryValue } from './ado-client'
+import type { AdoBytesOptions, AdoClient, AdoHost, AdoWriteMethod, QueryValue } from './ado-client'
 import type { PullRequestRef } from './pull-request'
 
 // The measured shapes this file defends, all from `docs/research/checks-inventory.md`:
@@ -45,8 +45,16 @@ interface WriteCall {
 }
 
 type Reply = Error | Record<string, unknown>
-/** What `getBytes` hands back: a log is text, whichever content type ADO chose. */
-type BytesReply = Error | { readonly text: string; readonly contentType: string | null }
+/**
+ * What `getBytes` hands back: a log is text, whichever content type ADO chose.
+ *
+ * `size` is separate from the text on purpose — it is `Content-Length`, and stating
+ * it independently is the only way to exercise the size ceiling without writing a
+ * megabyte of fixture.
+ */
+type BytesReply =
+  | Error
+  | { readonly text: string; readonly contentType: string | null; readonly size?: number }
 
 interface Fixture {
   readonly bytes?: Record<string, BytesReply>
@@ -81,14 +89,26 @@ function fakeClient(replies: Record<string, Reply>, fixture: Fixture = {}) {
 
       return Promise.resolve(reply as T)
     },
-    getBytes(path: string, params: Record<string, QueryValue> = {}) {
+    getBytes(
+      path: string,
+      params: Record<string, QueryValue> = {},
+      { maxBytes }: AdoBytesOptions = {},
+    ) {
       calls.push({ path, params, host: 'core' })
       const reply = pick(fixture.bytes ?? {}, path)
       if (reply === undefined) return Promise.reject(new Error(`unexpected log call: ${path}`))
       if (reply instanceof Error) return Promise.reject(reply)
       const bytes = new TextEncoder().encode(reply.text)
+      const size = reply.size ?? bytes.length
 
-      return Promise.resolve({ bytes, size: bytes.length, contentType: reply.contentType })
+      // The real client's refusal, in the real client's shape: the size is readable
+      // before the body, so the too-large case is a stream never read rather than a
+      // download thrown away.
+      if (maxBytes !== undefined && size > maxBytes) {
+        return Promise.resolve({ bytes: null, size, contentType: null })
+      }
+
+      return Promise.resolve({ bytes, size, contentType: reply.contentType })
     },
     write<T>(
       method: AdoWriteMethod,
@@ -740,6 +760,22 @@ describe('loadCheckDetail', () => {
       totalLines: 47,
       truncated: false,
     })
+  })
+
+  it('refuses a log too large to show rather than drawing it as an empty one', async () => {
+    const { client } = fakeClient(detailReplies(), {
+      // Declares more than the ceiling, so the body is never read. `bytes` is then
+      // `null`, which is the same `null` a missing log id answers with — and "this
+      // step printed nothing" is the opposite of "this step printed too much".
+      bytes: { '/logs/22': { text: 'a line\n', contentType: 'text/plain', size: 4_200_000 } },
+    })
+
+    const detail = await loadCheckDetail(client, { projectId: PROJECT, buildId: BUILD })
+
+    expect(detail.log).toBeNull()
+    expect(detail.errors.timeline).toBe("This step's log is 4200 kB, too large to show here.")
+    // The step it belongs to survives it, as it does for any other lost log.
+    expect(detail.failingStep?.name).toBe('Check formatting')
   })
 
   it('reads a green build without asking for a log or a result list', async () => {

@@ -755,6 +755,20 @@ export function decodeLog(bytes: Uint8Array | null, contentType: string | null):
 }
 
 /**
+ * A ceiling on a log body, for the one fetch that has no window.
+ *
+ * When `lineCount` is unknown — the `logs` collection did not read — there is no
+ * `startLine` to ask for and the whole log arrives, however long it is. The 44 logs
+ * on the sampled build were 7792 lines and 21 KB at the largest, so a megabyte is
+ * far past anything measured and still small enough to hold.
+ *
+ * `Content-Length` is what this is checked against, and a log that declares none
+ * slips through — the same hole `blob.ts` notes. It is the declared-size case that
+ * is worth closing, because that is the one where the cost is known in advance.
+ */
+const MAX_LOG_BYTES = 1_000_000
+
+/**
  * The failing step's log, windowed.
  *
  * Cached per window rather than per log, because the window is part of the
@@ -771,7 +785,17 @@ async function loadLog(
   const response = await client.getBytes(
     `${projectId}/_apis/build/builds/${buildId}/logs/${log.id}`,
     { startLine: window.startLine ?? undefined, endLine: window.endLine ?? undefined },
+    { maxBytes: MAX_LOG_BYTES },
   )
+
+  // `bytes` is null only for the refusal, and it has to be told apart from the
+  // empty body a missing log id answers with — otherwise a log too large to read
+  // would be drawn as a step that printed nothing, which is the opposite fact.
+  if (response.bytes === null) {
+    throw new Error(
+      `This step's log is ${Math.round((response.size ?? 0) / 1000)} kB, too large to show here.`,
+    )
+  }
 
   const lines = decodeLog(response.bytes, response.contentType)
 
