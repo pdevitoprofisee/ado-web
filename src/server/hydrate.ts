@@ -50,7 +50,18 @@ interface StatusList {
 }
 
 interface EvaluationList {
-  readonly value?: ReadonlyArray<{ readonly status?: string }>
+  readonly value?: ReadonlyArray<{
+    readonly status?: string
+    /**
+     * Whether the policy is required, and whether it is switched on at all —
+     * both live on the configuration rather than on the evaluation, and an
+     * evaluation of a disabled policy is still returned.
+     */
+    readonly configuration?: {
+      readonly isBlocking?: boolean
+      readonly isEnabled?: boolean
+    }
+  }>
 }
 
 export interface Checks {
@@ -59,12 +70,43 @@ export interface Checks {
   readonly pending: number
 }
 
+/**
+ * The states in which a policy is not standing in the way. `notApplicable` counts
+ * as satisfied even though `readChecks` refuses to count it as a check that
+ * passed — the two questions are different: it is not an accomplishment, but it
+ * is not an obstacle either.
+ */
+const SATISFIED = new Set(['approved', 'notApplicable'])
+
 /** The cached payload. A change to this shape must clear `pr_cache` in a migration. */
 export interface Hydration {
   readonly checks: Checks
   readonly unresolved: number
   /** I approved, then someone pushed, and my vote is no longer standing. */
   readonly approvalReset: boolean
+  /**
+   * At least one required policy is not satisfied — the half of "can this merge"
+   * that costs a call, and so the half worth caching. Same rule as
+   * `Policy.blocking` on the detail page, deliberately: two rules for one
+   * question drift, and the inbox would be the one that ends up lying.
+   */
+  readonly blocked: boolean
+  /**
+   * Nothing this app can see is stopping this from merging.
+   *
+   * Cached along with the rest, and **recomputed on every read** rather than
+   * trusted, because two of its three inputs move without moving `commitId`:
+   * publishing a draft and resolving a conflict both leave the source tip
+   * exactly where it was. A trusted cached value would read "not ready" until
+   * somebody pressed Refresh, which is the wrong number to be quietly wrong
+   * about.
+   *
+   * A weaker claim than it sounds, and deliberately weaker than the detail
+   * page's button: the inbox row cannot see `mergeStatus` at the level of
+   * `queued` versus `succeeded`, only whether ADO called it conflicted. So this
+   * means "worth opening to merge", and the page itself makes the final call.
+   */
+  readonly readyToMerge: boolean
 }
 
 /**
@@ -84,6 +126,13 @@ export interface HydrationTarget {
   readonly repositoryId: string
   /** My current vote on this PR, from the list call's reviewers array. */
   readonly myVote: number
+  /**
+   * The two things the cheap list call already knows that decide readiness, sent
+   * in rather than fetched: they cost nothing on the row, and asking for them
+   * here would turn a cache hit back into a call.
+   */
+  readonly isDraft: boolean
+  readonly conflicted: boolean
 }
 
 const key = (id: string | undefined): string | null => id?.toLowerCase() ?? null
@@ -173,6 +222,28 @@ export function readChecks(evaluations: EvaluationList): Checks {
 }
 
 /**
+ * Whether any required policy is still standing in the way.
+ *
+ * Not derivable from `readChecks`: a failing *optional* policy makes `failed`
+ * non-zero without blocking anything, and a required policy sitting at `queued`
+ * — the reviewer policy's "not yet met", per the live probe — blocks while
+ * counting as pending. So the configuration has to be read, and `isEnabled`
+ * with it, because ADO returns evaluations for policies that are switched off.
+ *
+ * An unrecognised status is not satisfied, which errs toward "blocked". Being
+ * told to look again is a cheap mistake; being told a PR is ready when a policy
+ * says otherwise is not.
+ */
+export function readBlocked(evaluations: EvaluationList): boolean {
+  return (evaluations.value ?? []).some(
+    (evaluation) =>
+      evaluation.configuration?.isBlocking === true &&
+      evaluation.configuration.isEnabled !== false &&
+      !SATISFIED.has(evaluation.status ?? ''),
+  )
+}
+
+/**
  * Whether a push knocked my approval down, which ADO records nowhere directly —
  * it just sets the vote back to 0, and a reviewer who does not notice thinks
  * they already signed off.
@@ -217,6 +288,17 @@ export function approvalWasReset(
 }
 
 /**
+ * The three facts behind the inbox's ready mark, in one place so the cached path
+ * and the fetched path cannot disagree. A draft cannot complete at all, a
+ * conflicted branch has nothing to complete into, and a required policy that is
+ * not satisfied is ADO's own refusal.
+ */
+const ready = (
+  hydration: Pick<Hydration, 'blocked'>,
+  target: Pick<HydrationTarget, 'isDraft' | 'conflicted'>,
+): boolean => !hydration.blocked && !target.isDraft && !target.conflicted
+
+/**
  * One PR's worth of rich data, cache first.
  *
  * The cache is read through `readPrCache`, which compares the commit inside the
@@ -236,7 +318,13 @@ export async function hydrate(
   fresh = false,
 ): Promise<HydrationResult> {
   const cached = fresh ? undefined : readPrCache<Hydration>(target.id, target.commitId, db)
-  if (cached !== undefined) return { id: target.id, ok: true, data: cached }
+  if (cached !== undefined) {
+    // The cached row's `readyToMerge` is overwritten rather than served: see the
+    // field's own note — the draft flag and the conflict flag both change without
+    // the commit changing, so the only trustworthy value is the one computed from
+    // the target in hand.
+    return { id: target.id, ok: true, data: { ...cached, readyToMerge: ready(cached, target) } }
+  }
 
   const base = `${target.projectId}/_apis/git/repositories/${target.repositoryId}/pullRequests/${target.id}`
 
@@ -252,10 +340,13 @@ export async function hydrate(
     ])
 
     const all = threads.value ?? []
+    const blocked = readBlocked(evaluations)
     const data: Hydration = {
       checks: readChecks(evaluations),
       unresolved: countUnresolved(all, botIds(statuses)),
       approvalReset: approvalWasReset(all, identity, target.myVote),
+      blocked,
+      readyToMerge: ready({ blocked }, target),
     }
     writePrCache(target.id, target.commitId, data, db)
 

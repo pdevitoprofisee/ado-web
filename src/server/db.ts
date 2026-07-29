@@ -105,6 +105,17 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
            PRIMARY KEY (repository_id, pull_request_id, path, object_id)
          ) STRICT`,
   },
+  {
+    version: 4,
+    name: 'pr-cache-ready',
+    // The `DELETE FROM` licence above, taken up for the first time: `Hydration`
+    // grew `blocked` and `readyToMerge`, and the payload is parsed without being
+    // validated (see src/server/pr-cache.ts). A row written before this would
+    // hand back `undefined` for both, and the inbox would draw every cached pull
+    // request as not ready — indefinitely, because the commit token those rows
+    // are keyed on is still current, so nothing would ever refetch them.
+    up: 'DELETE FROM pr_cache',
+  },
 ]
 
 /**

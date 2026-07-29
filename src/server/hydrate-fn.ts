@@ -50,6 +50,12 @@ function target(input: unknown): HydrationTarget {
     projectId: guid(raw.projectId, 'projectId'),
     repositoryId: guid(raw.repositoryId, 'repositoryId'),
     myVote: raw.myVote as number,
+    // Coerced rather than rejected, unlike the fields above. These two reach no
+    // URL and no request body — they only make a badge quieter — and the safe
+    // reading of an absent flag is the one that withholds the ready mark, which
+    // is what `=== true` does.
+    isDraft: raw.isDraft === true,
+    conflicted: raw.conflicted === true,
   }
 }
 

@@ -5,6 +5,7 @@ import {
   Clock,
   ExternalLink,
   GitMerge,
+  Merge,
   MessageSquare,
   RotateCcw,
   TriangleAlert,
@@ -65,6 +66,7 @@ function Badge({ label, children }: { label: string; children: ReactNode }) {
  */
 function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | undefined }) {
   const checks = result?.ok === true ? result.data.checks : null
+  const ready = result?.ok === true && result.data.readyToMerge
 
   // One pen per meaning, and the counts in mono because they are figures: at
   // 6rem wide this column is read as a row of coloured marks, so the colour has
@@ -86,6 +88,27 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
         </Badge>
       ) : null}
 
+      {/* The strongest claim this column makes, and the only badge that is about
+          what to *do* rather than what happened: nothing we can see is stopping
+          this from merging.
+
+          It has to be told apart from the teal tick beside it, which says the
+          much weaker "the checks that ran, passed" — so it is a different
+          silhouette, not a second tick in a different weight, and the tick is
+          suppressed below while this is showing. Two teal marks in a 6rem column
+          would read as one emphatic thing rather than two different facts.
+
+          The same teal pen as that tick, though, rather than a colour of its
+          own: this column already spends red, amber, teal and navy, and a fifth
+          would leave it with no palette left. The merge glyph is also the
+          conflict badge's shape in the other pen, which is the right pairing —
+          they answer the same question, opposite ways. */}
+      {ready ? (
+        <Badge label="Ready to merge">
+          <Merge className="text-pen-green size-3" aria-hidden />
+        </Badge>
+      ) : null}
+
       {checks && checks.failed > 0 ? (
         <Badge label={`${checks.failed} checks failed`}>
           <X className="text-destructive size-3" aria-hidden />
@@ -96,7 +119,8 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
           <Clock className="text-pen-amber size-3" aria-hidden />
           {checks.pending}
         </Badge>
-      ) : checks && checks.passed > 0 ? (
+      ) : checks && checks.passed > 0 && !ready ? (
+        // Not while the ready mark is up: it already implies this, and says more.
         <Badge label="All checks passed">
           <Check className="text-pen-green size-3" aria-hidden />
         </Badge>

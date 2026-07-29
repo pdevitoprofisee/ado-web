@@ -72,6 +72,11 @@ const rich = (data: Partial<Hydration> = {}): HydrationResult => ({
     checks: { passed: 0, failed: 0, pending: 0 },
     unresolved: 0,
     approvalReset: false,
+    // Not ready by default, so the strongest badge in the column only ever shows
+    // up in the tests that ask for it. Unblocked *and* unready is a real
+    // combination, not a contrived one — it is what a draft looks like.
+    blocked: false,
+    readyToMerge: false,
     ...data,
   },
 })
@@ -222,6 +227,40 @@ describe('PullRequestSection', () => {
     expect(screen.getByTitle('3 checks running')).toBeVisible()
 
     rerender(section({ passed: 5, failed: 0, pending: 0 }))
+    expect(screen.getByTitle('All checks passed')).toBeVisible()
+  })
+
+  it('marks a row that is ready to merge, in place of the weaker all-clear tick', () => {
+    render(
+      <PullRequestSection
+        title="Mine"
+        rows={[row()]}
+        empty="none"
+        hydration={() =>
+          rich({ checks: { passed: 5, failed: 0, pending: 0 }, readyToMerge: true })
+        }
+      />,
+    )
+
+    expect(screen.getByTitle('Ready to merge')).toBeVisible()
+    // Both would be teal ticks side by side saying overlapping things, and the
+    // weaker one has nothing to add once the stronger one is up.
+    expect(screen.queryByTitle('All checks passed')).toBeNull()
+  })
+
+  it('does not mark a blocked row as ready, however many checks passed', () => {
+    render(
+      <PullRequestSection
+        title="Mine"
+        rows={[row()]}
+        empty="none"
+        hydration={() =>
+          rich({ checks: { passed: 5, failed: 0, pending: 0 }, blocked: true })
+        }
+      />,
+    )
+
+    expect(screen.queryByTitle('Ready to merge')).toBeNull()
     expect(screen.getByTitle('All checks passed')).toBeVisible()
   })
 

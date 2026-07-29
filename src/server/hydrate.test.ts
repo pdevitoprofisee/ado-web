@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { openDatabase } from './db'
-import { approvalWasReset, countUnresolved, hydrate, readChecks } from './hydrate'
+import { approvalWasReset, countUnresolved, hydrate, readBlocked, readChecks } from './hydrate'
 
 import type { DatabaseSync } from 'node:sqlite'
 import type { AdoClient, QueryValue } from './ado-client'
@@ -18,6 +18,8 @@ const TARGET: HydrationTarget = {
   projectId: '11111111-1111-1111-1111-111111111111',
   repositoryId: '22222222-2222-2222-2222-222222222222',
   myVote: 0,
+  isDraft: false,
+  conflicted: false,
 }
 
 /** A human comment thread, in the shape the live API actually returns. */
@@ -160,6 +162,50 @@ describe('readChecks', () => {
   })
 })
 
+describe('readBlocked', () => {
+  const required = (status: string, over: Record<string, unknown> = {}) => ({
+    status,
+    configuration: { isBlocking: true, ...over },
+  })
+
+  it('blocks on a required policy that is not satisfied', () => {
+    expect(readBlocked({ value: [required('rejected')] })).toBe(true)
+    expect(readBlocked({ value: [required('broken')] })).toBe(true)
+    // The one `readChecks` calls merely pending: the reviewer policy sits at
+    // `queued` while it waits for approvals, and it is blocking the whole time.
+    expect(readBlocked({ value: [required('queued')] })).toBe(true)
+    expect(readBlocked({ value: [required('running')] })).toBe(true)
+  })
+
+  it('is not satisfied by a status it has never heard of', () => {
+    expect(readBlocked({ value: [required('somethingNew')] })).toBe(true)
+    expect(readBlocked({ value: [required('')] })).toBe(true)
+  })
+
+  it('clears once every required policy is approved or does not apply', () => {
+    expect(readBlocked({ value: [required('approved'), required('notApplicable')] })).toBe(false)
+  })
+
+  it('ignores a policy that is switched off, whose evaluation ADO still returns', () => {
+    expect(readBlocked({ value: [required('rejected', { isEnabled: false })] })).toBe(false)
+  })
+
+  it('ignores an optional policy, however badly it is doing', () => {
+    expect(
+      readBlocked({
+        value: [
+          { status: 'rejected' },
+          { status: 'broken', configuration: { isBlocking: false } },
+        ],
+      }),
+    ).toBe(false)
+  })
+
+  it('treats a PR with no policies as unblocked rather than unknown', () => {
+    expect(readBlocked({})).toBe(false)
+  })
+})
+
 describe('approvalWasReset', () => {
   const approved = vote(ME, '10', '2026-07-20T10:00:00Z')
   const pushed = system('RefUpdate', '2026-07-21T10:00:00Z')
@@ -223,6 +269,10 @@ describe('hydrate', () => {
         checks: { passed: 1, failed: 1, pending: 0 },
         unresolved: 1,
         approvalReset: true,
+        // The failing evaluation here carries no configuration, so nothing says
+        // it is required — and an optional policy failing does not stop a merge.
+        blocked: false,
+        readyToMerge: true,
       },
     })
     expect(client.calls).toHaveLength(3)
@@ -302,6 +352,51 @@ describe('hydrate', () => {
     const retry = fakeClient(replies)
     expect((await hydrate(retry, TARGET, me, db)).ok).toBe(true)
     expect(retry.calls).toHaveLength(3)
+  })
+
+  it('withholds the ready mark when a required policy is unsatisfied', async () => {
+    const client = fakeClient({
+      ...replies,
+      '/policy/evaluations': {
+        value: [{ status: 'queued', configuration: { isBlocking: true } }],
+      },
+    })
+
+    const result = await hydrate(client, TARGET, me, memory())
+
+    expect(result.ok && result.data).toMatchObject({ blocked: true, readyToMerge: false })
+  })
+
+  it('recomputes the ready mark from the row rather than trusting the cache', async () => {
+    // The failure this exists to prevent: publishing a draft and resolving a
+    // conflict both leave `commitId` alone, so a trusted cached `readyToMerge`
+    // would keep answering with the state the row was in when it was cached.
+    const db = memory()
+    const first = await hydrate(fakeClient(replies), { ...TARGET, isDraft: true }, me, db)
+    expect(first.ok && first.data.readyToMerge).toBe(false)
+
+    const published = fakeClient(replies)
+    const again = await hydrate(published, TARGET, me, db)
+
+    expect(published.calls).toHaveLength(0)
+    expect(again.ok && again.data.readyToMerge).toBe(true)
+  })
+
+  it('withholds the ready mark on a conflicted row that was cached clean', async () => {
+    const db = memory()
+    await hydrate(fakeClient(replies), TARGET, me, db)
+
+    const conflicted = await hydrate(
+      fakeClient(replies),
+      { ...TARGET, conflicted: true },
+      me,
+      db,
+    )
+
+    expect(conflicted.ok && conflicted.data.readyToMerge).toBe(false)
+    // Only the readiness is recomputed — the counts that cost calls still come
+    // from the cache untouched.
+    expect(conflicted.ok && conflicted.data.unresolved).toBe(1)
   })
 
   it('does not spend an identity call when everything is cached', async () => {

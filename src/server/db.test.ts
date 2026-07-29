@@ -49,6 +49,7 @@ describe('migrations', () => {
       { version: 1, name: 'pr-cache' },
       { version: 2, name: 'blob-cache' },
       { version: 3, name: 'viewed-files' },
+      { version: 4, name: 'pr-cache-ready' },
     ])
 
     db.close()
@@ -73,6 +74,24 @@ describe('migrations', () => {
     db.close()
   })
 
+  it('empties pr_cache when a migration changes the cached payload shape', () => {
+    // Rehearses the upgrade an existing machine actually performs: rows written
+    // under the old `Hydration` shape are still keyed on a current commit, so
+    // nothing would refetch them and the inbox would draw them as not ready
+    // forever. Version 4 is rolled back by hand because `openDatabase` has
+    // already applied it.
+    const path = join(dir, 'app.db')
+    const db = openDatabase(path)
+    db.prepare('DELETE FROM schema_migrations WHERE version = 4').run()
+    writePrCache(7, 'a'.repeat(40), { checks: 'green' }, db)
+
+    migrate(db)
+
+    expect(readPrCache(7, 'a'.repeat(40), db)).toBeUndefined()
+
+    db.close()
+  })
+
   it('is idempotent — re-running applies nothing and preserves data', () => {
     const path = join(dir, 'app.db')
     const first = openDatabase(path)
@@ -82,7 +101,7 @@ describe('migrations', () => {
     const second = openDatabase(path)
     migrate(second) // and again, in-process, for good measure
 
-    expect(second.prepare('SELECT count(*) c FROM schema_migrations').get()?.c).toBe(3)
+    expect(second.prepare('SELECT count(*) c FROM schema_migrations').get()?.c).toBe(4)
     expect(readPrCache(7, 'a'.repeat(40), second)).toEqual({ checks: 'green' })
 
     second.close()

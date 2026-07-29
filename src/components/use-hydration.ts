@@ -19,7 +19,13 @@ const CHUNK = 12
  * which is the honest state. Keying by id would leave the pre-push counts on
  * screen looking current.
  */
-const keyOf = (row: PullRequestRow): string => `${row.id}@${row.commitId}`
+const keyOf = (row: PullRequestRow): string =>
+  // The draft and conflict flags are in the key for the same reason, one step
+  // further on: they feed the ready mark and they move *without* the commit
+  // moving, so a published draft would otherwise keep its "not ready" badge for
+  // the life of the page. Re-asking costs no ADO call — the server's cache is
+  // keyed on the commit, which has not changed, so it answers from sqlite.
+  `${row.id}@${row.commitId}${row.isDraft ? '+draft' : ''}${row.conflicted ? '+conflict' : ''}`
 
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
@@ -114,6 +120,11 @@ export function useHydration(rows: readonly PullRequestRow[], generation = 0): H
       projectId: row.projectId as string,
       repositoryId: row.repositoryId as string,
       myVote: row.myVote,
+      // Free on the row, and the other half of the readiness judgement the
+      // server makes — sending them saves it a detail call it would otherwise
+      // need for facts we already have.
+      isDraft: row.isDraft,
+      conflicted: row.conflicted,
     })
 
     async function run(batch: readonly PullRequestRow[]): Promise<void> {
