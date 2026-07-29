@@ -714,12 +714,20 @@
      data URI as a background, which arrives all at once — there is no way to draw
      half of a background image. It is now an inline `<svg>` in `TabStrip` so the
      same curve can be drawn along its own length, left to right, the way the pen
-     would have put it there. Same `d`, same 160×8 box. */
+     would have put it there. Same `d`, same 160×8 box.
+
+     `width` is explicit and `right` is not used, which for anything else here
+     would be the long way round. An `<svg>` is a replaced element: with `width`
+     left at `auto`, `left: 0; right: 0` is over-constrained, so CSS drops
+     `right` and takes the width from the intrinsic ratio instead — the
+     viewBox's 160:8 against `height: 8px`, which is 160px under every tab no
+     matter how short its label. `width: 100%` is the one form that actually
+     asks for the label's width. */
   .prof-tab__ink {
     position: absolute;
     left: 0;
-    right: 0;
     bottom: 0;
+    width: 100%;
     height: 8px;
     overflow: visible;
   }
