@@ -6,6 +6,7 @@ import { ArrowLeft } from 'lucide-react'
 import { pullRequestQuery } from '@/server/pull-request-fn'
 import { sonarReportQuery } from '@/server/sonar-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
+import { pullRequestKey } from '@/lib/requeue'
 import { useCommand } from '@/commands/command-provider'
 import { PullRequestDetailView } from '@/components/pr-detail'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -55,7 +56,8 @@ function PullRequestPage() {
   const addressable = Number.isSafeInteger(id) && id > 0
 
   const query = useQuery({
-    queryKey: ['pull-request', projectId, repositoryId, id],
+    // Shared with `useRequeue`, which invalidates this after a build is requeued.
+    queryKey: pullRequestKey({ projectId, repositoryId, id }),
     queryFn: () => pullRequestQuery({ data: { projectId, repositoryId, id } }),
     enabled: addressable,
     refetchInterval,

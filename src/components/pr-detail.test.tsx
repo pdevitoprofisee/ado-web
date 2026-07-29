@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { PullRequestDetailView as Detail, voteWord } from './pr-detail'
 import { viewedKey } from '@/lib/viewed-key'
-import { iterationChangesQuery } from '@/server/pull-request-fn'
+import { iterationChangesQuery, requeuePolicy } from '@/server/pull-request-fn'
 import { startThread, threadsQuery } from '@/server/threads-fn'
 import { markViewed, viewedQuery } from '@/server/viewed-fn'
 
@@ -44,7 +44,11 @@ vi.mock('@/server/viewed-fn', () => ({
  * update — and one that finds `log.ts` there has caught it falling back to the
  * whole pull request, which is this feature's one real failure mode.
  */
+// `requeuePolicy` is mocked for `useRequeue`'s sake — the checklist closes over
+// it whether or not a test presses anything, and an unmocked module would drag
+// the real server function into a jsdom bundle with no fetch to send it with.
 vi.mock('@/server/pull-request-fn', () => ({
+  requeuePolicy: vi.fn(async () => ({ ok: true, error: null, connected: true })),
   iterationChangesQuery: vi.fn(async () => ({
     changes: {
       files: [
@@ -107,6 +111,9 @@ const REF: PullRequestRef = {
   repositoryId: '22222222-2222-2222-2222-222222222222',
   id: 24698,
 }
+
+/** One evaluation of one policy, which is what a requeue addresses. */
+const EVALUATION = '33333333-3333-3333-3333-333333333333'
 
 /**
  * The view, plus the one piece of its state the route owns.
@@ -205,6 +212,9 @@ const policy = (over: Partial<Policy> = {}): Policy => ({
   blocking: true,
   detail: null,
   url: null,
+  // Whether a row is one to requeue is `toPolicies`' decision, tested there. The
+  // rows here are given one or not given one, which is all this side knows.
+  requeueId: null,
   ...over,
 })
 
@@ -397,6 +407,10 @@ describe('PullRequestDetailView merge state', () => {
 })
 
 describe('PullRequestDetailView policies', () => {
+  beforeEach(() => {
+    vi.mocked(requeuePolicy).mockClear()
+  })
+
   it('splits what is blocking from what passed, what does not apply, and what is advice', () => {
     render(
       <PullRequestDetailView
@@ -461,6 +475,55 @@ describe('PullRequestDetailView policies', () => {
       within(screen.getByRole('list', { name: 'Blocking' })).getByText('#5'),
     ).toBeVisible()
     expect(within(screen.getByRole('list', { name: 'Passed' })).getByText('#6')).toBeVisible()
+  })
+
+  it('offers a requeue only on the rows the server said carry one', async () => {
+    render(
+      <PullRequestDetailView
+        pr={detail({
+          policies: [
+            policy({
+              id: '1',
+              name: 'Build',
+              detail: 'utilities.logging · build 193288 · ran on an earlier commit',
+              requeueId: EVALUATION,
+            }),
+            policy({ id: '2', name: 'Minimum number of reviewers' }),
+          ],
+        })}
+      />,
+    )
+
+    const rows = within(screen.getByRole('list', { name: 'Blocking' })).getAllByRole('listitem')
+    // The name carries the policy, so three build rows would be three controls.
+    expect(within(rows[0]).getByRole('button', { name: /^Requeue Build/ })).toBeVisible()
+    expect(within(rows[1]).queryByRole('button')).toBeNull()
+
+    await userEvent.click(within(rows[0]).getByRole('button', { name: /^Requeue Build/ }))
+
+    expect(vi.mocked(requeuePolicy)).toHaveBeenCalledWith({
+      data: { projectId: REF.projectId, evaluationId: EVALUATION },
+    })
+  })
+
+  it('says so on the row when Azure DevOps refuses the requeue', async () => {
+    vi.mocked(requeuePolicy).mockResolvedValueOnce({
+      ok: false,
+      error: 'TF401027: You need the Contribute permission.',
+      connected: true,
+    })
+
+    render(
+      <PullRequestDetailView
+        pr={detail({ policies: [policy({ id: '1', name: 'Build', requeueId: EVALUATION })] })}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /^Requeue Build/ }))
+
+    expect(await screen.findByText(/You need the Contribute permission/)).toBeVisible()
+    // And the button comes back, because the thing it asked for did not happen.
+    expect(screen.getByRole('button', { name: /^Requeue Build/ })).toBeEnabled()
   })
 
   it('reads `queued` on a policy as unmet rather than as something running', () => {
@@ -805,6 +868,30 @@ describe('PullRequestDetailView tabs', () => {
     // the row we were standing on is now `tabIndex={-1}`.
     expect(combined).toHaveFocus()
     expect(screen.getByRole('tab', { name: /Details/ })).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('draws the underline under the active tab rather than showing it', async () => {
+    render(<PullRequestDetailView pr={detail({ files })} />)
+
+    const ink = () => document.querySelector('.prof-tab__ink path')
+    // `stroke-dasharray="0 1"` against `pathLength="1"` is an undrawn stroke:
+    // framer pays it out to `1 1` over the animation, which is what makes it read
+    // as a pen rather than as an underline that was already there. Asserted on the
+    // attributes because that is where framer writes them — and because the whole
+    // point is that this is *not* a static background any more.
+    expect(ink()).toHaveAttribute('pathLength', '1')
+    expect(ink()).toHaveAttribute('stroke-dasharray', '0 1')
+
+    // The stroke's colour is deliberately not here: a `var()` in an SVG
+    // presentation attribute resolves to nothing in every browser, so it lives in
+    // `styles.css` where the theme rebinds it.
+    expect(ink()).not.toHaveAttribute('stroke')
+
+    // And it is the *active* tab's, so switching draws a new one instead of
+    // sliding the old one across.
+    await userEvent.click(screen.getByRole('tab', { name: /Combined/ }))
+    expect(screen.getByRole('tab', { name: /Details/ }).querySelector('.prof-tab__ink')).toBeNull()
+    expect(screen.getByRole('tab', { name: /Combined/ }).querySelector('.prof-tab__ink')).not.toBeNull()
   })
 
   it('falls back to the details when the tab it was on stops existing', () => {

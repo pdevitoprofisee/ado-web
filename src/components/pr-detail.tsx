@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { COMBINED, useChanges } from '@/lib/changes'
 import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
+import { useRequeue } from '@/lib/requeue'
 import { cn } from '@/lib/utils'
 import { useViewedFiles } from '@/lib/viewed'
 import { fileViewedKey } from '@/lib/viewed-key'
@@ -254,47 +255,106 @@ function label(policy: Policy): string {
   return policy.detail === null ? policy.name : `${policy.name} — ${policy.detail}`
 }
 
-function PolicyRow({ policy, ambiguous }: { policy: Policy; ambiguous: boolean }) {
+/** One row's share of `useRequeue`, or `null` when the row is not one to requeue. */
+interface RowRequeue {
+  readonly ask: () => void
+  readonly pending: boolean
+  /** What ADO said about the last attempt on *this* row, or `null`. */
+  readonly error: string | null
+}
+
+function PolicyRow({
+  policy,
+  ambiguous,
+  requeue,
+}: {
+  policy: Policy
+  ambiguous: boolean
+  requeue: RowRequeue | null
+}) {
   return (
     // `border-border` at full strength rather than the old `/60`: `--border` is
     // already Prof's soft line, so the opacity was thinning a line that had
     // been chosen to be quiet. A divider between neighbours in the same panel is
     // exactly what that token is for.
-    <li className="border-border flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
-      <PolicyIcon status={policy.status} />
-      <span className="min-w-0 flex-1">
-        {policy.name}
-        {policy.detail === null ? null : (
-          <span className="text-muted-foreground"> — {policy.detail}</span>
+    //
+    // The baseline row moved inside, so a failed requeue has a line to be said
+    // on. It is drawn under the row it belongs to rather than beside the verdict,
+    // because an ADO error is a sentence and the verdict column is four words
+    // wide.
+    <li className="border-border border-b px-2 py-1 text-sm last:border-b-0">
+      <div className="flex items-baseline gap-2">
+        <PolicyIcon status={policy.status} />
+        <span className="min-w-0 flex-1">
+          {policy.name}
+          {policy.detail === null ? null : (
+            <span className="text-muted-foreground"> — {policy.detail}</span>
+          )}
+          {ambiguous ? (
+            <span className="text-muted-foreground font-mono text-2xs"> #{policy.id}</span>
+          ) : null}
+        </span>
+        {policy.url === null ? null : (
+          // 1.5px of pen at a 3px offset, and it finds the brand navy on hover.
+          // The stock `underline-offset-4` sat a hair too low under 11px type.
+          <a
+            href={policy.url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-muted-foreground hover:text-primary shrink-0 text-2xs underline decoration-[1.5px] underline-offset-[3px]"
+          >
+            result
+          </a>
         )}
-        {ambiguous ? (
-          <span className="text-muted-foreground font-mono text-2xs"> #{policy.id}</span>
-        ) : null}
-      </span>
-      {policy.url === null ? null : (
-        // 1.5px of pen at a 3px offset, and it finds the brand navy on hover.
-        // The stock `underline-offset-4` sat a hair too low under 11px type.
-        <a
-          href={policy.url}
-          target="_blank"
-          rel="noreferrer"
-          className="text-muted-foreground hover:text-primary shrink-0 text-2xs underline decoration-[1.5px] underline-offset-[3px]"
-        >
-          result
-        </a>
+        {requeue === null ? null : (
+          // Drawn as the link beside it and not as a `<Button>`: this sits in a
+          // row of eleven-pixel type, and a real button here would outweigh the
+          // verdict it is about. It is still a `<button>`, because it does
+          // something rather than going somewhere.
+          //
+          // The name carries the policy so a checklist with three build rows has
+          // three distinguishable controls — "requeue" three times over is a
+          // screen reader listing the same action thrice.
+          <button
+            type="button"
+            onClick={requeue.ask}
+            disabled={requeue.pending}
+            aria-label={`Requeue ${label(policy)}`}
+            className="text-muted-foreground hover:text-primary shrink-0 text-2xs underline decoration-[1.5px] underline-offset-[3px] disabled:no-underline disabled:opacity-60"
+          >
+            {requeue.pending ? 'requeuing…' : 'requeue'}
+          </button>
+        )}
+        {/* Mono, because this column is read down rather than across: the verdicts
+            line up on a shared advance width and a row that says "failed" jumps
+            out of a stack of "passed". Wider than the old `w-24` to hold "not
+            applicable" at mono's advance. */}
+        <span className="text-muted-foreground w-28 shrink-0 text-right font-mono text-2xs">
+          {POLICY_WORDS[policy.status]}
+        </span>
+      </div>
+      {requeue === null || requeue.error === null ? null : (
+        // Indented to the text it belongs under, past the verdict glyph.
+        <p className="text-destructive ml-[1.375rem] text-2xs">
+          Azure DevOps did not requeue it: {requeue.error}
+        </p>
       )}
-      {/* Mono, because this column is read down rather than across: the verdicts
-          line up on a shared advance width and a row that says "failed" jumps
-          out of a stack of "passed". Wider than the old `w-24` to hold "not
-          applicable" at mono's advance. */}
-      <span className="text-muted-foreground w-28 shrink-0 text-right font-mono text-2xs">
-        {POLICY_WORDS[policy.status]}
-      </span>
     </li>
   )
 }
 
-function PolicyChecklist({ policies }: { policies: readonly Policy[] }) {
+function PolicyChecklist({
+  policies,
+  prRef,
+}: {
+  policies: readonly Policy[]
+  prRef: PullRequestRef
+}) {
+  // One mutation for the whole checklist rather than one per row: only one
+  // requeue is ever in flight — the button that started it is disabled — and a
+  // hook per row would mean a `useMutation` per policy on every render.
+  const requeue = useRequeue(prRef)
+
   const buckets = GROUPS.map(() => [] as Policy[])
   for (const policy of policies) {
     buckets[GROUPS.findIndex(([, matches]) => matches(policy))].push(policy)
@@ -330,6 +390,16 @@ function PolicyChecklist({ policies }: { policies: readonly Policy[] }) {
                   key={policy.id}
                   policy={policy}
                   ambiguous={(counts.get(label(policy)) ?? 0) > 1}
+                  requeue={
+                    policy.requeueId === null
+                      ? null
+                      : {
+                          ask: () => requeue.ask(policy),
+                          pending: requeue.pendingId === policy.id,
+                          error:
+                            requeue.failure?.id === policy.id ? requeue.failure.message : null,
+                        }
+                  }
                 />
               ))}
             </ul>
@@ -1217,6 +1287,10 @@ export function PullRequestDetailView({
           role="tabpanel"
           id="panel-details"
           aria-labelledby="tab-details"
+          // No measure cap here, deliberately: this panel is exactly as wide as
+          // the diff panel beside it, so switching tabs moves nothing at all. A
+          // cap was tried and reverted — it holds the page still but still leaves
+          // the *content* changing width, which is the shift you actually see.
           className="flex w-full flex-col items-start gap-5"
         >
           <MergeBanner merge={pr.merge} conflictsError={pr.errors.conflicts} />
@@ -1230,7 +1304,7 @@ export function PullRequestDetailView({
             ) : pr.policies.length === 0 ? (
               <Empty>No branch policies apply to this pull request.</Empty>
             ) : (
-              <PolicyChecklist policies={pr.policies} />
+              <PolicyChecklist policies={pr.policies} prRef={prRef} />
             )}
           </Section>
 

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { changeFlags, commitSubject, loadChanges, loadPullRequest, toPolicies } from './pull-request'
+import {
+  POLICY_VERSION,
+  changeFlags,
+  commitSubject,
+  loadChanges,
+  loadPullRequest,
+  requeueEvaluation,
+  toPolicies,
+} from './pull-request'
 
 import type { AdoClient, QueryValue } from './ado-client'
 import type { PullRequestRef } from './pull-request'
@@ -12,6 +20,19 @@ const COLLEAGUE = 'dddddddd-1111-2222-3333-444444444444'
 const CONTRIBUTORS = 'cc86398c-49fe-4239-9765-4a4da7535e01'
 
 const REF: PullRequestRef = { projectId: PROJECT, repositoryId: REPOSITORY, id: 24698 }
+
+/**
+ * Evaluation ids — one policy's verdict on one pull request, which is a different
+ * id from the policy's own and the only thing a requeue can be addressed to.
+ */
+const EVALUATIONS_ID = [
+  'e0000000-0000-0000-0000-000000000001',
+  'e0000000-0000-0000-0000-000000000002',
+  'e0000000-0000-0000-0000-000000000003',
+  'e0000000-0000-0000-0000-000000000004',
+  'e0000000-0000-0000-0000-000000000005',
+  'e0000000-0000-0000-0000-000000000006',
+] as const
 
 const PR = `${PROJECT}/_apis/git/repositories/${REPOSITORY}/pullRequests/24698`
 const EVALUATIONS = `${PROJECT}/_apis/policy/evaluations`
@@ -416,6 +437,78 @@ describe('the policy checklist', () => {
     expect(rows[0].status).toBe('unknown')
     // Unrecognised errs toward standing in the way, not toward silently passing.
     expect(rows[0].blocking).toBe(true)
+  })
+
+  it('offers a requeue on the builds worth running again, and on nothing else', () => {
+    const build = { buildDefinitionId: 320 }
+    const rows = policies([
+      // Unmet. The plain case: a build that has not passed.
+      evaluation(101, 'Build', 'queued', build, { evaluationId: EVALUATIONS_ID[0] }),
+      evaluation(102, 'Build', 'rejected', build, { evaluationId: EVALUATIONS_ID[1] }),
+      // Green, and green about an earlier commit — the one reason to press this
+      // on a row that has already passed.
+      evaluation(103, 'Build', 'approved', build, {
+        evaluationId: EVALUATIONS_ID[2],
+        context: { buildId: 193288, buildIsNotCurrent: true },
+      }),
+      // A build that is already going is not one to queue.
+      evaluation(104, 'Build', 'running', build, { evaluationId: EVALUATIONS_ID[3] }),
+      // Green about this commit: nothing to ask for.
+      evaluation(105, 'Build', 'approved', build, {
+        evaluationId: EVALUATIONS_ID[4],
+        context: { buildId: 193290 },
+      }),
+      // Not a policy that runs anything. A requeue here would re-ask a question
+      // whose answer is a vote count.
+      evaluation(106, 'Minimum number of reviewers', 'queued', { minimumApproverCount: 1 }, {
+        evaluationId: EVALUATIONS_ID[5],
+      }),
+      // A build ADO gave us no evaluation id for. There is nothing to address.
+      evaluation(107, 'Build', 'queued', build),
+    ])
+
+    expect(rows.map((row) => row.requeueId)).toEqual([
+      EVALUATIONS_ID[0],
+      EVALUATIONS_ID[1],
+      EVALUATIONS_ID[2],
+      null,
+      null,
+      null,
+      null,
+    ])
+  })
+})
+
+describe('requeueing a build policy', () => {
+  it('patches the evaluation, with no body and at the preview api-version', async () => {
+    const writes: Array<{
+      method: string
+      path: string
+      body: unknown
+      params: Record<string, QueryValue>
+    }> = []
+
+    const client: AdoClient = {
+      ...fakeClient({}).client,
+      write: (method, path, body, params = {}) => {
+        writes.push({ method, path, body, params })
+
+        return Promise.resolve(null)
+      },
+    }
+
+    await requeueEvaluation(client, { projectId: PROJECT, evaluationId: EVALUATIONS_ID[0] })
+
+    expect(writes).toEqual([
+      {
+        method: 'PATCH',
+        path: `${PROJECT}/_apis/policy/evaluations/${EVALUATIONS_ID[0]}`,
+        // Not `{}`: ADO's requeue takes no body, and a body would make the
+        // client send a `Content-Type` for something it is not sending.
+        body: undefined,
+        params: { 'api-version': POLICY_VERSION },
+      },
+    ])
   })
 })
 

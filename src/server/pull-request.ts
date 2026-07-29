@@ -135,6 +135,13 @@ export interface Policy {
   readonly detail: string | null
   /** A build result, when the policy has one to point at. */
   readonly url: string | null
+  /**
+   * The evaluation to ask ADO to run again, or `null` when running it again is
+   * not an act — see `requeueTarget`. One field rather than an id plus a
+   * `canRequeue` beside it, because the two could disagree and the UI would have
+   * to decide which of them it believed.
+   */
+  readonly requeueId: string | null
 }
 
 export interface Commit {
@@ -338,6 +345,12 @@ interface AdoPolicyContext {
 }
 
 interface AdoEvaluation {
+  /**
+   * ADO's own id for *this evaluation of this policy on this pull request* —
+   * a different thing from `configuration.id`, which names the policy. It is
+   * what the requeue route addresses, and the only reason it is read.
+   */
+  readonly evaluationId?: string
   readonly status?: string
   readonly context?: AdoPolicyContext | null
   readonly configuration?: {
@@ -501,6 +514,43 @@ function policyDetail(
   return null
 }
 
+/**
+ * The evaluation id, when asking Azure DevOps to run this one again is a thing
+ * that would mean something — and `null` otherwise, so the row simply has no
+ * requeue on it.
+ *
+ * Three conditions, each for its own reason:
+ *
+ *   - **A build policy.** The route accepts any evaluation and documents that
+ *     "only build policies perform any action in response" — so a requeue on
+ *     "minimum number of reviewers" is a 200 and nothing else: a button that does
+ *     nothing and says it did.
+ *   - **Not already running.** ADO's own words are that a requeue queues a new
+ *     build "cancelling any existing build which is running", so this is not a
+ *     no-op — it is a live build cancelled from a control whose row reads
+ *     "running" both before and after. Left out because it cannot be seen to have
+ *     worked, not because it would fail.
+ *   - **Not already satisfied**, unless it passed on an *earlier commit*. That
+ *     exception is the case worth having this at all: a green row that says "ran
+ *     on an earlier commit" is exactly a build you want to press again, and
+ *     `buildIsNotCurrent` is how ADO says so.
+ *
+ * `notApplicable` falls out with the satisfied ones, which is right: a policy
+ * scoped to another branch has nothing to run against this one.
+ */
+function requeueTarget(
+  evaluation: AdoEvaluation,
+  isBuild: boolean,
+  status: PolicyStatus,
+): string | null {
+  const id = evaluation.evaluationId
+  if (typeof id !== 'string' || id === '' || !isBuild || status === 'running') return null
+
+  const stale = evaluation.context?.buildIsNotCurrent === true
+
+  return SATISFIED.has(status) && !stale ? null : id
+}
+
 export function toPolicies(
   evaluations: readonly AdoEvaluation[],
   org: string,
@@ -511,6 +561,10 @@ export function toPolicies(
     const settings = configuration?.settings ?? {}
     const status = policyStatus(evaluation.status)
     const buildId = evaluation.context?.buildId
+    // `buildDefinitionId` and not `type.displayName === 'Build'`, for
+    // `policyDetail`'s reason: the name is display text and collides, the
+    // settings are data and do not.
+    const isBuild = settings.buildDefinitionId !== undefined
 
     return {
       id: String(configuration?.id ?? index),
@@ -525,6 +579,7 @@ export function toPolicies(
         buildId === undefined
           ? null
           : `https://dev.azure.com/${encodeURIComponent(org)}/${projectId}/_build/results?buildId=${buildId}`,
+      requeueId: requeueTarget(evaluation, isBuild, status),
     }
   })
 }
@@ -615,6 +670,37 @@ async function loadPolicies(client: AdoClient, ref: PullRequestRef): Promise<rea
   )
 
   return toPolicies(evaluations.value ?? [], client.org, ref.projectId)
+}
+
+/**
+ * "Run that build again" — the one write this page has.
+ *
+ * ADO spells requeue as a PATCH of the evaluation with **no body at all**: the
+ * id in the path is the whole request, which is why nothing is passed for one
+ * (`write` sends no `Content-Type` when there is nothing to send).
+ *
+ * `POLICY_VERSION` for `loadPolicies`' reason — the evaluations route is
+ * preview-only, and the client's default `api-version` 404s here.
+ *
+ * The refreshed record it answers with is deliberately dropped. It arrives
+ * mid-transition, so believing it would mean drawing a row from ADO's first
+ * thought about a build it has not queued yet; the caller re-reads the checklist
+ * instead. Nothing about the requeue is in this return value, and nothing needs
+ * to be: it either threw or it was accepted.
+ *
+ * Unproven against ADO — written from the documented shape rather than from a
+ * probe, and the PAT needs write scope on code (`vso.code_write`) for it.
+ */
+export async function requeueEvaluation(
+  client: AdoClient,
+  target: { readonly projectId: string; readonly evaluationId: string },
+): Promise<void> {
+  await client.write(
+    'PATCH',
+    `${target.projectId}/_apis/policy/evaluations/${target.evaluationId}`,
+    undefined,
+    { 'api-version': POLICY_VERSION },
+  )
 }
 
 async function loadCommits(

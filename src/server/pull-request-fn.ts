@@ -2,7 +2,7 @@ import { createServerFn } from '@tanstack/react-start'
 
 import { NotConnectedError, adoClient } from './ado'
 import { AdoError } from './ado-client'
-import { loadChanges, loadPullRequest } from './pull-request'
+import { loadChanges, loadPullRequest, requeueEvaluation } from './pull-request'
 
 import type { AdoClient, RateLimit } from './ado-client'
 import type { ChangeSet, PullRequestDetail, PullRequestRef } from './pull-request'
@@ -120,6 +120,44 @@ function iterationChangesRequest(input: unknown): IterationChangesRequest {
   return { ...ref, iterationId: raw.iterationId as number, compareTo: raw.compareTo as number }
 }
 
+/**
+ * Which build to run again.
+ *
+ * The repository and the pull request number are not here, and that is not an
+ * oversight: ADO addresses an evaluation by project and evaluation id, and adding
+ * two ids the route would not use would mean validating values this write does
+ * not depend on. What it does depend on is that `evaluationId` reaches a *path*,
+ * so it is checked for being a GUID rather than escaped — the reason at the top
+ * of this file, with a write's stakes on top of it: a read with a wrong id costs
+ * a 404, a write with a wrong id starts somebody else's build.
+ */
+export interface RequeueRequest {
+  readonly projectId: string
+  readonly evaluationId: string
+}
+
+/**
+ * Whether ADO took it.
+ *
+ * No `rateLimit`, unlike the reads: the caller re-reads the pull request
+ * immediately afterwards and that answer carries the up-to-date count. Two
+ * numbers arriving out of order for the same footer is worse than one.
+ */
+export interface RequeueResult {
+  readonly ok: boolean
+  readonly error: string | null
+  readonly connected: boolean
+}
+
+export function requeueRequest(input: unknown): RequeueRequest {
+  const raw = (input ?? {}) as Record<string, unknown>
+
+  return {
+    projectId: guid(raw.projectId, 'projectId'),
+    evaluationId: guid(raw.evaluationId, 'evaluationId'),
+  }
+}
+
 /** The error rather than `null`, so the message it already carries is the one shown. */
 function connectedClient(): AdoClient | NotConnectedError {
   try {
@@ -193,5 +231,41 @@ export const iterationChangesQuery = createServerFn({ method: 'GET' })
       return { changes: await loadChanges(client, ref, iterationId, compareTo), error: null }
     } catch (error) {
       return { changes: null, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+/**
+ * Run a build policy again.
+ *
+ * This page's only write, and the only one outside the conversation. It is here
+ * rather than in a file of its own because the checklist it acts on is read by
+ * `pullRequestQuery` above — a requeue is not a feature, it is the one verb the
+ * policy rows have.
+ *
+ * `ok: false` rather than a throw for `threads-fn.ts`'s reason: a write refused
+ * before it was sent and a write ADO rejected are both failures the row has to
+ * report, and the caller should not have to infer that from which field is null.
+ * Which builds are offered a requeue at all is `requeueTarget`'s decision, not
+ * this function's — it will requeue whatever it is handed, because the id came
+ * off a row the server drew.
+ */
+export const requeuePolicy = createServerFn({ method: 'POST' })
+  .validator(requeueRequest)
+  .handler(async ({ data }): Promise<RequeueResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) {
+      return { ok: false, error: client.message, connected: false }
+    }
+
+    try {
+      await requeueEvaluation(client, data)
+
+      return { ok: true, error: null, connected: true }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        connected: true,
+      }
     }
   })
