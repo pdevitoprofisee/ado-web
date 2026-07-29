@@ -166,6 +166,20 @@ rewrite. Evidence in [`docs/research/`](./research/).
    component state vanishes mid-sentence, with no error and nothing in the console to
    look at. Every such thing is an input with a transition beside `setThreads`
    (T-037's `composer` / `setComposer`), never local state.
+8. **`issues/search` cannot return more than 10 000 issues for one project, by any
+   route.** `ps` maxes at 500 (`ps=501` and `ps=1000` both `400`, in the probe table) *and*
+   `p * ps` cannot exceed 10 000, so page 20 at the maximum page size is the last page
+   that exists — there is no request that reads the 10 001st issue. Paging fixes 500;
+   nothing fixes 10 000. A client that pages until a page comes back empty therefore has
+   to also stop at 20 and **say the list is short** (`SonarReport.truncated`), because the
+   alternative is a panel that silently shows 10 000 of 24 000 findings and reads as
+   complete. Two caveats worth carrying: no probe in `docs/research/` ever sent a `p`, so
+   the second cap is documented-and-briefed rather than in the tables — re-measure it
+   before relying on a page 21. And a main branch answered `total: 10000` exactly, so a
+   `total` of the ceiling is a floor rather than a count. `total` is still the field that
+   says where a list ends (present on every 200 measured); a *short* page is not proof of
+   a last page — compare the ADO paging rule below, where a service filters after it
+   pages.
 
 ### Structural facts about the ADO API
 
@@ -295,7 +309,7 @@ line text — useful only to make our hunk boundaries match theirs. It's preview
 - **`issues/search` returns resolved issues by default** `[LIVE]`. A PR answering `total: 3`
   had three `FIXED` issues and zero open ones. Say
   `issueStatuses=OPEN,CONFIRMED,ACCEPTED` when you mean open. `ps` is capped at 500
-  (`ps=501` → 400).
+  (`ps=501` → 400), and `p * ps` at 10 000 — see note 7 for what that costs.
 - **Anchor a finding on `textRange.startLine`, not `line`** `[LIVE]`. `line` was present on
   4/4 open issues (and equal to `startLine`) and **absent on 3/3 fixed** ones; `textRange`
   was present on all 7.

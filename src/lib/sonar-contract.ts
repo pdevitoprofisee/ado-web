@@ -335,15 +335,28 @@ export const SONAR_PAGE_SIZE = 500
  * the API stops, whatever the loop would like. `SONAR_ISSUE_CEILING` is the same
  * fact counted in issues.
  *
+ * Where the two halves come from is worth knowing, because they are not equally
+ * checked here. The `ps` cap is in the probe table verbatim (`ps=501` → 400). The
+ * `p * ps` cap is T-038's reconnaissance and Sonar's own documented limit, and no
+ * probe in `docs/research/` sends a `p` at all — so if a page 21 ever answers 200,
+ * this is the number to re-measure rather than the one to trust.
+ *
  * This is also the bound that keeps a pathological repository from hanging the
- * panel: 20 sequential requests at 145–1177 ms each is the worst case, and it only
- * happens on a project with more than 9 500 open findings.
+ * panel: the two `issues/search` calls that were timed took 615 ms and 788 ms, so
+ * 20 of them sequentially is the worst case — and it is only reached on a project
+ * with more than 9 500 open findings.
  */
 export const SONAR_MAX_PAGES = 20
 
 /**
  * The most findings this app can ever show for one project, and it cannot be
  * defeated — only admitted, which is what `SonarTruncation` is for.
+ *
+ * The same number showed up as a `total`: a project's main branch answered
+ * `total: 10000` exactly, which is the ceiling and almost certainly the count
+ * being clamped to it rather than a coincidence. Harmless for the paging loop —
+ * it stops there anyway — but it does mean a `total` of exactly this is a floor
+ * and not a count.
  */
 export const SONAR_ISSUE_CEILING = SONAR_PAGE_SIZE * SONAR_MAX_PAGES
 

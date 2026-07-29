@@ -337,7 +337,7 @@ and 11 in `diff-view.test.tsx` for the behaviour (the button's presence and abse
 
 ## T-038 — The three Sonar shortfalls
 
-**Type:** feature · **Status:** open · **Blocked by:** —
+**Type:** feature · **Status:** parts 1 and 3 resolved · **part 2 still open** · **Blocked by:** —
 
 Phase 10. [Round 4](./round-4.md) delivered phase 6 early and named exactly three things it
 left. None is a defect; each was measured and declined.
@@ -364,6 +364,70 @@ code blocks. **Success:** the pair renders as a pair. The schema extension is **
 two attributes, by name, on `pre` — not a widened schema and not `rehype-raw` without sanitize
 after it. The order stays `rehype-raw` **then** `rehype-sanitize`; reversing it is how untrusted
 HTML gets through, and Sonar's rule HTML is third-party content.
+
+### Resolution
+
+**Parts 1 and 3 only. Part 2 was not attempted, deliberately.** The line-level jump needs
+`src/lib/diff-rows.ts` and `src/components/diff/diff-view.tsx`, and T-037 was rewriting both at
+the same time in another worktree — two agents editing the row model of the same virtualized
+list produces a merge, not a feature. It stays open with its success criteria unchanged; nothing
+here forecloses it, and `SonarJump` already carries the line.
+
+**1. Paging.** `loadIssues` is a loop, `p` alongside `ps: 500`, bounded by
+`SONAR_MAX_PAGES = 20`. It ends on `total` — the top-level count, present on every 200 measured,
+and the same number `paging.total` repeats, which is why only one of them is modelled. With no
+`total` at all it ends on a page shorter than the maximum, which is the only signal left; that
+ordering matters, because a *short* page is not proof of a last page (the ADO side measured a
+service that filters after it pages) so `total` is asked first and the length only when there is
+no count to compare against.
+
+**The ceiling is arithmetic and cannot be beaten.** `ps` will not exceed 500 (`ps=501` and
+`ps=1000` both `400`, in the probe table), and `p * ps` cannot exceed 10 000 on
+`issues/search` — that half is this ticket's reconnaissance and Sonar's documented limit, not a
+row in `docs/research/`, because no probe ever sent a `p`; it is flagged as the number to
+re-measure in both note 8 and the constant's own doc. So page 20 is the last page that exists:
+`SONAR_ISSUE_CEILING = 10 000` findings per project, per pull request.
+Twenty sequential requests is also the answer to "cannot hang the panel": the two timed
+`issues/search` calls took 615 ms and 788 ms, and the twentieth page is only reached on a project
+with more than 9 500 open findings. Recorded as note 8 in [the map](../map.md#the-notes).
+
+**Truncation is admitted in a new `SonarReport.truncated`, not in `failed`.** The two lists
+answer different questions: `failed` is "we could not read this project", `truncated` is "these
+findings are on your screen and there are more". A project that answers pages 1 and 2 and then
+fails belongs in the second — filing it in the first tells a reviewer to disregard findings they
+can see. So `loadIssues` no longer throws: it returns its partials with a `shortfall` carrying
+Sonar's `total` and the unwrapped error, and `loadSonarReport` decides. Nothing at all →
+`failed`, exactly as before. Something, then a failure → `truncated` with the request's own
+words. Something, then page 20 → `truncated` with `message: null`, which is what distinguishes
+"we backed off" from "that was the end". A 429 still skips the gate call either way, because the
+client is closed to every further request and asking would only manufacture a second identical
+failure.
+
+The panel says it above the findings — `Showing 10000 of 24312 findings for profisee_matching.`
+plus which of the two reasons it was — in ink with an amber mark, because `--pen-amber` is
+3.39:1 on this paper: fine for a glyph, short of the 4.5:1 a sentence needs.
+
+**3. The pairing.** One narrow schema extension: `dataDiffId` and `dataDiffType`, by name, on
+`pre`. **The names are the whole trap.** `hast-util-sanitize` filters the parsed tree, where the
+property is `dataDiffId`, while react-markdown hands the component back the *attribute*,
+`data-diff-id` — spell either one the other way and nothing errors, the attributes are simply
+gone. Proved with a throwaway probe test that printed the props react-markdown actually passes
+(`["data-diff-id","data-diff-type","node","children"]`), then deleted.
+
+A typed pair renders as a captioned block: `pen-green`/`pen-red` at the pen's 1.5px, a
+Hugeicons tick or alert, and **`Compliant solution` / `Noncompliant code example` in words** —
+those two pens are 4.01:1 and 4.65:1, which is a stroke and not a message, and a "do this, not
+this" pair that distinguishes itself only by hue distinguishes itself only for some readers.
+`data-diff-id` rides onto a wrapping `div` so a rule with two pairs still says which block
+answers which. An unrecognised `data-diff-type` falls through to the plain block. `rehype-raw`
+still runs **before** `rehype-sanitize`. `rule-detail.tsx` has two render paths — sectioned and
+whole-`html` — and both go through `RuleHtml`, so one schema covers both; there is a test that
+says so, because "one change covers both" is only true while that stays the case.
+
+**41 files / 730 tests**, up from 718, `tsc --noEmit` clean. Four call sites needed
+`truncated: []` added to a `SonarReport` literal (`sonar-fn.ts`'s `EMPTY_REPORT`, two fixtures
+in `pr-detail.test.tsx`, one in `panel.test.tsx`) — the field is required rather than optional
+because the server always knows the answer.
 
 ---
 
