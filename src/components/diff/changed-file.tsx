@@ -3,13 +3,13 @@ import { useQuery } from '@tanstack/react-query'
 
 import { FileDiffPanel } from './file-diff'
 import { changeKind } from './file-tree'
+import { fileBlobsOptions } from '@/lib/blob-query'
 import { diffFile } from '@/lib/diff'
 import { buildRows, expandGap, setHideDone, setLayout, setThreads } from '@/lib/diff-rows'
 import { fileAnchor } from '@/lib/file-anchor'
 import { sharedHighlighter } from '@/lib/highlight/shared'
 import { useNearViewport } from '@/lib/near-viewport'
 import { useTheme } from '@/lib/theme'
-import { fileBlobsQuery } from '@/server/blob-fn'
 
 import type { ThreadActions } from '@/components/comments/thread-actions'
 import type { RowModel } from '@/lib/diff-rows'
@@ -79,26 +79,13 @@ export function ChangedFileDiff({
   const [wrapper, near] = useNearViewport<HTMLDivElement>()
 
   const query = useQuery({
-    // Keyed by the shas rather than by the pull request: the same blob pair in
-    // another PR, or in this one after a rebase that did not touch this file,
-    // is the same answer.
-    queryKey: ['file-blobs', repositoryId, file.path, file.objectId, file.originalObjectId],
-    queryFn: () =>
-      fileBlobsQuery({
-        data: {
-          projectId,
-          repositoryId,
-          id,
-          path: file.path,
-          objectId: file.objectId,
-          originalObjectId: file.originalObjectId,
-        },
-      }),
+    // Key, fetcher and cache policy from `fileBlobsOptions`, never written out
+    // here: the page warms the first few files of the list off idle while you are
+    // on the details tab, and a key spelled in two places is two cache entries and
+    // twice the calls for one file. `enabled` is the panel's own half of that
+    // bargain — the warmer fetches regardless, this fetches when it is being read.
+    ...fileBlobsOptions({ projectId, repositoryId, id }, file),
     enabled: opened || near,
-    // A blob is addressed by the sha of its own content, so this answer cannot
-    // go stale. Refetching one would spend a call to be told the same thing.
-    staleTime: Infinity,
-    gcTime: Infinity,
   })
 
   const blobs = query.data?.blobs ?? null

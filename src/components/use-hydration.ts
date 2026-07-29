@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { onIdle } from '@/lib/idle'
 import { hydrateQuery } from '@/server/hydrate-fn'
 
 import type { HydrationResult, HydrationTarget } from '@/server/hydrate'
@@ -55,20 +56,6 @@ function visibleIds(lists: ReadonlySet<HTMLElement>): ReadonlySet<number> {
   }
 
   return ids
-}
-
-/** `requestIdleCallback` is still missing in Safari and in jsdom, so it degrades. */
-function onIdle(run: () => void): () => void {
-  if (typeof requestIdleCallback === 'function') {
-    // The timeout is the point: idle may never come on a busy tab, and the rest
-    // of the inbox filling in eventually beats it never filling in at all.
-    const handle = requestIdleCallback(run, { timeout: 2000 })
-
-    return () => cancelIdleCallback(handle)
-  }
-  const handle = setTimeout(run, 200)
-
-  return () => clearTimeout(handle)
 }
 
 export interface Hydrating {

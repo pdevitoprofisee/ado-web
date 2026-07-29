@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { useWarmDiff } from '@/lib/blob-query'
 import { COMBINED, useChanges } from '@/lib/changes'
 import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
@@ -1627,6 +1628,14 @@ export function PullRequestDetailView({
 
   const view: ChangeView = update === null ? COMBINED : { kind: 'update', iterationId: update }
   const changes = useChanges(prRef, view, pr.files)
+
+  // The bytes for the first few files, fetched while you are reading the details
+  // tab, so that clicking Combined paints a diff instead of starting one. The
+  // combined list is what arrives with the page and what a diff tab opens on, so
+  // this is the list to warm; how far down it goes, and why it stops there, is
+  // `useWarmDiff`'s own header. Off on the diff tabs, where the panels are already
+  // fetching the same keys as they scroll into view.
+  useWarmDiff(prRef, pr.files.files, active === 'details')
 
   // Which iterations a thread started on the diff in front of us is written
   // against — the thing that makes "line 40" mean something, since line 40 of

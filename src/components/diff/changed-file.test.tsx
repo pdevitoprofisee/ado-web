@@ -4,11 +4,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChangedFileDiff } from './changed-file'
+import { useWarmDiff } from '@/lib/blob-query'
 import { fileAnchor } from '@/lib/file-anchor'
 
 import type { ReactElement } from 'react'
 import type { FileBlobs } from '@/lib/diff-contract'
-import type { ChangedFile } from '@/server/pull-request'
+import type { ChangedFile, PullRequestRef } from '@/server/pull-request'
 
 // The seam between the four phase-3 pieces, tested with three of them real. The
 // blob call is mocked because it is the network; the diff, the row model and
@@ -75,6 +76,13 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+/** The three GUIDs the route addresses the page by, shared with the warmer below. */
+const REF: PullRequestRef = {
+  projectId: '11111111-1111-1111-1111-111111111111',
+  repositoryId: '22222222-2222-2222-2222-222222222222',
+  id: 24698,
+}
+
 const FILE: ChangedFile = {
   path: '/src/log.ts',
   changeType: ['edit'],
@@ -102,9 +110,9 @@ function draw(ui: ReactElement) {
 function panel(props: Partial<Parameters<typeof ChangedFileDiff>[0]> = {}) {
   return (
     <ChangedFileDiff
-      projectId="11111111-1111-1111-1111-111111111111"
-      repositoryId="22222222-2222-2222-2222-222222222222"
-      id={24698}
+      projectId={REF.projectId}
+      repositoryId={REF.repositoryId}
+      id={REF.id}
       file={FILE}
       layout="unified"
       {...props}
@@ -262,6 +270,41 @@ describe('ChangedFileDiff', () => {
 
     expect(header()).toHaveAttribute('aria-expanded', 'false')
     expect(call).not.toHaveBeenCalled()
+  })
+
+  it('paints a file the page warmed, without asking for it itself', async () => {
+    // Both sides of the prefetch in one test, which is the only place they can be
+    // held honest: `useWarmDiff` writes, this panel reads, and a key spelled
+    // differently in either would look like a warm cache while being two entries
+    // and two sets of calls. The panel is never scrolled to and never clicked, so
+    // its own query is disabled — whatever it renders, it did not fetch.
+    inView = false
+    call.mockResolvedValue(answer(BLOBS))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    function Warm() {
+      useWarmDiff(REF, [FILE], true)
+
+      return null
+    }
+
+    const warming = render(
+      <QueryClientProvider client={client}>
+        <Warm />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    // Leaving the page the warmer lives on must not throw the bytes away: that is
+    // what `gcTime: Infinity` is for, and it is half of what makes this a warm-up
+    // rather than a race.
+    warming.unmount()
+
+    render(<QueryClientProvider client={client}>{panel()}</QueryClientProvider>)
+
+    await waitFor(() =>
+      expect(screen.getByRole('region', { name: FILE.path })).toHaveTextContent('is here'),
+    )
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('marks a file viewed without its bytes ever arriving', async () => {

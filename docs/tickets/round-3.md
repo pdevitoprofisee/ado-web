@@ -190,10 +190,11 @@ than two. The `catch` is not narrowed to `AdoError`: a 30-second timeout arrives
 diff has to compare it — see [T-019](#t-019--syntax-highlighting-off-the-main-thread) for what
 that did to the highlighter, and how it was found.
 
-**Deliberately not done.** Nothing prefetches: blobs are fetched when a file is opened, not
-when the file list renders, so opening the 294-file !24766 still costs the file list and
-nothing more. No eviction — the cache grows without bound and there is no measurement of how
-fast.
+**Deliberately not done.** Blobs are still fetched per file rather than per list — the only
+prefetch is `src/lib/blob-query.ts`, which warms the first `WARM_FILES` of the combined list
+off idle while the details tab is up, so opening the 294-file !24766 costs the file list plus
+at most 12 blob calls and every file after the sixth still waits for a scroll. No eviction —
+the cache grows without bound and there is no measurement of how fast.
 
 **Not measured:** `fileBlobsQuery` itself was never invoked in a test. It needs a request
 context to call, and `blob-fn.test.ts` was outside the implementing agent's file set;
