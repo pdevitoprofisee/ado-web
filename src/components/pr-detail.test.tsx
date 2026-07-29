@@ -14,6 +14,7 @@ import {
   requeuePolicy,
   setMyVote,
   squashMerge,
+  withdrawReviewer,
 } from '@/server/pull-request-fn'
 import { startThread, threadsQuery } from '@/server/threads-fn'
 import { markViewed, viewedQuery } from '@/server/viewed-fn'
@@ -70,6 +71,11 @@ vi.mock('@/server/pull-request-fn', () => ({
   setMyVote: vi.fn(async () => ({ ok: true, error: null, connected: true })),
   abandonPullRequest: vi.fn(async () => ({ ok: true, error: null, connected: true })),
   reactivatePullRequest: vi.fn(async () => ({ ok: true, error: null, connected: true })),
+  // The reviewer writes, closed over by `ReviewerList` on every render of the
+  // Reviewers section — and the pair that would put somebody's name on a real
+  // colleague's pull request, or take it off.
+  inviteReviewer: vi.fn(async () => ({ ok: true, error: null, connected: true })),
+  withdrawReviewer: vi.fn(async () => ({ ok: true, error: null, connected: true })),
   iterationChangesQuery: vi.fn(async () => ({
     changes: {
       files: [
@@ -1246,6 +1252,67 @@ describe('PullRequestDetailView reviewers', () => {
     render(<PullRequestDetailView pr={detail()} />)
 
     expect(screen.getByText('Nobody has been asked to review this.')).toBeVisible()
+  })
+
+  it('offers to take a reviewer off, and takes them off when pressed', async () => {
+    render(
+      <PullRequestDetailView pr={detail({ reviewers: [reviewer({ id: 'rev-1', vote: 0 })] })} />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Take Naveen Angali off this pull request' }),
+    )
+
+    expect(vi.mocked(withdrawReviewer)).toHaveBeenCalledWith({
+      data: { ...REF, reviewerId: 'rev-1', isRequired: false },
+    })
+  })
+
+  it('will not offer to discard a vote, and says why it will not', () => {
+    // `aria-disabled` and not `disabled`, `VoteControl`'s rule: the refusal is the
+    // only thing here that explains why the row has no `×`, and a disabled button is
+    // one a screen reader skips.
+    render(<PullRequestDetailView pr={detail({ reviewers: [reviewer({ vote: 10 })] })} />)
+
+    const refused = screen.getByRole('button', { name: /would discard their vote/ })
+    expect(refused).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('gives a team no control at all, rather than a refusal to press', () => {
+    // Most reviewers on this org are containers, and a row of dead buttons down the
+    // whole list would read as an app that is broken rather than one that is right.
+    render(
+      <PullRequestDetailView
+        pr={detail({
+          reviewers: [
+            reviewer({ id: 'rev-1', displayName: '[Products]\\Contributors', isContainer: true }),
+            reviewer({ id: 'rev-2', displayName: 'Naveen Angali' }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getAllByRole('button', { name: /off this pull request/ })).toHaveLength(1)
+  })
+
+  it('neither adds nor removes on a pull request that is no longer being decided', () => {
+    // `lifecycleAction`'s reasoning one section down: ADO would take both writes on a
+    // completed pull request, and nobody would act on either.
+    render(
+      <PullRequestDetailView pr={detail({ status: 'completed', reviewers: [reviewer()] })} />,
+    )
+
+    expect(screen.queryByRole('button', { name: /off this pull request/ })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Ask somebody to review' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('offers the picker on an active one, and reads no directory until it is pressed', () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    expect(screen.getByRole('button', { name: 'Ask somebody to review' })).toBeVisible()
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   })
 })
 

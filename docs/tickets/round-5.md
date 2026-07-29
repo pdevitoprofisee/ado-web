@@ -428,7 +428,7 @@ permissions, and the refusal is worded that way. **44 files / 796 tests**, up fr
 
 ## T-034 — Reviewers, with org-wide autocomplete
 
-**Type:** feature · **Status:** open · **Blocked by:** T-030, T-033
+**Type:** feature · **Status:** resolved · **Blocked by:** T-030, T-033
 
 **Success:** I can add a reviewer to a pull request by typing two or three letters of their name
 and choosing from a list, and I can remove one I added. Required and optional are
@@ -446,6 +446,75 @@ container's `votedFor[]` is how a group approval is actually expressed.
 
 Keyboard first, per the standing rules: the list is arrow-navigable, `Enter` selects, `Escape`
 closes without selecting, and the field is reachable without a pointer.
+
+### Resolution
+
+**Three of the ticket's requirements do not exist any more, and that is the finding.** The
+debounce, the minimum query length and the in-flight cancellation were all written against a
+per-keystroke `POST graph/subjectquery`. T-030 measured that search and T-035 rejected it —
+`subjectquery` matches a prefix of the *whole* display name, so it finds Jordan Vincent zero
+times for `Vincent`, which is a wrong-answers problem no amount of debouncing improves. So this
+field matches against one cached snapshot of the org (`useDirectory`, `['identity-directory']`,
+30-minute staleTime, `filterPeople` doing the ranking), and there is nothing per keystroke to
+debounce, to shorten, or to cancel. The descriptor↔GUID crossing the ticket wanted to pay "once
+on selection" is already paid: `ReviewerCandidate.identityId` came across with the directory, so
+selecting somebody sends one `PUT` and reads nothing first.
+
+**No group is offered, and that is not the labelling the ticket asked for.** The directory is
+`GET _apis/graph/users` only, so `kind` is `'user'` for everything in it — a container cannot
+reach the list to be mislabelled. Groups still arrive on the *reviewer list* and are still marked
+there (`ReviewerRow`'s "team" badge, T-033's work), and a container's `votedFor[]` attribution is
+unchanged. The group glyph is wired into `Candidate` anyway, for a service identity whose
+initials are not worth reading — `initials()` deliberately refuses to invent any.
+
+**`vote` is omitted from the add body rather than sent as `0`.** `PUT
+.../reviewers/{id}` is one request that carries both a reviewer and a vote (note 10 in
+[`docs/map.md`](../map.md)), and the documented body includes `vote: 0`. Sending it would clear an
+existing approval as a side effect of "add Naveen", so `addReviewer` sends `{ isRequired }` and
+nothing else, `ReviewerRequest` has no `vote` field, and `reviewerRequest` rebuilds its answer out
+of `pullRequestRef(input)` plus two fields so a `vote` in the input cannot survive. That is
+asserted from both sides — the request body is pinned whole in `pull-request.test.ts`, and
+`Object.keys()` is pinned in `pull-request-fn.test.ts` — and it is the exact mirror of T-033's
+`{me}`-by-absence guard.
+
+**The reviewer id is GUID-checked twice**, because it is going into a path: once in the validator
+and once at the concatenation in `addReviewer`/`removeReviewer`. A descriptor (`aad.…`, `vssgp.…`)
+is refused rather than passed through, both because `reviewers/{descriptor}` answers 400 and
+because a field that accepts `{COLLEAGUE}/../../24699/reviewers/{ME}` is a path-traversal into
+somebody else's pull request. Refusing throws before any HTTP is attempted; the tests assert the
+write log is empty.
+
+**The field is mounted, not rendered.** The directory is eight `GET`s and ~450 KB, and most
+visits to a pull request are a read — so `ReviewerPicker` is a button until it is pressed, which
+is `MentionPicker`'s arrangement and the reason `directoryOptions()` has no `enabled`. A test
+asserts `directoryQuery` is not called until the press.
+
+**Only optional reviewers are ever added from the UI.** `isRequired` reaches the server function
+because the endpoint has the field and the hook carries it, and this field always sends `false`: a
+required reviewer is a merge gate, and putting a gate up should not be a side effect of the same
+`Enter` that picks a name. On this org required reviewers come from branch policy anyway — 127 of
+the 150 sampled required reviewers are the containers a policy attached.
+
+**Removal is refused in two cases, with the sentence rather than a disabled button.**
+`withdrawBlocker` returns a string: a reviewer who has **voted** cannot be removed from here,
+because the vote goes with them and nothing in this app can put it back; a **container** cannot,
+because a branch policy will put it back and the button would appear not to work. The voted case
+is `aria-disabled` and keeps its refusal reachable (`VoteControl`'s rule); the container case gets
+no control at all, because most reviewers on this org are containers and a column of dead buttons
+reads as a broken app. `isRequired` is deliberately *not* a third case — ADO owns that answer, and
+guessing it would hide a control that works.
+
+Nothing is optimistic, `vote.ts`' rule: a row drawn as added before ADO took it says somebody was
+asked to review when they were told nothing. Both hooks invalidate `pullRequestKey(ref)` on
+settle — on failure too, since a write whose response was lost may well have landed — and the
+field stays open across adds, because "who else has not seen this" is usually more than one
+person. Both controls are gated on `pr.status === 'active'`, `lifecycleAction`'s reasoning one
+section down.
+
+**Unproven against ADO, like every other write this round:** no request was sent. Whether `PUT` on
+somebody who is already a reviewer upserts or 400s is unmeasured — which is why `offerable` takes
+them out of the list rather than relying on the error — and T-040 is still where the first real
+write happens. **58 files / 1115 tests**, up from 56 / 1050; `tsc --noEmit` clean.
 
 ---
 

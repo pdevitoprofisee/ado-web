@@ -1,12 +1,12 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 
-import { voteRequest } from './pull-request-fn'
+import { reviewerRequest, voteRequest } from './pull-request-fn'
 
-// The vote request's validator, which is where "you may only vote as yourself"
-// is enforced on the way in. Node rather than jsdom for `viewed.test.ts`' reason:
-// this module reaches `pr-cache.ts` and therefore SQLite, which jsdom has no
-// business loading.
+// The two write validators that are each other's mirror: the vote, which must not
+// carry a reviewer, and the reviewer, which must not carry a vote. Node rather
+// than jsdom for `viewed.test.ts`' reason: this module reaches `pr-cache.ts` and
+// therefore SQLite, which jsdom has no business loading.
 //
 // Only this validator is covered here. The server functions around it need a
 // connected client and an ADO to answer them, and what they do with what they are
@@ -15,6 +15,7 @@ import { voteRequest } from './pull-request-fn'
 const PROJECT = '11111111-1111-1111-1111-111111111111'
 const REPOSITORY = '22222222-2222-2222-2222-222222222222'
 const ME = 'aaaaaaaa-1111-2222-3333-444444444444'
+const COLLEAGUE = 'dddddddd-1111-2222-3333-444444444444'
 
 const ref = { projectId: PROJECT, repositoryId: REPOSITORY, id: 24698 }
 
@@ -60,5 +61,68 @@ describe('voteRequest', () => {
       'projectId must be a GUID.',
     )
     expect(() => voteRequest(null)).toThrow('id must be a pull request number.')
+  })
+})
+
+describe('reviewerRequest', () => {
+  it('keeps the pull request, the reviewer and the flag, and builds the rest out of nothing', () => {
+    expect(reviewerRequest({ ...ref, reviewerId: COLLEAGUE, isRequired: true })).toEqual({
+      ...ref,
+      reviewerId: COLLEAGUE,
+      isRequired: true,
+    })
+  })
+
+  it('defaults `isRequired` to false rather than to whatever was sent', () => {
+    // `=== true`, so a truthy string, a `1` or a missing field all mean optional.
+    // Getting this wrong in the other direction puts a merge gate on somebody's
+    // pull request, which is not a thing to infer from `'yes'`.
+    for (const isRequired of ['true', 1, {}, null, undefined]) {
+      expect(reviewerRequest({ ...ref, reviewerId: COLLEAGUE, isRequired }).isRequired).toBe(false)
+    }
+  })
+
+  it('drops a vote the caller named, rather than validating it and ignoring it', () => {
+    // `voteRequest`'s attempt from the other side, and the same endpoint underneath:
+    // one `PUT` carries both a vote and a reviewer, so a `vote` surviving here would
+    // let a request that reads as "add Naveen" also approve as him.
+    const request = reviewerRequest({
+      ...ref,
+      reviewerId: COLLEAGUE,
+      vote: 10,
+      viewerId: ME,
+      isRequired: false,
+    })
+
+    expect(request).toEqual({ ...ref, reviewerId: COLLEAGUE, isRequired: false })
+    expect(Object.keys(request).sort()).toEqual([
+      'id',
+      'isRequired',
+      'projectId',
+      'repositoryId',
+      'reviewerId',
+    ])
+  })
+
+  it.each([
+    ['aad.YWFhYWFhYWEtMTExMS0yMjIyLTMzMzMtNDQ0NDQ0NDQ0NDQ0'],
+    ['vssgp.Uy0xLTktMTU1MTM3NDI0NS0x'],
+    [`${COLLEAGUE}/../../24699/reviewers/${ME}`],
+    [`${COLLEAGUE} `],
+    [''],
+    [null],
+    [undefined],
+    [{}],
+  ])('refuses %o, because it is going into an ADO path', (reviewerId) => {
+    expect(() => reviewerRequest({ ...ref, reviewerId, isRequired: false })).toThrow(
+      'reviewerId must be an identity GUID.',
+    )
+  })
+
+  it('refuses a request with no pull request in it, before it looks at the reviewer', () => {
+    expect(() => reviewerRequest({ reviewerId: COLLEAGUE })).toThrow(
+      'id must be a pull request number.',
+    )
+    expect(() => reviewerRequest(null)).toThrow('id must be a pull request number.')
   })
 })

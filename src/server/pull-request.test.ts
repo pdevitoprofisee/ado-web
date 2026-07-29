@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   POLICY_VERSION,
   abandon,
+  addReviewer,
   castVote,
   changeFlags,
   commitSubject,
@@ -11,6 +12,7 @@ import {
   loadChanges,
   loadPullRequest,
   reactivate,
+  removeReviewer,
   requeueEvaluation,
   setTitle,
   toPolicies,
@@ -806,6 +808,92 @@ describe('casting a vote', () => {
     // group appears on the list at all.
     expect(await castVote(client, REF, 5)).toBeNull()
     expect(writes[0].path).toBe(`${PR}/reviewers/${ME}`)
+  })
+})
+
+describe('putting somebody on the pull request, and taking them off', () => {
+  it('puts the reviewer on with `isRequired` and nothing else — no vote', async () => {
+    const { client, writes } = capture()
+
+    await addReviewer(client, REF, COLLEAGUE, false)
+
+    expect(writes).toEqual([
+      {
+        method: 'PUT',
+        // The same path `castVote` writes to, which is the whole reason this body
+        // is pinned whole (note 10).
+        path: `${PR}/reviewers/${COLLEAGUE}`,
+        // **`vote` must not be here at all.** The documented body carries
+        // `vote: 0`, and `0` is a value on that scale — "no vote" — so sending it
+        // against somebody who has already approved would silently clear their
+        // approval. Omitting it is the only body that means "just be a reviewer".
+        body: { isRequired: false },
+        params: {},
+      },
+    ])
+  })
+
+  it('carries a required reviewer as required', async () => {
+    const { client, writes } = capture()
+
+    await addReviewer(client, REF, COLLEAGUE, true)
+
+    expect(writes[0].body).toEqual({ isRequired: true })
+  })
+
+  it('deletes the reviewer entry, with no body to be misread', async () => {
+    const { client, writes } = capture()
+
+    await removeReviewer(client, REF, COLLEAGUE)
+
+    expect(writes).toEqual([
+      { method: 'DELETE', path: `${PR}/reviewers/${COLLEAGUE}`, body: undefined, params: {} },
+    ])
+  })
+
+  it.each([
+    ['../../../../pullRequests/24699/reviewers/x'],
+    [`${COLLEAGUE}?api-version=7.1&vote=10`],
+    ['vssgp.Uy0xLTktMTU1MTM3NDI0NS0x'],
+    ['aad.YWFhYWFhYWEtMTExMS0yMjIyLTMzMzMtNDQ0NDQ0NDQ0NDQ0'],
+    [''],
+    [COLLEAGUE.slice(0, -1)],
+  ])('refuses %o rather than concatenating it into a path', async (id) => {
+    const { client, writes } = capture()
+
+    // Both directions, because both build the path: a caller who can choose the
+    // segment can choose the *target* of the write, and one of these strings is a
+    // vote smuggled in as a query string. The descriptors are refused for a second
+    // reason — `reviewers/{descriptor}` answers 400 (identity-contract).
+    await expect(addReviewer(client, REF, id, false)).rejects.toThrow(
+      'A reviewer is addressed by identity id, and that is not one.',
+    )
+    await expect(removeReviewer(client, REF, id)).rejects.toThrow(
+      'A reviewer is addressed by identity id, and that is not one.',
+    )
+    expect(writes).toEqual([])
+  })
+
+  it('takes the id in either casing, because ADO answers both', async () => {
+    const { client, writes } = capture()
+
+    await addReviewer(client, REF, COLLEAGUE.toUpperCase(), false)
+
+    // Passed through as given rather than normalised: the caller read this id off
+    // an ADO response, and ADO's own routes take it as it answered it.
+    expect(writes[0].path).toBe(`${PR}/reviewers/${COLLEAGUE.toUpperCase()}`)
+  })
+
+  it('reads nothing first, for `abandon`’s reason', async () => {
+    const { client, writes } = capture()
+
+    await addReviewer(client, REF, COLLEAGUE, false)
+    await removeReviewer(client, REF, COLLEAGUE)
+
+    // `capture()` with no replies rejects every `get`. Unlike `castVote`, which
+    // must read to find out whose vote it is, neither of these has anything to
+    // resolve — the caller named the person.
+    expect(writes).toHaveLength(2)
   })
 })
 

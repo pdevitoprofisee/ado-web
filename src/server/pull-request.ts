@@ -941,6 +941,94 @@ export async function castVote(
 }
 
 /**
+ * A reviewer id on its way into a URL path.
+ *
+ * Checked here and not only in the validator, because this is the function that
+ * concatenates it: `reviewers/${id}` with `id` unchecked is a write whose *target*
+ * the caller chooses — `../../../` walks out of the pull request, and a trailing
+ * `?api-version=…&vote=10` is a query string smuggled through a path segment. The
+ * validator refuses a non-GUID at the door and this refuses it again at the point
+ * where it would matter, which is the one duplication in this file that earns its
+ * keep.
+ *
+ * GUID-only is also what ADO wants: `GET .../reviewers/{guid}` answers 200 and the
+ * same path with a graph descriptor answers **400** (identity-contract). Crossing
+ * from a descriptor to a GUID is the autocomplete's job, done once on selection.
+ */
+const isIdentityId = (value: string): boolean =>
+  /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value)
+
+/**
+ * Put somebody on the pull request.
+ *
+ * **This is `castVote`'s endpoint, and that is the whole design of this
+ * function.** `PUT .../reviewers/{id}` with a body containing `vote` is how a vote
+ * is cast; the same request with a body containing no vote is how a reviewer is
+ * added. So the two writes are one HTTP request separated only by what is in the
+ * body — which is why `vote` is **not a parameter here and is not in the body at
+ * all**. A `vote` this function could be handed is a way to approve a pull request
+ * as somebody else in one call, and no caller needs it: a reviewer is added
+ * without a vote, because not having voted yet is the true state of somebody who
+ * has just been asked.
+ *
+ * Omitting it rather than sending `vote: 0` is deliberate, and it is the one place
+ * this function departs from Microsoft's documented body (`{vote, isRequired}`).
+ * `0` is a value on that scale — "no vote" — so `PUT` with `vote: 0` against
+ * somebody who has already approved is a write that silently *clears* their
+ * approval. `isRequired` alone cannot: the field is not on the same axis as
+ * anything a reviewer does. `setTitle`'s rule, in the one place where the wider
+ * body would do real damage.
+ *
+ * Unproven against ADO, like every write in this file, and with two specific
+ * unknowns beyond the usual: whether `PUT` on somebody already present upserts or
+ * errors, and whether omitting `vote` on a *new* reviewer defaults it to `0` or is
+ * rejected as an incomplete body. The caller re-reads the pull request either way,
+ * so the reviewer list on screen is ADO's answer and not ours.
+ */
+export async function addReviewer(
+  client: AdoClient,
+  ref: PullRequestRef,
+  reviewerId: string,
+  isRequired: boolean,
+): Promise<void> {
+  if (!isIdentityId(reviewerId)) {
+    throw new Error('A reviewer is addressed by identity id, and that is not one.')
+  }
+
+  await client.write('PUT', `${prBase(ref)}/reviewers/${reviewerId}`, { isRequired })
+}
+
+/**
+ * Take somebody off the pull request.
+ *
+ * `DELETE` on the same path, and the only write in this app that removes anything
+ * from Azure DevOps. What it destroys is not the person — it is **their vote**: a
+ * reviewer who had approved and is removed and re-added comes back at "no vote",
+ * and nothing in ADO remembers that they had approved. That is why the page does
+ * not offer this on a reviewer who has voted, and the reason lives there rather
+ * than here for `abandon`'s reason — who may do this is ADO's question, and what
+ * is worth offering is the page's.
+ *
+ * No id-in-the-path guard *here* would be the same hole `addReviewer` describes,
+ * pointed at a delete. Same check, same reason.
+ *
+ * Unproven against ADO, and with its own unknown: what a removal of somebody who
+ * is not on the pull request answers. Documented as 200; if it is a 404 the caller
+ * shows ADO's sentence, which is the honest outcome either way.
+ */
+export async function removeReviewer(
+  client: AdoClient,
+  ref: PullRequestRef,
+  reviewerId: string,
+): Promise<void> {
+  if (!isIdentityId(reviewerId)) {
+    throw new Error('A reviewer is addressed by identity id, and that is not one.')
+  }
+
+  await client.write('DELETE', `${prBase(ref)}/reviewers/${reviewerId}`)
+}
+
+/**
  * Abandon the pull request — ADO's word for closing it without merging.
  *
  * The same PATCH as `setTitle` and `completePullRequest`, with the one field that

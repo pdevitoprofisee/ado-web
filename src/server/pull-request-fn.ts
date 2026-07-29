@@ -5,12 +5,14 @@ import { AdoError } from './ado-client'
 import { readPrCache } from './pr-cache'
 import {
   abandon,
+  addReviewer,
   castVote,
   completePullRequest,
   isVote,
   loadChanges,
   loadPullRequest,
   reactivate,
+  removeReviewer,
   requeueEvaluation,
   setTitle,
 } from './pull-request'
@@ -307,6 +309,56 @@ export function voteRequest(input: unknown): VoteRequest {
   }
 
   return { ...ref, vote: raw.vote }
+}
+
+/**
+ * Which pull request, and whose row on it.
+ *
+ * The mirror image of `VoteRequest`, and the contrast between the two is the point
+ * of both: a vote must not carry a reviewer id, and a reviewer write is *nothing
+ * but* one. What this one must not carry is a **vote** — the endpoint underneath
+ * takes both, so a `vote` here would be the same hole from the other side. It is
+ * not validated-and-ignored: `reviewerRequest` builds its answer out of a
+ * `PullRequestRef`, an id and a flag, so a `vote` a caller sends reaches no
+ * variable.
+ *
+ * `isRequired` is on the add and meaningless on the remove, which is why it is
+ * optional here and defaulted rather than split into two types: one shape, two
+ * writes, and the removal simply does not read it.
+ */
+export interface ReviewerRequest extends PullRequestRef {
+  readonly reviewerId: string
+  readonly isRequired: boolean
+}
+
+export function reviewerRequest(input: unknown): ReviewerRequest {
+  const ref = pullRequestRef(input)
+  const raw = (input ?? {}) as Record<string, unknown>
+
+  // The same shape check the other three ids get, for the reason at the top of
+  // this file: it is going into an Azure DevOps path. `addReviewer` checks it
+  // again — see its header.
+  if (typeof raw.reviewerId !== 'string' || !GUID.test(raw.reviewerId)) {
+    throw new Error('reviewerId must be an identity GUID.')
+  }
+
+  return { ...ref, reviewerId: raw.reviewerId, isRequired: raw.isRequired === true }
+}
+
+/**
+ * Whether ADO put somebody on the pull request, or took them off.
+ *
+ * One type for both, where `AbandonResult` and `ReactivateResult` are two — and
+ * the reason those are two does not apply here. Those are each other's inverse on
+ * the *same* object, so a shared type would let the compiler agree that closing a
+ * pull request reported reopening it. These two name different people: the row
+ * being written is in the request, the call sites are two separate controls, and
+ * there is no sentence either one could return that the other would render wrongly.
+ */
+export interface ReviewerWriteResult {
+  readonly ok: boolean
+  readonly error: string | null
+  readonly connected: boolean
 }
 
 /**
@@ -628,6 +680,71 @@ export const reactivatePullRequest = createServerFn({ method: 'POST' })
 
     try {
       await reactivate(client, data)
+
+      return { ok: true, error: null, connected: true }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        connected: true,
+      }
+    }
+  })
+
+/**
+ * Ask somebody to review this pull request.
+ *
+ * Two writes over one endpoint, and this is the half that does not vote — see
+ * `addReviewer`, which is where the body is decided and where the reason it
+ * carries no `vote` is written down.
+ *
+ * Nothing here decides who may be added, `abandonPullRequest`'s reason: ADO owns
+ * that answer and this app has no credential to probe it with. What the page
+ * decides is who is worth *offering*, which is the directory minus the people
+ * already on the pull request.
+ */
+export const inviteReviewer = createServerFn({ method: 'POST' })
+  .validator(reviewerRequest)
+  .handler(async ({ data }): Promise<ReviewerWriteResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) {
+      return { ok: false, error: client.message, connected: false }
+    }
+
+    const { reviewerId, isRequired, ...ref } = data
+
+    try {
+      await addReviewer(client, ref, reviewerId, isRequired)
+
+      return { ok: true, error: null, connected: true }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        connected: true,
+      }
+    }
+  })
+
+/**
+ * Take somebody off it again.
+ *
+ * The one write in this app that deletes anything, and the destructive thing about
+ * it is a vote rather than a person — `removeReviewer` says what goes with them,
+ * and the page is what declines to offer it where that would matter.
+ */
+export const withdrawReviewer = createServerFn({ method: 'POST' })
+  .validator(reviewerRequest)
+  .handler(async ({ data }): Promise<ReviewerWriteResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) {
+      return { ok: false, error: client.message, connected: false }
+    }
+
+    const { reviewerId, ...ref } = data
+
+    try {
+      await removeReviewer(client, ref, reviewerId)
 
       return { ok: true, error: null, connected: true }
     } catch (error) {

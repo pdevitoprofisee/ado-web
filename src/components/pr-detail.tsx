@@ -9,6 +9,7 @@ import {
   RefreshIcon,
   Tick02Icon,
   UserMultipleIcon,
+  UserRemove01Icon,
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useEffect, useMemo, useState } from 'react'
@@ -20,6 +21,7 @@ import type { KeyboardEvent, ReactNode } from 'react'
 import { age } from './pr-list'
 import { Avatar } from './avatar'
 import { Markdown } from './markdown'
+import { ReviewerPicker } from './reviewer-picker'
 import { ChecksPanel } from './checks/panel'
 import { Composer } from './comments/composer'
 import { ThreadCard } from './comments/thread-card'
@@ -45,6 +47,7 @@ import { lifecycleAction, useAbandon, useReactivate } from '@/lib/lifecycle'
 import { useSquashMerge } from '@/lib/merge'
 import { useRename } from '@/lib/rename'
 import { useRequeue } from '@/lib/requeue'
+import { useWithdrawReviewer, withdrawBlocker } from '@/lib/reviewers'
 import { cn } from '@/lib/utils'
 import { useViewedFiles } from '@/lib/viewed'
 import { fileViewedKey } from '@/lib/viewed-key'
@@ -56,6 +59,7 @@ import type { ChangeView } from '@/lib/changes'
 import type { FileThreads, IterationContext, Thread } from '@/lib/comment-contract'
 import type { Conversation } from '@/lib/conversation'
 import type { DiffLayout } from '@/lib/diff-contract'
+import type { Withdraw } from '@/lib/reviewers'
 import type { SonarReportResult } from '@/server/sonar-fn'
 import type {
   ChangeSet,
@@ -1126,7 +1130,67 @@ function LifecycleControl({ pr, prRef }: { pr: PullRequestDetail; prRef: PullReq
   )
 }
 
-function ReviewerRow({ reviewer, viewerId }: { reviewer: Reviewer; viewerId: string | null }) {
+/**
+ * Taking one person off, from their own row.
+ *
+ * **`aria-disabled` and not `disabled`**, in the one case where the control is
+ * refused for a reason worth reading: a `disabled` button cannot be focused, so
+ * the sentence explaining why a voted reviewer cannot be removed here would be
+ * unreachable by exactly the reader who has no hover. The click is guarded in the
+ * handler instead, which is what `aria-disabled` obliges.
+ *
+ * A container gets no control at all rather than a refused one. Its blocker is not
+ * about anything the reader did — a branch policy put it there — and 127 of the 150
+ * reviewers sampled on this org are containers, so a refused button on each of
+ * them is a column of grey crosses down the commonest reviewer list there is.
+ */
+function WithdrawButton({ reviewer, withdraw }: { reviewer: Reviewer; withdraw: Withdraw }) {
+  const blocker = withdrawBlocker(reviewer)
+  const going = withdraw.pending === reviewer.id
+
+  // The width the button occupies, so the vote column does not step left on the
+  // rows that have no button.
+  if (reviewer.isContainer) return <span className="w-3.5 shrink-0" aria-hidden />
+
+  const label = going
+    ? `Taking ${reviewer.displayName} off this pull request…`
+    : (blocker ?? `Take ${reviewer.displayName} off this pull request`)
+
+  return (
+    <button
+      type="button"
+      aria-disabled={blocker !== null || going}
+      // The whole meaning is in the name, `TitleField`'s pencil's reason: an icon
+      // says nothing, and "remove" on its own in a list of this page's controls
+      // could be about any of them. `title` gives the sighted reader the same
+      // sentence — including the refusal, which is the only place it is written.
+      aria-label={label}
+      title={label}
+      onClick={() => {
+        if (blocker === null && !going) withdraw.run(reviewer.id)
+      }}
+      className={cn(
+        'shrink-0',
+        blocker === null && !going
+          ? 'text-muted-foreground hover:text-destructive'
+          : 'text-ink-300',
+      )}
+    >
+      <HugeiconsIcon icon={UserRemove01Icon} size={14} aria-hidden />
+    </button>
+  )
+}
+
+function ReviewerRow({
+  reviewer,
+  viewerId,
+  withdraw,
+}: {
+  reviewer: Reviewer
+  viewerId: string | null
+  /** Absent when nobody can be taken off — a pull request that is no longer active. */
+  withdraw?: Withdraw
+}) {
   return (
     // `items-center`, where every other row in this file is `items-baseline`:
     // this one holds a blob and a pill rather than three runs of text, and a
@@ -1174,7 +1238,64 @@ function ReviewerRow({ reviewer, viewerId }: { reviewer: Reviewer; viewerId: str
           {voteWord(reviewer.vote)}
         </span>
       </span>
+      {withdraw === undefined ? null : <WithdrawButton reviewer={reviewer} withdraw={withdraw} />}
     </li>
+  )
+}
+
+/**
+ * Who was asked, and — while the pull request is still open — asking somebody else.
+ *
+ * A component rather than the section's body so the removal mutation is one hook
+ * for the whole list instead of one per row: `withdraw.pending` carries the id, so
+ * the row being removed is the row that says so, and a refusal is reported once
+ * under the list rather than inside a row that may be gone by then.
+ *
+ * `canWrite` is the pull request being active, decided at the call site the way
+ * `onRename` is. Adding a reviewer to something merged or abandoned is a write ADO
+ * may well accept and nobody will ever act on.
+ */
+function ReviewerList({
+  prRef,
+  reviewers,
+  viewerId,
+  canWrite,
+}: {
+  prRef: PullRequestRef
+  reviewers: readonly Reviewer[]
+  viewerId: string | null
+  canWrite: boolean
+}) {
+  const withdraw = useWithdrawReviewer(prRef)
+
+  return (
+    <>
+      {reviewers.length === 0 ? (
+        <Empty>Nobody has been asked to review this.</Empty>
+      ) : (
+        <ul className="sketch-box sketch-box--quiet w-full">
+          {reviewers.map((reviewer) => (
+            <ReviewerRow
+              key={reviewer.id}
+              reviewer={reviewer}
+              viewerId={viewerId}
+              withdraw={canWrite ? withdraw : undefined}
+            />
+          ))}
+        </ul>
+      )}
+
+      {withdraw.error === null ? null : (
+        <p role="alert" className="text-destructive mt-1.5 flex items-baseline gap-2 text-xs">
+          <span>Azure DevOps did not take them off: {withdraw.error}</span>
+          <button type="button" className="hover:text-primary underline" onClick={withdraw.dismiss}>
+            Dismiss
+          </button>
+        </p>
+      )}
+
+      {canWrite ? <ReviewerPicker prRef={prRef} reviewers={reviewers} /> : null}
+    </>
   )
 }
 
@@ -2169,15 +2290,12 @@ export function PullRequestDetailView({
           </Section>
 
           <Section title="Reviewers" count={pr.reviewers.length}>
-            {pr.reviewers.length === 0 ? (
-              <Empty>Nobody has been asked to review this.</Empty>
-            ) : (
-              <ul className="sketch-box sketch-box--quiet w-full">
-                {pr.reviewers.map((reviewer) => (
-                  <ReviewerRow key={reviewer.id} reviewer={reviewer} viewerId={pr.viewerId} />
-                ))}
-              </ul>
-            )}
+            <ReviewerList
+              prRef={prRef}
+              reviewers={pr.reviewers}
+              viewerId={pr.viewerId}
+              canWrite={pr.status === 'active'}
+            />
           </Section>
 
           <Section title="Description">
