@@ -17,6 +17,7 @@ const comment = (id: number, content: string): Comment => ({
   isDeleted: false,
   commentType: 'text',
   likedBy: [],
+  mentions: {},
 })
 
 const thread = (id: number, body: string, resolution: Thread['resolution'] = 'open'): Thread => ({

@@ -1,3 +1,5 @@
+import { mentionedIds, mentionsIn } from '../lib/people'
+
 import type { AdoClient } from './ado-client'
 import type { PullRequestRef } from './pull-request'
 import type {
@@ -17,13 +19,15 @@ import type {
 
 // One pull request's conversation, read and written.
 //
-// **Every import in this file is `import type`, and it has to stay that way.**
-// `fileThreads` below is called by the diff's row model, which runs in the
-// browser: one value import from `./ado-client` would drag `connection-test.ts`
-// and `@napi-rs/keyring` — a native addon — into the client bundle. Everything
-// that needs a real value (the viewer's identity, `createServerFn`) lives in
-// `threads-fn.ts` for that reason and no other. `viewed.ts` / `viewed-key.ts`
-// is the same split after the same problem.
+// **No value may be imported here from anything server-only, and that has to
+// stay true.** `fileThreads` below is called by the diff's row model, which runs
+// in the browser: one value import from `./ado-client` would drag
+// `connection-test.ts` and `@napi-rs/keyring` — a native addon — into the client
+// bundle. Everything that needs such a value (the viewer's identity,
+// `createServerFn`) lives in `threads-fn.ts` for that reason and no other.
+// `viewed.ts` / `viewed-key.ts` is the same split after the same problem. The one
+// value import is `../lib/people`, which imports nothing at all and which
+// `markdown.tsx` already ships to the browser; everything else is `import type`.
 //
 // What T-022 measured against the live org, so nothing below re-derives it:
 //
@@ -76,6 +80,38 @@ const KNOWN_COMMENT_TYPE: ReadonlySet<string> = new Set<CommentType>([
 ])
 
 const NO_BOTS: ReadonlySet<string> = new Set<string>()
+
+/**
+ * No mentions resolved, which is what a parse with nothing looked up gets.
+ *
+ * The default for `toThreadList` — `fileThreads`' callers and the tests parse
+ * without a client — and what the writes below pass: a POST or a PATCH echoes back
+ * the text that was just submitted, and there is nobody to resolve it against
+ * without a second call for a body the poll is about to re-read anyway.
+ */
+const NO_NAMES: ReadonlyMap<string, string> = new Map<string, string>()
+
+/**
+ * How many mentioned GUIDs go into one `identityIds` query string. The same 100
+ * `inbox.ts` chunks descriptors at — a limit nobody has hit, chunked anyway
+ * rather than discovered as a 400 on the one PR with a long thread.
+ */
+const IDENTITY_CHUNK = 100
+
+/**
+ * Mentioned GUID → display name, per client, for the life of the process.
+ *
+ * The conversation is polled about every 30 seconds, and the names in it do not
+ * change; asking `identities` again on every poll would triple this tab's call
+ * budget to re-learn the same three names. Keyed on the client so a different
+ * credential never reads a name resolved under someone else's, and weak so a
+ * retired client takes its cache with it.
+ *
+ * An id that resolved to nothing is remembered as `''` — asked and unanswered —
+ * so a mention of a deleted identity costs one call rather than one per poll. A
+ * *failed* call caches nothing, because a 503 is not an answer.
+ */
+const NAME_CACHE = new WeakMap<AdoClient, Map<string, string>>()
 
 interface AdoIdentity {
   readonly id?: string
@@ -250,7 +286,7 @@ function iterationContext(
   }
 }
 
-function toComment(raw: AdoComment): Comment {
+function toComment(raw: AdoComment, names: ReadonlyMap<string, string> = NO_NAMES): Comment {
   return {
     id: raw.id ?? 0,
     // `0` is ADO's "top of the thread", not comment number zero. Mapped to null
@@ -272,6 +308,10 @@ function toComment(raw: AdoComment): Comment {
     isDeleted: raw.isDeleted === true,
     commentType: commentType(raw.commentType),
     likedBy: (raw.usersLiked ?? []).map(author),
+    // Narrowed to this body's own mentions rather than handed the whole lookup:
+    // the comment carries what the comment needs, and an empty object is the
+    // renderer's signal to skip the mention pass entirely.
+    mentions: mentionsIn(typeof raw.content === 'string' ? raw.content : null, names),
   }
 }
 
@@ -310,7 +350,11 @@ function threadKind(
   return typeof id === 'string' && bots.has(id) ? 'bot' : 'human'
 }
 
-function toThread(raw: AdoThread, bots: ReadonlySet<string>): Thread {
+function toThread(
+  raw: AdoThread,
+  bots: ReadonlySet<string>,
+  names: ReadonlyMap<string, string>,
+): Thread {
   const properties = unwrapProperties(raw.properties)
   const status = threadStatus(raw.status)
 
@@ -324,7 +368,7 @@ function toThread(raw: AdoThread, bots: ReadonlySet<string>): Thread {
     isDeleted: raw.isDeleted === true,
     context: threadContext(raw.threadContext),
     iterationContext: iterationContext(raw.pullRequestThreadContext),
-    comments: (raw.comments ?? []).map(toComment),
+    comments: (raw.comments ?? []).map((comment) => toComment(comment, names)),
     properties,
   }
 }
@@ -340,6 +384,7 @@ function toThread(raw: AdoThread, bots: ReadonlySet<string>): Thread {
 export function toThreadList(
   raw: readonly AdoThread[],
   bots: ReadonlySet<string> = NO_BOTS,
+  names: ReadonlyMap<string, string> = NO_NAMES,
 ): ThreadList {
   const threads: Thread[] = []
   let systemCount = 0
@@ -348,7 +393,7 @@ export function toThreadList(
   let doneCount = 0
 
   for (const entry of raw) {
-    const thread = toThread(entry, bots)
+    const thread = toThread(entry, bots, names)
 
     if (thread.kind === 'system') {
       systemCount += 1
@@ -436,6 +481,76 @@ async function sonarAuthors(client: AdoClient, ref: PullRequestRef): Promise<Rea
 }
 
 /**
+ * Display names for every `@<GUID>` these bodies mention.
+ *
+ * `_apis/identities?identityIds=…` on the **`vssps`** host, which is the lookup
+ * `inbox.ts` already proved: `graph/subjectlookup` takes descriptors, not GUIDs,
+ * and a mention carries a GUID. Cached per client, so the common case — a poll of
+ * a conversation whose mentions were resolved a minute ago — asks for nothing.
+ *
+ * **Costs nothing when nobody is tagged.** Only bodies containing the pattern put
+ * an id in `wanted`, and an empty `wanted` returns before any call — which is
+ * most pull requests, and which is why the call budget below still reads "two".
+ *
+ * Fails quietly, for `sonarAuthors`' reason: the price of losing this is that a
+ * mention renders as the GUID ADO wrote, which is exactly what it did before. The
+ * price of throwing would be a comments tab that goes blank because an identity
+ * endpoint hiccupped.
+ */
+async function mentionNames(
+  client: AdoClient,
+  raw: readonly AdoThread[],
+): Promise<ReadonlyMap<string, string>> {
+  let known = NAME_CACHE.get(client)
+  if (known === undefined) {
+    known = new Map<string, string>()
+    NAME_CACHE.set(client, known)
+  }
+
+  const wanted = new Set<string>()
+  for (const thread of raw) {
+    for (const comment of thread.comments ?? []) {
+      for (const id of mentionedIds(comment.content ?? null)) {
+        if (!known.has(id)) wanted.add(id)
+      }
+    }
+  }
+  if (wanted.size === 0) return known
+
+  const ids = [...wanted]
+  const chunks: string[][] = []
+  for (let at = 0; at < ids.length; at += IDENTITY_CHUNK) {
+    chunks.push(ids.slice(at, at + IDENTITY_CHUNK))
+  }
+
+  try {
+    const pages = await client.fanOut(chunks, (chunk) =>
+      client.get<{ value?: readonly AdoIdentity[] }>(
+        '_apis/identities',
+        { identityIds: chunk.join(',') },
+        'vssps',
+      ),
+    )
+
+    for (const page of pages) {
+      for (const identity of page.value ?? []) {
+        const id = identity.id
+        if (typeof id !== 'string' || identity.displayName === undefined) continue
+        known.set(id.toLowerCase(), identity.displayName)
+      }
+    }
+    // Asked and not answered — a mention of an identity this org no longer
+    // resolves. Remembered as a blank so the next poll does not ask again.
+    for (const id of wanted) if (!known.has(id)) known.set(id, '')
+  } catch {
+    // Left uncached on purpose: a failed call is not an answer, and the next
+    // poll should get to try again.
+  }
+
+  return known
+}
+
+/**
  * The whole conversation: two calls, one of which is allowed to fail quietly.
  *
  * `statuses` exists only to name the robot. 6 of 14 sampled pull requests had no
@@ -455,7 +570,13 @@ export async function loadThreads(client: AdoClient, ref: PullRequestRef): Promi
     ],
   )
 
-  return toThreadList(raw.value ?? [], bots)
+  const threads = raw.value ?? []
+
+  // Third and sequential, because which identities to ask about is written in the
+  // bodies the first call returns — there is nothing to fan out with. Zero calls
+  // on a conversation that tags nobody, and zero again on every poll after the
+  // first; see `mentionNames`.
+  return toThreadList(threads, bots, await mentionNames(client, threads))
 }
 
 /**
@@ -566,7 +687,7 @@ export async function setThreadStatus(
     status: change.status,
   })
 
-  return raw === null ? null : toThread(raw, bots)
+  return raw === null ? null : toThread(raw, bots, NO_NAMES)
 }
 
 /**
@@ -645,7 +766,7 @@ export async function createThread(
         : toAdoPullRequestThreadContext(thread.iterationContext),
   })
 
-  return raw === null ? null : toThread(raw, bots)
+  return raw === null ? null : toThread(raw, bots, NO_NAMES)
 }
 
 /**

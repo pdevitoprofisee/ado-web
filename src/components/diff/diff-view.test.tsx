@@ -169,6 +169,7 @@ const comment = (id: number, content: string | null): Comment => ({
   isDeleted: content === null,
   commentType: 'text',
   likedBy: [],
+  mentions: {},
 })
 
 const thread = (

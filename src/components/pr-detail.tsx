@@ -39,6 +39,7 @@ import { COMBINED, useChanges } from '@/lib/changes'
 import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
 import { useSquashMerge } from '@/lib/merge'
+import { initials } from '@/lib/people'
 import { useRename } from '@/lib/rename'
 import { useRequeue } from '@/lib/requeue'
 import { cn } from '@/lib/utils'
@@ -898,22 +899,6 @@ const VOTE_TONES = new Map<number, string>([
   [-5, 'prof-badge--amber'],
   [-10, 'prof-badge--red'],
 ])
-
-/**
- * Two letters for the blob.
- *
- * `\p{L}` rather than `\w`: these are ADO display names, and "Ángel Ruiz" has to
- * come out "AR" while `[Products]\Contributors` must not come out "[P" — which
- * is why a container never reaches here and gets the group glyph instead.
- * First and last name, not first two, so "Paul James DeVito" is still "PD".
- */
-function initials(displayName: string): string {
-  const words = displayName.match(/\p{L}+/gu)
-  if (words === null || words.length === 0) return '?'
-
-  const last = words.length > 1 ? words[words.length - 1][0] : ''
-  return (words[0][0] + last).toUpperCase()
-}
 
 function ReviewerRow({ reviewer, viewerId }: { reviewer: Reviewer; viewerId: string | null }) {
   return (

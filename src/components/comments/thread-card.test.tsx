@@ -17,6 +17,7 @@ const comment = (id: number, content: string | null, parentCommentId: number | n
   isDeleted: content === null,
   commentType: 'text',
   likedBy: [],
+  mentions: {},
 })
 
 const thread = (partial: Partial<Thread> = {}): Thread => ({
@@ -219,12 +220,70 @@ describe('ThreadCard', () => {
     expect(screen.getByText('edited')).toBeInTheDocument()
   })
 
-  it('renders no avatar, because the image needs a credential the browser has not got', () => {
+  it('draws a monogram, not the image, because the image needs a credential the browser has not got', () => {
     const one = thread({
       comments: [{ ...comment(1, 'Hello.'), author: { id: 'writer', displayName: 'Ada Lovelace', uniqueName: null, imageUrl: 'https://dev.azure.com/avatar' } }],
     })
     const { container } = render(<ThreadCard threads={[one]} />)
 
     expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('.prof-avatar')).toHaveTextContent('AL')
+  })
+
+  it('draws your own comments on the other side of the thread from everyone else’s', () => {
+    // The whole of "read it as a conversation": nothing but which side it is on
+    // says who is talking, so this is the test that the side is decided at all.
+    const both = thread({
+      comments: [
+        comment(1, 'Theirs.'),
+        {
+          ...comment(2, 'Mine.'),
+          // Upper case where the viewer id below is lower. ADO does not agree with
+          // itself about GUID casing between endpoints, so a `===` here would put
+          // every one of your own comments on the stranger's side.
+          author: { id: 'AAAA-1111', displayName: 'Paul DeVito', uniqueName: null, imageUrl: null },
+        },
+      ],
+    })
+    render(<ThreadCard threads={[both]} actions={{ viewerId: 'aaaa-1111' }} />)
+
+    expect(screen.getByText('Mine.').closest('.flex-row-reverse')).not.toBeNull()
+    expect(screen.getByText('Theirs.').closest('.flex-row-reverse')).toBeNull()
+  })
+
+  it('leaves every comment on one side when there is no viewer to have a side', () => {
+    // A read-only render — the diff before the write layer is wired. With nobody
+    // signed in there is no "mine", and guessing one would be worse than a stack.
+    const both = thread({ comments: [comment(1, 'One.'), comment(2, 'Two.')] })
+    render(<ThreadCard threads={[both]} />)
+
+    for (const body of ['One.', 'Two.']) {
+      expect(screen.getByText(body).closest('.flex-row-reverse')).toBeNull()
+    }
+  })
+
+  it('renders a mention as the person it names, and an unresolved one as ADO wrote it', () => {
+    const guid = 'fbfd3dd4-4d56-641d-9005-ae776a2d856c'
+    const missing = '11111111-2222-3333-4444-555555555555'
+    const one = thread({
+      comments: [
+        {
+          ...comment(1, `cc @<${guid.toUpperCase()}> and @<${missing}>`),
+          // Keyed lower case, because the body writes the id upper case and
+          // `_apis/identities` answers lower.
+          mentions: { [guid]: 'Patrick Mize' },
+        },
+      ],
+    })
+    const { container } = render(<ThreadCard threads={[one]} />)
+
+    // The chip is its own element, so the name can be styled; the sentence around
+    // it is untouched. No name for the second id means the lookup did not answer,
+    // and a chip is a claim about who somebody is — so that one stays the
+    // characters the comment actually contains rather than becoming a blank tag.
+    expect(screen.getByText('@Patrick Mize')).toBeInTheDocument()
+    expect(container.querySelector('p')?.textContent).toBe(
+      `cc @Patrick Mize and @<${missing}>`,
+    )
   })
 })

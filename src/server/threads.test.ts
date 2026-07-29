@@ -14,7 +14,7 @@ import {
   toThreadList,
 } from './threads'
 
-import type { AdoClient, AdoWriteMethod, QueryValue } from './ado-client'
+import type { AdoClient, AdoHost, AdoWriteMethod, QueryValue } from './ado-client'
 import type { AdoThread } from './threads'
 import type { PullRequestRef } from './pull-request'
 
@@ -35,9 +35,12 @@ const FILE = '/Services.ConnEx.Core/Services/Portal/IntegrationStrategy/ModelBui
 interface Call {
   readonly path: string
   readonly params: Record<string, QueryValue>
+  /** Recorded because identity lookups 404 on the core host, and the default is core. */
+  readonly host: AdoHost
 }
 
-interface WriteCall extends Call {
+/** `write` takes no host — every write in this file is on the core one. */
+interface WriteCall extends Omit<Call, 'host'> {
   readonly method: AdoWriteMethod
   readonly body: unknown
 }
@@ -56,8 +59,12 @@ function fakeClient(replies: Record<string, Reply>, written: Reply = {}) {
 
   const client: AdoClient = {
     org: 'Profisee',
-    get<T>(path: string, params: Record<string, QueryValue> = {}): Promise<T> {
-      calls.push({ path, params })
+    get<T>(
+      path: string,
+      params: Record<string, QueryValue> = {},
+      host: AdoHost = 'core',
+    ): Promise<T> {
+      calls.push({ path, params, host })
       const match = Object.keys(replies).find((suffix) => path.endsWith(suffix))
       if (match === undefined) return Promise.reject(new Error(`unexpected call: ${path}`))
 
@@ -353,6 +360,88 @@ describe('classification', () => {
 
     expect(list).toMatchObject({ openCount: 1, doneCount: 1, botCount: 1, systemCount: 2 })
     expect(list.threads).toHaveLength(2)
+  })
+})
+
+describe('mentions', () => {
+  /** The identity T-022 found tagged in a real comment, and the casing ADO wrote it in. */
+  const TAGGED = 'fbfd3dd4-4d56-641d-9005-ae776a2d856c'
+
+  /** A tag as ADO stores one: the GUID in the body, upper case, and no name anywhere. */
+  const tagging = (id = TAGGED) =>
+    thread({ comments: [comment({ content: `cc @<${id.toUpperCase()}>` })] })
+
+  const tagged = (over: Record<string, Reply> = {}) =>
+    fakeClient({
+      '/threads': { value: [tagging()] },
+      '/statuses': { value: [sonarStatus()] },
+      '/identities': { value: [{ id: TAGGED.toUpperCase(), displayName: 'Patrick Mize' }] },
+      ...over,
+    })
+
+  const mentionsOf = (list: Awaited<ReturnType<typeof loadThreads>>) =>
+    list.threads[0]?.comments[0]?.mentions
+
+  it('looks the tagged identity up on the host that answers, and hangs the name on the comment', async () => {
+    const { client, calls } = tagged()
+    const list = await loadThreads(client, REF)
+
+    expect(mentionsOf(list)).toEqual({ [TAGGED]: 'Patrick Mize' })
+
+    // `vssps` and not the core host: `_apis/identities` 404s on the core one,
+    // which reads as a wrong path rather than a wrong host. And the id goes up
+    // lower case while the reply comes back upper — every comparison in here is
+    // case-insensitive for exactly that reason.
+    const lookup = calls.find((call) => call.path === '_apis/identities')
+    expect(lookup).toMatchObject({ host: 'vssps', params: { identityIds: TAGGED } })
+
+    // The body is left as ADO stored it. The edit composer opens on `content`, so
+    // rewriting the name in would post a comment that had lost its tag.
+    expect(list.threads[0]?.comments[0]?.content).toBe(`cc @<${TAGGED.toUpperCase()}>`)
+  })
+
+  it('asks nothing when nobody is tagged, which is nearly every conversation', async () => {
+    const { calls, loading } = load([anchored()])
+    await loading
+
+    expect(calls.some((call) => call.path.endsWith('/identities'))).toBe(false)
+  })
+
+  it('asks once per identity per client, however often the conversation is polled', async () => {
+    // The diff refetches every ~30s. Without the cache, a thread with a tag in it
+    // would buy a third call on every one of them for an answer that cannot change.
+    const { client, calls } = tagged()
+    await loadThreads(client, REF)
+    const list = await loadThreads(client, REF)
+
+    expect(calls.filter((call) => call.path === '_apis/identities')).toHaveLength(1)
+    expect(mentionsOf(list)).toEqual({ [TAGGED]: 'Patrick Mize' })
+  })
+
+  it('remembers an identity it got no answer for, rather than asking again forever', async () => {
+    // A deleted account resolves to nothing, and nothing is a real answer. Caching
+    // it costs one call; not caching it costs one every poll, for ever.
+    const { client, calls } = tagged({ '/identities': { value: [] } })
+    await loadThreads(client, REF)
+    const list = await loadThreads(client, REF)
+
+    expect(calls.filter((call) => call.path === '_apis/identities')).toHaveLength(1)
+    // Left out entirely rather than mapped to an empty name — the renderer's cue
+    // to print the GUID the way the comment says it instead of a blank chip.
+    expect(mentionsOf(list)).toEqual({})
+  })
+
+  it('keeps the conversation when the lookup fails, and tries again next time', async () => {
+    const { client, calls } = tagged({ '/identities': new Error('Azure DevOps answered 500.') })
+    const list = await loadThreads(client, REF)
+    await loadThreads(client, REF)
+
+    // Same trade as the statuses call: the price of a failure is a GUID on the
+    // page, not a blank conversation. A failure caches nothing, though — it is not
+    // an answer — so the second load asks again.
+    expect(list.threads).toHaveLength(1)
+    expect(mentionsOf(list)).toEqual({})
+    expect(calls.filter((call) => call.path === '_apis/identities')).toHaveLength(2)
   })
 })
 

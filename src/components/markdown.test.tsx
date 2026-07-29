@@ -4,8 +4,9 @@ import { describe, expect, it } from 'vitest'
 import { Markdown } from './markdown'
 
 // What a pull request description is allowed to do to this page, and what it is
-// not. The first three tests are the feature; the last two are the reason the
-// renderer is configured the way it is rather than the way the README suggests.
+// not. The first three tests are the feature; the next two are the reason the
+// renderer is configured the way it is rather than the way the README suggests;
+// the last two are @mentions, which are the reason it walks the tree.
 
 const draw = (source: string) => render(<Markdown>{source}</Markdown>).container
 
@@ -89,5 +90,45 @@ describe('Markdown', () => {
     const link = screen.getByRole('link', { name: 'work item' })
     expect(link).toHaveAttribute('target', '_blank')
     expect(link).toHaveAttribute('rel', 'noreferrer')
+  })
+
+  it('names the people a comment tags, whichever way the parser broke them', () => {
+    // Two mentions that reach the plugin as different shapes. `<FB…>` is a legal
+    // HTML tag name, so remark hands it over as an `html` node with the `@` left
+    // behind in the text before it; `<11…>` starts with a digit, is not a legal
+    // tag, and arrives whole inside the text. Both have to come out as a name, and
+    // the sentence around them has to survive intact.
+    const letter = 'fbfd3dd4-4d56-641d-9005-ae776a2d856c'
+    const digit = '11111111-2222-3333-4444-555555555555'
+    const container = render(
+      <Markdown mentions={{ [letter]: 'Patrick Mize', [digit]: 'Ada Lovelace' }}>
+        {`cc @<${letter.toUpperCase()}> and @<${digit}>, thanks`}
+      </Markdown>,
+    ).container
+
+    expect(screen.getByText('@Patrick Mize')).toBeVisible()
+    expect(screen.getByText('@Ada Lovelace')).toBeVisible()
+    expect(container.querySelector('p')?.textContent).toBe(
+      'cc @Patrick Mize and @Ada Lovelace, thanks',
+    )
+  })
+
+  it('leaves a GUID in a code sample exactly where somebody pasted it', () => {
+    // The whole reason this is a tree walk and not a pass over the string. Both
+    // ids below resolve, and neither may be touched: code is not prose, and
+    // rewriting a line of somebody's payload into a name they did not write is
+    // editing their comment.
+    const id = 'fbfd3dd4-4d56-641d-9005-ae776a2d856c'
+    const container = render(
+      <Markdown mentions={{ [id]: 'Patrick Mize' }}>
+        {`the body posts \`@<${id}>\`:\n\n\`\`\`json\n{ "text": "@<${id}>" }\n\`\`\``}
+      </Markdown>,
+    ).container
+
+    expect(container.querySelector('.bg-accent')).toBeNull()
+    expect(screen.queryByText(/Patrick/)).toBeNull()
+    for (const code of Array.from(container.querySelectorAll('code'))) {
+      expect(code.textContent).toContain(`@<${id}>`)
+    }
   })
 })

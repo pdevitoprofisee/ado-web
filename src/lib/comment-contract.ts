@@ -109,6 +109,26 @@ export interface Comment {
    * colleague's comment, and an unproven write is not worth a heart icon.
    */
   readonly likedBy: readonly CommentAuthor[]
+  /**
+   * Display names for the `@<GUID>` mentions in `content`, keyed by lower-cased
+   * GUID.
+   *
+   * ADO puts the id in the body and the name nowhere, so a body rendered as it
+   * arrives shows a reviewer a GUID. Resolved on the server, where the identity
+   * call can be made and cached, and carried **on the comment** rather than on
+   * the `ThreadList`: every renderer that has a comment already has the names,
+   * where a list-level map would have to be threaded through `pr-detail` →
+   * `FileDiffPanel` → `DiffView` → `ThreadCard` → `CommentView` → `Markdown` to
+   * arrive at the one place that needs it.
+   *
+   * `content` itself is left exactly as ADO stored it. Rewriting the body would
+   * put a display name into the edit composer, and saving that would post a
+   * comment that had lost its mention.
+   *
+   * Empty when the body mentions nobody, and missing any id the lookup could not
+   * answer for — an unresolved mention renders as ADO wrote it.
+   */
+  readonly mentions: Readonly<Record<string, string>>
 }
 
 // ---------------------------------------------------------------------------

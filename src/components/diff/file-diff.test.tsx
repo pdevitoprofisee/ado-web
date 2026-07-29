@@ -303,6 +303,7 @@ describe('a file with conversations on it', () => {
         isDeleted: false,
         commentType: 'text',
         likedBy: [],
+        mentions: {},
       },
     ],
     properties: {},

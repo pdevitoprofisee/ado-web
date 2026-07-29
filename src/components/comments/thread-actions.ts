@@ -53,12 +53,33 @@ export interface ThreadActions {
 }
 
 /**
+ * A comment this person wrote — which side of the conversation it is drawn on.
+ *
+ * Case-insensitive, as `threads.ts`' `sameIdentity` is and for the same measured
+ * reason: ADO does not agree with itself about GUID casing between endpoints, so
+ * a `===` here would silently draw somebody's own comments as a stranger's on
+ * whichever endpoint disagreed with `connectionData`.
+ *
+ * Deletion is not consulted. Your own tombstone is still yours, and moving it to
+ * the other side of the thread when you delete it would say a different person
+ * had written it.
+ */
+export function isMine(comment: Comment, viewerId: string | null): boolean {
+  return (
+    viewerId !== null &&
+    viewerId !== '' &&
+    comment.author.id.toLowerCase() === viewerId.toLowerCase()
+  )
+}
+
+/**
  * A comment this person wrote and has not already deleted.
  *
  * The deleted half matters: ADO soft-deletes, so a tombstone still carries its
  * author, and offering "edit" on a comment whose `content` is `null` would be
- * offering to edit nothing.
+ * offering to edit nothing. That is the whole difference from `isMine`, which is
+ * about where the comment sits rather than about what can be done to it.
  */
 export function isOwn(comment: Comment, viewerId: string | null): boolean {
-  return viewerId !== null && !comment.isDeleted && comment.author.id === viewerId
+  return !comment.isDeleted && isMine(comment, viewerId)
 }

@@ -89,7 +89,7 @@ export function DoneStub({
   )
 }
 
-/** Where a bot's or ADO's own thread says who it is, since there is no avatar. */
+/** Where a bot's or ADO's own thread says who it is — a monogram cannot say "robot". */
 function kindBadge(thread: Thread): string | null {
   if (thread.kind === 'bot') return 'bot'
   if (thread.kind === 'system') return 'system'
@@ -154,14 +154,12 @@ function ThreadBody({ thread, actions }: { thread: Thread; actions?: ThreadActio
         <ThreadStatusControl thread={thread} actions={actions} className="ml-auto" />
       </div>
 
-      {/* Full strength, not the `/40` that was here: an alpha fraction tuned
-          against a dark app is nothing at all against warm paper. A drawn
-          `.sketch-rule` was the other option and is wrong twice over — it costs
-          6px per boundary, and only 3 of 56 sampled threads had a second comment
-          to divide, so the mark would be paying for a case that is rare and
-          quiet. Two comments in one conversation want a construction line, not a
-          chapter break. */}
-      <div className="divide-border divide-y">
+      {/* Gaps, where there was a `divide-y`. Each comment now draws its own
+          tinted bubble on its own side of the card, so a rule between two of them
+          would be a third separator saying what the fill and the side already
+          say — and it would run the full width of the card, straight through the
+          gap the sides depend on to read as sides. */}
+      <div className="flex flex-col gap-1">
         {comments.map((comment) => (
           <CommentView
             key={comment.id}

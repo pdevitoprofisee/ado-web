@@ -1542,6 +1542,7 @@ describe('PullRequestDetailView conversation', () => {
     isDeleted: false,
     commentType: 'text',
     likedBy: [],
+    mentions: {},
     ...over,
   })
 
