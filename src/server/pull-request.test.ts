@@ -7,6 +7,7 @@ import {
   loadChanges,
   loadPullRequest,
   requeueEvaluation,
+  setTitle,
   toPolicies,
 } from './pull-request'
 
@@ -507,6 +508,44 @@ describe('requeueing a build policy', () => {
         // client send a `Content-Type` for something it is not sending.
         body: undefined,
         params: { 'api-version': POLICY_VERSION },
+      },
+    ])
+  })
+})
+
+describe('renaming a pull request', () => {
+  it('patches the pull request with the title alone, at the client api-version', async () => {
+    const writes: Array<{
+      method: string
+      path: string
+      body: unknown
+      params: Record<string, QueryValue>
+    }> = []
+
+    const client: AdoClient = {
+      ...fakeClient({}).client,
+      write: (method, path, body, params = {}) => {
+        writes.push({ method, path, body, params })
+
+        return Promise.resolve(null)
+      },
+    }
+
+    await setTitle(client, REF, 'move the logging sink off the shared account')
+
+    expect(writes).toEqual([
+      {
+        method: 'PATCH',
+        path: PR,
+        // **One key, and the assertion is on the whole object for that reason.**
+        // This same PATCH completes, abandons, retargets and undrafts a pull
+        // request, so anything that leaked into this body would be a rename with a
+        // side effect — `status: 'abandoned'` slipping in here closes somebody's
+        // work. The body is pinned so that cannot happen quietly.
+        body: { title: 'move the logging sink off the shared account' },
+        // No override: the pull request resource takes the client's plain 7.1,
+        // unlike `policy/evaluations` above.
+        params: {},
       },
     ])
   })

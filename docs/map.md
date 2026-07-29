@@ -76,7 +76,8 @@ File-by-file navigation over a diff we render ourselves:
 - Binary files render a stub: "binary — open in web".
 - Comment threads are rows **inline in the diff**, not a sidebar.
 
-Alongside the diff: title/description (read-only), branches, conflict state stated
+Alongside the diff: the title (editable in place while the PR is active) and the
+description (read-only), branches, conflict state stated
 loudly, a policy checklist of what is actually blocking completion, reviewer votes,
 the commit list, read-only labels, and ADO's own activity trail as a collapsed
 section.
@@ -396,7 +397,7 @@ point. I just don't need it for the initial setup."
 
 ### Out of scope
 
-Creating PRs · editing title/description · work-item editing · batched
+Creating PRs · editing the description · work-item editing · batched
 "start a review, submit all comments at once" · image and binary diffing · OS-level
 notifications · running while the app is closed · multi-user or hosted deployment ·
 bypassing branch policies.

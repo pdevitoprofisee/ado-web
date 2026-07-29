@@ -1,12 +1,12 @@
 import { useState } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render as renderBare, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { PullRequestDetailView as Detail, voteWord } from './pr-detail'
 import { viewedKey } from '@/lib/viewed-key'
-import { iterationChangesQuery, requeuePolicy } from '@/server/pull-request-fn'
+import { iterationChangesQuery, renamePullRequest, requeuePolicy } from '@/server/pull-request-fn'
 import { startThread, threadsQuery } from '@/server/threads-fn'
 import { markViewed, viewedQuery } from '@/server/viewed-fn'
 
@@ -49,6 +49,9 @@ vi.mock('@/server/viewed-fn', () => ({
 // the real server function into a jsdom bundle with no fetch to send it with.
 vi.mock('@/server/pull-request-fn', () => ({
   requeuePolicy: vi.fn(async () => ({ ok: true, error: null, connected: true })),
+  // Same reason as the requeue: `useRename` is called by the header on every
+  // render, whether or not a test presses anything.
+  renamePullRequest: vi.fn(async () => ({ ok: true, error: null, connected: true })),
   iterationChangesQuery: vi.fn(async () => ({
     changes: {
       files: [
@@ -260,7 +263,8 @@ describe('PullRequestDetailView header', () => {
       screen.getByRole('heading', { name: 'move the logging sink off the shared account' }),
     ).toBeVisible()
     expect(screen.getByText('!24698')).toBeVisible()
-    expect(screen.getByText('feature/logging-sink → main')).toBeVisible()
+    // Destination first, and the arrow still pointing at it.
+    expect(screen.getByText('main ← feature/logging-sink')).toBeVisible()
     expect(screen.queryByText(/refs\/heads/)).toBeNull()
     expect(screen.getByRole('link', { name: 'Azure DevOps' })).toHaveAttribute(
       'href',
@@ -285,6 +289,189 @@ describe('PullRequestDetailView header', () => {
     const body = within(screen.getByRole('region', { name: 'Description' }))
     expect(body.getByRole('heading', { name: 'Why' })).toBeVisible()
     expect(body.getByText(/second line/).textContent).toBe(`${'a'.repeat(500)}\nsecond line`)
+  })
+})
+
+describe('PullRequestDetailView rename', () => {
+  beforeEach(() => {
+    vi.mocked(renamePullRequest).mockClear()
+  })
+
+  /** Opens the editor and hands back the field, which is where every test starts. */
+  async function edit(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole('button', { name: 'Rename this pull request' }))
+
+    return screen.getByRole('textbox', { name: 'Pull request title' })
+  }
+
+  it('sends the trimmed title, and does not touch the heading until ADO has it', async () => {
+    const user = userEvent.setup()
+    render(<PullRequestDetailView pr={detail()} />)
+
+    const field = await edit(user)
+    await user.clear(field)
+    await user.type(field, '  point the sink at its own account  ')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(vi.mocked(renamePullRequest)).toHaveBeenCalledWith({
+      data: { ...REF, title: 'point the sink at its own account' },
+    })
+    // The heading is still the title the page was handed, because nothing here is
+    // optimistic — the new one arrives on the re-read, which in this test is a
+    // mocked server function that answers the same fixture.
+    expect(
+      await screen.findByRole('heading', { name: 'move the logging sink off the shared account' }),
+    ).toBeVisible()
+  })
+
+  it('saves on Enter and abandons on Escape', async () => {
+    const user = userEvent.setup()
+    render(<PullRequestDetailView pr={detail()} />)
+
+    const field = await edit(user)
+    await user.clear(field)
+    await user.type(field, 'renamed with the keyboard{Enter}')
+
+    expect(vi.mocked(renamePullRequest)).toHaveBeenCalledWith({
+      data: { ...REF, title: 'renamed with the keyboard' },
+    })
+
+    const second = await edit(user)
+    await user.clear(second)
+    await user.type(second, 'typed and thought better of{Escape}')
+
+    expect(vi.mocked(renamePullRequest)).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('textbox', { name: 'Pull request title' })).toBeNull()
+    // And reopening starts from ADO's title rather than from the abandoned draft.
+    expect(await edit(user)).toHaveValue('move the logging sink off the shared account')
+  })
+
+  it('refuses an empty title without asking Azure DevOps about it', async () => {
+    const user = userEvent.setup()
+    render(<PullRequestDetailView pr={detail()} />)
+
+    const field = await edit(user)
+    await user.clear(field)
+    await user.type(field, '   ')
+
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+
+    // Enter does not go around the disabled button.
+    await user.type(field, '{Enter}')
+    expect(vi.mocked(renamePullRequest)).not.toHaveBeenCalled()
+    expect(screen.getByRole('textbox', { name: 'Pull request title' })).toBeVisible()
+  })
+
+  it('treats saving the same title as nothing to do', async () => {
+    const user = userEvent.setup()
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await edit(user)
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(vi.mocked(renamePullRequest)).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: 'Pull request title' })).toBeNull()
+  })
+
+  it('shows what ADO said and keeps what was typed when the rename is refused', async () => {
+    vi.mocked(renamePullRequest).mockResolvedValueOnce({
+      ok: false,
+      error: 'Azure DevOps answered 403. (TF401027: You need the Contribute permission.)',
+      connected: true,
+    })
+
+    const user = userEvent.setup()
+    render(<PullRequestDetailView pr={detail()} />)
+
+    const field = await edit(user)
+    await user.clear(field)
+    await user.type(field, 'a rename this account may not make')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    // ADO's own sentence, beside the field, unedited — this project cannot predict
+    // its permission model and does not try to paraphrase its refusals.
+    expect(await screen.findByRole('alert')).toHaveTextContent('TF401027')
+    // The text survives, and the refused title is nowhere on the page as the pull
+    // request's own — closing the field brings back the one Azure DevOps still
+    // holds, because that is the only title the header ever renders.
+    expect(field).toHaveValue('a rename this account may not make')
+    expect(screen.queryByRole('heading', { name: 'a rename this account may not make' })).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(
+      screen.getByRole('heading', { name: 'move the logging sink off the shared account' }),
+    ).toBeVisible()
+  })
+
+  it('is not offered on a pull request that is no longer active', async () => {
+    render(<PullRequestDetailView pr={detail({ status: 'completed' })} />)
+
+    expect(screen.queryByRole('button', { name: 'Rename this pull request' })).toBeNull()
+    expect(
+      screen.getByRole('heading', { name: 'move the logging sink off the shared account' }),
+    ).toBeVisible()
+  })
+})
+
+describe('PullRequestDetailView copying the source branch', () => {
+  /**
+   * `userEvent.setup()` installs a clipboard stub of its own, so this has to be
+   * called after it — and the property it installs is configurable, which is the
+   * only reason either of these tests can say what the clipboard is.
+   */
+  function stubClipboard(clipboard: unknown) {
+    Object.defineProperty(navigator, 'clipboard', { value: clipboard, configurable: true })
+  }
+
+  afterEach(() => {
+    // Back to jsdom's own navigator, which has no clipboard at all — otherwise the
+    // absence one test arranges is still there for the next file's `setup()`.
+    Reflect.deleteProperty(navigator, 'clipboard')
+  })
+
+  it('copies the source branch and says which one it took', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn(async () => {})
+    stubClipboard({ writeText })
+
+    render(<PullRequestDetailView pr={detail()} />)
+
+    // The name says the branch, because "copy" beside two of them does not.
+    await user.click(screen.getByRole('button', { name: 'Copy source branch feature/logging-sink' }))
+
+    expect(writeText).toHaveBeenCalledWith('feature/logging-sink')
+    // The acknowledgement, on the control itself and in both channels — the word
+    // you can see is inside the name that gets spoken.
+    expect(
+      await screen.findByRole('button', { name: 'Copied source branch feature/logging-sink' }),
+    ).toHaveTextContent('copied')
+  })
+
+  it('says it failed rather than throwing when the clipboard refuses', async () => {
+    const user = userEvent.setup()
+    stubClipboard({ writeText: vi.fn(async () => Promise.reject(new Error('Write permission denied.'))) })
+
+    render(<PullRequestDetailView pr={detail()} />)
+    await user.click(screen.getByRole('button', { name: 'Copy source branch feature/logging-sink' }))
+
+    expect(
+      await screen.findByRole('button', { name: 'Failed to copy source branch feature/logging-sink' }),
+    ).toHaveTextContent('failed')
+  })
+
+  it('says it failed when there is no clipboard to write to', async () => {
+    const user = userEvent.setup()
+    // What a plain-http origin looks like: the API is simply not there. The button
+    // must still be a button that answers, not one that throws a TypeError into the
+    // page for reading a property of `undefined`.
+    stubClipboard(undefined)
+
+    render(<PullRequestDetailView pr={detail()} />)
+    await user.click(screen.getByRole('button', { name: 'Copy source branch feature/logging-sink' }))
+
+    expect(
+      await screen.findByRole('button', { name: 'Failed to copy source branch feature/logging-sink' }),
+    ).toHaveTextContent('failed')
   })
 })
 

@@ -703,6 +703,34 @@ export async function requeueEvaluation(
   )
 }
 
+/**
+ * "Call it something else" — the page's second write, and the first that changes
+ * the pull request itself rather than something hanging off it.
+ *
+ * `{ title }` and nothing wider, deliberately. This same PATCH is how a pull
+ * request is completed, abandoned, retargeted and taken out of draft, so a body
+ * built from anything more than the field being edited is a rename that can
+ * close a pull request. Sending one key means the worst a bug here can do is
+ * store the wrong sentence.
+ *
+ * No `api-version` override: the pull request resource takes the client's plain
+ * `7.1`, unlike `policy/evaluations` above (see the note at the top of the file).
+ *
+ * The updated record ADO answers with is dropped, as `requeueEvaluation`'s is —
+ * the caller re-reads the pull request, and reading one field out of a payload we
+ * would otherwise ignore would give the page two sources for the same title.
+ *
+ * Unproven against ADO: written from the documented shape, and the PAT needs
+ * `vso.code_write` for it.
+ */
+export async function setTitle(
+  client: AdoClient,
+  ref: PullRequestRef,
+  title: string,
+): Promise<void> {
+  await client.write('PATCH', prBase(ref), { title })
+}
+
 async function loadCommits(
   client: AdoClient,
   ref: PullRequestRef,

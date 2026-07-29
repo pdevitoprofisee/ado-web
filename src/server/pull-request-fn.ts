@@ -2,7 +2,7 @@ import { createServerFn } from '@tanstack/react-start'
 
 import { NotConnectedError, adoClient } from './ado'
 import { AdoError } from './ado-client'
-import { loadChanges, loadPullRequest, requeueEvaluation } from './pull-request'
+import { loadChanges, loadPullRequest, requeueEvaluation, setTitle } from './pull-request'
 
 import type { AdoClient, RateLimit } from './ado-client'
 import type { ChangeSet, PullRequestDetail, PullRequestRef } from './pull-request'
@@ -158,6 +158,55 @@ export function requeueRequest(input: unknown): RequeueRequest {
   }
 }
 
+/** The new title, and which pull request is to carry it. */
+export interface RenameRequest extends PullRequestRef {
+  readonly title: string
+}
+
+/**
+ * Whether Azure DevOps took the new title.
+ *
+ * The same three fields as `RequeueResult` and a separate type all the same: a
+ * result is read at its call site, and `RequeueResult` there would have the
+ * compiler agreeing that a rename reports whether a build was queued.
+ * `threads-fn.ts` keeps its own `WriteResult` for the same reason.
+ */
+export interface RenameResult {
+  readonly ok: boolean
+  readonly error: string | null
+  readonly connected: boolean
+}
+
+/**
+ * Trimmed, and empty refused.
+ *
+ * Trimmed here and not only in the field, because the *stored* title is what the
+ * client compares against to decide a rename is a no-op — leave the spaces on and
+ * `" x "` is a pull request that can be renamed to the same thing forever. Unlike
+ * a comment (`threads-fn.ts`' `content`) there is nothing whitespace-sensitive
+ * about a single line of display text, so there is no markdown to protect.
+ *
+ * **No length check.** ADO documents no limit for this field and we have not
+ * measured one, so a refusal is ADO's to make and its message is the one the
+ * field shows — inventing a ceiling here would refuse a title the service would
+ * have accepted.
+ */
+function renamedTitle(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('title must be a string.')
+
+  const trimmed = value.trim()
+  if (trimmed === '') throw new Error('title must not be empty.')
+
+  return trimmed
+}
+
+export function renameRequest(input: unknown): RenameRequest {
+  const ref = pullRequestRef(input)
+  const raw = (input ?? {}) as Record<string, unknown>
+
+  return { ...ref, title: renamedTitle(raw.title) }
+}
+
 /** The error rather than `null`, so the message it already carries is the one shown. */
 function connectedClient(): AdoClient | NotConnectedError {
   try {
@@ -259,6 +308,41 @@ export const requeuePolicy = createServerFn({ method: 'POST' })
 
     try {
       await requeueEvaluation(client, data)
+
+      return { ok: true, error: null, connected: true }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        connected: true,
+      }
+    }
+  })
+
+/**
+ * Rename a pull request.
+ *
+ * `ok: false` rather than a throw, as the requeue above — and here the message
+ * matters more, because this is the write whose refusal we cannot predict.
+ * **Nothing in here checks whether renaming is allowed.** Who may edit a pull
+ * request's title is ADO's own permission model, which this project has no
+ * credential to probe and no business guessing at, and re-deriving the PR's
+ * status would be an extra read to answer a question the write itself answers.
+ * So the attempt goes out and ADO's sentence — a 403's detail included, see
+ * `AdoError` — is what the field shows.
+ */
+export const renamePullRequest = createServerFn({ method: 'POST' })
+  .validator(renameRequest)
+  .handler(async ({ data }): Promise<RenameResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) {
+      return { ok: false, error: client.message, connected: false }
+    }
+
+    const { title, ...ref } = data
+
+    try {
+      await setTitle(client, ref, title)
 
       return { ok: true, error: null, connected: true }
     } catch (error) {

@@ -1,7 +1,8 @@
 import { Check, CircleHelp, Clock, Minus, TriangleAlert, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { TextField } from 'react-aria-components'
 
-import type { ReactNode } from 'react'
+import type { KeyboardEvent, ReactNode } from 'react'
 
 import { age } from './pr-list'
 import { Markdown } from './markdown'
@@ -12,9 +13,11 @@ import { FileTree } from './diff/file-tree'
 import { SonarPanel, scrollToFinding } from './sonar/panel'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { COMBINED, useChanges } from '@/lib/changes'
 import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
+import { useRename } from '@/lib/rename'
 import { useRequeue } from '@/lib/requeue'
 import { cn } from '@/lib/utils'
 import { useViewedFiles } from '@/lib/viewed'
@@ -97,6 +100,236 @@ function Chip({ children, tone }: { children: ReactNode; tone?: 'amber' }) {
     >
       {children}
     </span>
+  )
+}
+
+/**
+ * The header's `<h1>`, and — while the pull request is still open — the one thing
+ * on this page that changes the pull request itself.
+ *
+ * `onRename` being absent is how "not offered" is said, exactly as
+ * `threadActions` says it on the diff: an affordance that can only fail is worse
+ * than no affordance.
+ *
+ * **The heading is never the text you typed.** It renders `title`, which is what
+ * the page last read out of Azure DevOps, so a rename ADO refused leaves the
+ * header saying what ADO still holds — with your words still in the field and the
+ * reason underneath it. That is `Composer`'s rule and it is here for the same
+ * reason: losing a sentence you wrote to somebody else's 403 is the worst outcome
+ * this control has available.
+ */
+function EditableTitle({
+  title,
+  onRename,
+}: {
+  title: string
+  /** Resolves and the field closes; rejects and it keeps every character. */
+  onRename?: (title: string) => Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState(title)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Trimmed for both decisions below, because a title is one line of display text
+  // and the spaces around it are not part of it — the server trims too, and the
+  // no-op check has to compare the thing that would be *stored*.
+  const next = text.trim()
+
+  async function save() {
+    if (busy || onRename === undefined) return
+    // Refused here rather than sent. `renamedTitle` on the server refuses it as
+    // well, but a round trip to be told what the field already knows is a round
+    // trip that can fail for some entirely unrelated reason and leave a confusing
+    // sentence under an empty box.
+    if (next === '') return
+    // A rename to the title it already has is not a write. ADO takes it happily
+    // and adds an update to the pull request saying nothing changed, which is
+    // precisely the noise that makes a PR's history unreadable.
+    if (next === title) {
+      setEditing(false)
+      return
+    }
+
+    setBusy(true)
+    setError(null)
+    try {
+      await onRename(next)
+      setEditing(false)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Azure DevOps did not take that title.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Bound to the field rather than routed through the command registry, for the
+  // reason spelled out on `Composer.onKeyDown`: the app's one keydown listener
+  // returns early on `isTextEntry(event.target)`, so neither key can reach it.
+  function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      void save()
+      return
+    }
+    if (event.key === 'Escape') {
+      // Stopped as well as prevented: `nav.back` is Escape at the shell, and
+      // abandoning a rename must not also leave the page.
+      event.preventDefault()
+      event.stopPropagation()
+      setEditing(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      // Shrinking rather than growing, so `justify-between` on the row above keeps
+      // the ADO link where it has always been, and `min-w-0` so a long title wraps
+      // instead of shouldering it off the card.
+      <div className="flex min-w-0 items-baseline gap-2">
+        <h1 className="min-w-0 text-xl leading-tight font-semibold tracking-tight">{title}</h1>
+        {onRename === undefined ? null : (
+          // The same quiet underlined word as the `result` link and the `requeue`
+          // button in the checklist, and a `<button>` for the same reason: it does
+          // something rather than going somewhere. A `<Button>` here would outdraw
+          // the title it edits.
+          //
+          // The name says what is being renamed — "rename" on its own, in a list
+          // of this page's controls, could be about any of them. The visible word
+          // is inside the name, so speaking one and reading the other still agree.
+          <button
+            type="button"
+            onClick={() => {
+              // Reopened against ADO's title, not against whatever was typed the
+              // last time this was open and abandoned.
+              setText(title)
+              setError(null)
+              setEditing(true)
+            }}
+            aria-label="Rename this pull request"
+            className="text-muted-foreground hover:text-primary shrink-0 text-2xs underline decoration-[1.5px] underline-offset-[3px]"
+          >
+            rename
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex min-w-0 flex-1 flex-col gap-1">
+      <div className="flex items-center gap-2">
+        {/* The field is not `text-xl`: at the heading's size it would be a 36px box
+            where a 25px line was, and the whole card below it would step down as
+            you started typing. A rename is a moment, and the moment should not
+            move the page. */}
+        <TextField
+          aria-label="Pull request title"
+          value={text}
+          onChange={setText}
+          className="min-w-0 flex-1"
+        >
+          {/* Focused on open, because the affordance was pressed to type into it.
+              Left enabled while the write is out, as `Composer`'s textarea is:
+              disabling it would take focus off the thing you are still looking at. */}
+          <Input autoFocus onKeyDown={onKeyDown} />
+        </TextField>
+        <Button size="xs" onPress={() => void save()} isDisabled={next === '' || busy}>
+          {busy ? 'Saving…' : 'Save'}
+        </Button>
+        <Button variant="ghost" size="xs" onPress={() => setEditing(false)} isDisabled={busy}>
+          Cancel
+        </Button>
+      </div>
+
+      {error === null ? null : (
+        // Under the field it belongs to, and at the meta line's size rather than
+        // the checklist's 11px: this is a sentence Azure DevOps wrote and nobody
+        // can predict, so it has to be readable rather than merely present.
+        <p role="alert" className="text-destructive text-xs">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** Long enough to be seen, short enough that the line goes back to being a line. */
+const COPIED_FOR = 2000
+
+/**
+ * Puts the source branch on the clipboard, because the only reason to read a
+ * branch name off this page is to type it into a terminal.
+ *
+ * Three states on one control, and each visible word is contained in the
+ * accessible name it ships with — a screen reader and a pair of eyes have to be
+ * told the same thing. The name carries the branch as well, since "copy" beside
+ * two branch names does not say which one it takes.
+ */
+function CopyBranch({ sourceBranch }: { sourceBranch: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  useEffect(() => {
+    if (state === 'idle') return
+
+    const timer = setTimeout(() => setState('idle'), COPIED_FOR)
+
+    return () => clearTimeout(timer)
+  }, [state])
+
+  async function copy() {
+    // Typed as always there by lib.dom and absent in fact: the Clipboard API is
+    // gated on a secure context, so a plain-http LAN address — how somebody
+    // running this on another machine reaches it — has no `navigator.clipboard`
+    // at all. jsdom has none either, which makes this the path the tests get
+    // without arranging anything.
+    const clipboard: Clipboard | undefined = navigator.clipboard
+    if (clipboard === undefined) {
+      setState('failed')
+      return
+    }
+
+    try {
+      await clipboard.writeText(sourceBranch)
+      setState('copied')
+    } catch {
+      // Permission refused, or a document the browser does not consider focused.
+      // Caught rather than allowed out, because this is a convenience on a meta
+      // line: an unhandled rejection would leave a red console and a control that
+      // silently did nothing.
+      setState('failed')
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void copy()}
+      aria-label={
+        state === 'copied'
+          ? `Copied source branch ${sourceBranch}`
+          : state === 'failed'
+            ? `Failed to copy source branch ${sourceBranch}`
+            : `Copy source branch ${sourceBranch}`
+      }
+      className={cn(
+        // A fixed width, left-aligned, so the acknowledgement does not shove the
+        // draft chip sideways and back again. 3rem holds the longest of the three
+        // words at this size with room to spare.
+        //
+        // `text-2xs` is 0.6875rem at line-height 1.2 — 13.2px in a `text-xs` line
+        // whose own line box is 16px, so the button rides inside the line it is on
+        // and the meta line stays exactly as tall as it was.
+        'inline-block w-12 text-left text-2xs underline decoration-[1.5px] underline-offset-[3px]',
+        state === 'idle' && 'text-muted-foreground hover:text-primary',
+        // Teal for the acknowledgement and the pen for the refusal, which is the
+        // page's existing pair for "done" and "that did not work".
+        state === 'copied' && 'text-primary',
+        state === 'failed' && 'text-destructive',
+      )}
+    >
+      {state === 'copied' ? 'copied' : state === 'failed' ? 'failed' : 'copy'}
+    </button>
   )
 }
 
@@ -1150,6 +1383,11 @@ export function PullRequestDetailView({
   // than in `ChangedFiles` because the details tab needs the same answer.
   const conversation = useConversation(prRef, pr.viewerId)
 
+  // Here rather than inside `EditableTitle` so the hook does not depend on which
+  // branch that component is rendering, and so the decision about *when* a rename
+  // is on offer is made once, next to the header it belongs to.
+  const rename = useRename(prRef)
+
   // Per pull request and per visit, not persisted: "hide resolved" is a thing you
   // do on a second pass through a diff somebody has already reviewed, and coming
   // back tomorrow to a page that is quietly hiding half the conversation is a
@@ -1231,7 +1469,16 @@ export function PullRequestDetailView({
           what you read. */}
       <header className="sketch-box w-full px-4 py-3">
         <div className="flex items-baseline justify-between gap-4">
-          <h1 className="text-xl leading-tight font-semibold tracking-tight">{pr.title}</h1>
+          {/* Offered while the pull request is `active`, which is the one status
+              where its title is still a thing being decided rather than a record of
+              what happened. Whether ADO would *allow* a rename on a completed one
+              is its own question and not one guessed at here — note `status` is the
+              empty string when ADO did not say (see `PullRequestDetail`), and that
+              is not active either. */}
+          <EditableTitle
+            title={pr.title}
+            onRename={pr.status === 'active' ? rename : undefined}
+          />
           {/* Demoted, not removed: there will always be something only ADO can do. */}
           <a
             href={pr.url}
@@ -1268,9 +1515,17 @@ export function PullRequestDetailView({
           {' · '}
           <span className="font-mono tabular-nums">{age(pr.createdAt)}</span>
           {' · '}
+          {/* Destination first, and the arrow still pointing at it. The pair is
+              read to answer "where is this going", and the branch that ends up
+              carrying the work is the one worth landing on first — the same way
+              round as the assignment it amounts to. Flipping the pair without
+              flipping the arrow would have said the exact opposite. */}
           <span className="font-mono">
-            {branch(pr.sourceBranch)} → {branch(pr.targetBranch)}
-          </span>
+            {branch(pr.targetBranch)} ← {branch(pr.sourceBranch)}
+          </span>{' '}
+          {/* The source and not the target, because the target is `main` and nobody
+              needs help typing that. */}
+          <CopyBranch sourceBranch={branch(pr.sourceBranch)} />
           {pr.isDraft ? <Chip tone="amber">draft</Chip> : null}
         </p>
       </header>
