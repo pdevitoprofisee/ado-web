@@ -27,6 +27,28 @@ import type { MentionQuery } from '@/lib/mention-draft'
 // caught here, so the textarea still holds what was in it and the reason sits
 // underneath. Losing a paragraph to a 503 is the worst outcome this component
 // has available.
+//
+// T-035 added the `@mention` half. Three things about it live here and nowhere
+// else, because they are all about the textarea rather than about the list:
+//
+// **The keys go to the picker first.** `onKeyDown` offers every key to
+// `MentionPickerHandle.keyDown` and returns if it was taken. That ordering is the
+// feature: plain `Enter` chooses a person before the textarea inserts a newline,
+// and `Escape` closes the list before it reaches `onCancel`, which throws the
+// draft away. Ctrl/Cmd + Enter is never taken, so submit still submits with the
+// list open.
+//
+// **The role stays `textbox`.** ARIA 1.2 would put `role="combobox"` on the field,
+// and that is wrong for this one: every reply box in the app is this component,
+// the list exists only while a name is being typed, and a textarea announcing
+// itself as a combobox for the other 99% of its life is worse than a textbox that
+// grows `aria-activedescendant` for a moment. `aria-autocomplete`,
+// `aria-haspopup` and `aria-activedescendant` are all supported on `textbox`.
+//
+// **Escape is remembered by offset.** Dismissing the picker must not touch the
+// text, so the `@` somebody escaped out of is still there and still matches —
+// which would reopen the list on the next keystroke. `dismissed` holds that `@`'s
+// offset, so the list stays shut for *that* mention and opens for the next one.
 
 /** What a keyboard hint says, and it is the platform's word for the key. */
 const SUBMIT_HINT = '⌘/Ctrl + Enter'
@@ -73,9 +95,34 @@ export function Composer({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const box = useRef<HTMLTextAreaElement | null>(null)
+  const picker = useRef<MentionPickerHandle | null>(null)
+  /** Shared by the textarea's `aria-controls` and every option's id. */
+  const listId = useId()
+
+  /** The `@…` under the caret, or `null`. Not "is the picker open" — see `open`. */
+  const [mention, setMention] = useState<MentionQuery | null>(null)
+  /** The offset of an `@` that Escape closed. */
+  const [dismissed, setDismissed] = useState<number | null>(null)
+  const [activeId, setActiveId] = useState<string | null>(null)
+  /** Where the caret has to be put back after an insertion. */
+  const [caretTo, setCaretTo] = useState<number | null>(null)
+  /**
+   * Names for the people mentioned from this composer, keyed as `Markdown` wants
+   * them (lower-cased GUID), so the preview reads `@Jordan Vincent` rather than
+   * the GUID that is actually in the text. Only what was picked here: resolving a
+   * mention that arrived in `initial` is the read side's job, and it already has a
+   * lookup for it.
+   */
+  const [names, setNames] = useState<Record<string, string>>({})
+
   // Whitespace is not content. `Markdown` renders nothing for it either, so a
   // submitted blank would be a comment with no body and no way to fix it.
   const empty = text.trim() === ''
+
+  // The list is shown for a mention that has not been escaped out of, and only
+  // while there is a textarea to type into.
+  const open = pane === 'write' && mention !== null && mention.at !== dismissed
 
   // Every write to `text` goes through here, so a caller keeping the draft is never
   // told a stale version of it — including the clear after a successful post.
@@ -83,6 +130,57 @@ export function Composer({
     setText(next)
     onDraftChange?.(next)
   }
+
+  /** Re-asks whether a mention is being typed, at whatever the caret is now. */
+  function place(next: string, caret: number) {
+    const found = mentionQuery(next, caret)
+    // Kept by value, not by identity: this runs on every key *up* as well as on
+    // every change, and a new object saying the same thing would re-render the
+    // whole composer — which in the diff is a virtualized row — twice a keystroke.
+    setMention((was) =>
+      was?.at === found?.at && was?.query === found?.query ? was : found,
+    )
+    // Forgotten once the mention it belonged to is gone, or an `@` typed later at
+    // the same offset would come up already dismissed.
+    if (found === null) setDismissed(null)
+  }
+
+  function edit(event: ChangeEvent<HTMLTextAreaElement>) {
+    change(event.target.value)
+    place(event.target.value, event.target.selectionStart)
+  }
+
+  /**
+   * The caret can move without the text changing — an arrow key, Home, a click —
+   * and a picker that only looked at `onChange` would go on offering people for an
+   * `@` the caret has left, then insert a name into the middle of a word.
+   */
+  function sync(event: { currentTarget: HTMLTextAreaElement }) {
+    place(event.currentTarget.value, event.currentTarget.selectionStart)
+  }
+
+  function pick(person: ReviewerCandidate) {
+    const node = box.current
+    if (mention === null || node === null) return
+
+    const next = insertMention(text, mention.at, node.selectionStart, person.identityId)
+    change(next.text)
+    setMention(null)
+    setDismissed(null)
+    setNames((was) => ({ ...was, [person.identityId.toLowerCase()]: person.displayName }))
+    setCaretTo(next.caret)
+  }
+
+  // React writes the new value and the browser puts the caret at the end of it, so
+  // an insertion in the middle of a sentence would leave you typing at the bottom
+  // of the box. Put back after the render that changed the value, not during it.
+  useEffect(() => {
+    const node = box.current
+    if (caretTo === null || node === null) return
+    node.focus()
+    node.setSelectionRange(caretTo, caretTo)
+    setCaretTo(null)
+  }, [caretTo])
 
   async function submit() {
     if (empty || busy) return
@@ -106,6 +204,11 @@ export function Composer({
   // someone writes a sentence — so neither of these keys can reach it. Routing
   // them through would mean weakening both for every surface in the app.
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    // Offered to the picker before anything else looks at it. `true` means it has
+    // been prevented and acted on, and the rest of this function must not run —
+    // Enter chose somebody, or Escape closed a list rather than a draft.
+    if (picker.current?.keyDown(event) === true) return
+
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
       event.preventDefault()
       void submit()
@@ -129,7 +232,10 @@ export function Composer({
     // and not bare `rounded`, which is the one step of the scale still mapped to a
     // machine corner. The 1.5px pen matches every other bordered surface; `/60` on
     // the line was tuned against a dark app and is nothing against warm paper.
-    <div className="rounded-lg border-[1.5px] border-input bg-popover">
+    // `relative` for the mention picker, which hangs off the bottom of this box:
+    // anchoring it to the caret would mean measuring a textarea's text, and the
+    // list ends up two lines under the caret either way.
+    <div className="relative rounded-lg border-[1.5px] border-input bg-popover">
       {/* 1px borders, not `.sketch-rule`, for all three boundaries in here. A
           drawn rule costs 6px and there are up to three of them in a box about
           140px tall — that is 18px of texture inside a thing whose whole job is
@@ -156,13 +262,29 @@ export function Composer({
 
       {pane === 'write' ? (
         <textarea
+          ref={box}
           aria-label={label}
+          // A `textbox` that sometimes has a list attached, rather than a
+          // `combobox`; the reasoning is at the top of the file. `aria-controls`
+          // and `aria-expanded` are only there while the list is, so a plain reply
+          // box has nothing extra on it at all.
+          aria-autocomplete="list"
+          aria-haspopup="listbox"
+          aria-expanded={open ? true : undefined}
+          aria-controls={open ? listId : undefined}
+          aria-activedescendant={activeId ?? undefined}
           value={text}
           placeholder={placeholder}
           autoFocus={autoFocus}
           rows={4}
-          onChange={(event) => change(event.target.value)}
+          onChange={edit}
           onKeyDown={onKeyDown}
+          onKeyUp={sync}
+          onClick={sync}
+          // A list left hanging under a field nobody is typing in. The mouse path
+          // does not come through here: the picker prevents its own `mousedown`,
+          // so choosing somebody never blurs this.
+          onBlur={() => setMention(null)}
           // No `ring-*` and no `focus-visible:border-*`: styles.css draws focus
           // once, globally, as a teal box-shadow with a paper gap inside it, and a
           // second ring on top of it would be two rings. `rounded-sm` is here for
@@ -176,10 +298,24 @@ export function Composer({
           {empty ? (
             <p className="text-muted-foreground text-sm">Nothing to preview yet.</p>
           ) : (
-            <Markdown>{text}</Markdown>
+            <Markdown mentions={names}>{text}</Markdown>
           )}
         </div>
       )}
+
+      {open && mention !== null ? (
+        <MentionPicker
+          ref={picker}
+          listId={listId}
+          query={mention.query}
+          onPick={pick}
+          onClose={() => setDismissed(mention.at)}
+          // The state setter itself, not an arrow: the picker reports the active
+          // option from an effect, and a new function every render would re-run it
+          // every render.
+          onActiveId={setActiveId}
+        />
+      ) : null}
 
       {error === null ? null : (
         // Above the buttons rather than replacing them: the text is still there
