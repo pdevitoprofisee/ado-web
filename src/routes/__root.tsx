@@ -8,6 +8,7 @@ import { TanStackDevtools } from '@tanstack/react-devtools'
 
 import TanStackQueryDevtools from '../integrations/tanstack-query/devtools'
 import { CommandProvider } from '../commands/command-provider'
+import { Notifications } from '../components/notifications/notifications'
 import { THEME_INIT_SCRIPT } from '../lib/theme'
 
 import appCss from '../styles.css?url'
@@ -67,7 +68,15 @@ function RootDocument({ children }: { children: React.ReactNode }) {
           once here rather than per-panel — one continuous sheet. */}
       <body className="paper-grain">
         {/* The app's one keydown listener, and the `?` sheet it renders. */}
-        <CommandProvider>{children}</CommandProvider>
+        <CommandProvider>
+          {children}
+          {/* A sibling of the page rather than something inside it: the bell and
+              its panel belong to the app, not to a route, and they need to be
+              under the provider to claim `b` and Escape. Not wrapped — a div
+              around `{children}` would put a block between `<body>` and every
+              page's own layout. */}
+          <Notifications />
+        </CommandProvider>
         <TanStackDevtools
           config={{
             position: 'bottom-right',

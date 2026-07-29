@@ -1,3 +1,4 @@
+import { noteActivity } from './notifications'
 import { readPrCache, writePrCache } from './pr-cache'
 
 import type { DatabaseSync } from 'node:sqlite'
@@ -28,12 +29,21 @@ const POLICY_VERSION = '7.1-preview.1'
  */
 const UNRESOLVED = new Set(['active', 'pending'])
 
-interface AdoComment {
+/**
+ * Exported for `notifications.ts`, which diffs two polls' worth of exactly this
+ * payload and should not declare a second view of it. A type-only import, so the
+ * module graph still has one edge and it points this way.
+ */
+export interface AdoComment {
+  readonly id?: number
   readonly commentType?: string
-  readonly author?: { readonly id?: string }
+  readonly content?: string
+  readonly publishedDate?: string
+  readonly author?: { readonly id?: string; readonly displayName?: string }
 }
 
-interface AdoThread {
+export interface AdoThread {
+  readonly id?: number
   readonly status?: string
   readonly isDeleted?: boolean
   readonly publishedDate?: string
@@ -340,15 +350,38 @@ export async function hydrate(
     ])
 
     const all = threads.value ?? []
+    const bots = botIds(statuses)
     const blocked = readBlocked(evaluations)
     const data: Hydration = {
       checks: readChecks(evaluations),
-      unresolved: countUnresolved(all, botIds(statuses)),
+      unresolved: countUnresolved(all, bots),
       approvalReset: approvalWasReset(all, identity, target.myVote),
       blocked,
       readyToMerge: ready({ blocked }, target),
     }
     writePrCache(target.id, target.commitId, data, db)
+
+    // Three of the four things T-039 announces are in the responses above, and
+    // this is the only place they are ever fetched — so detection is a diff taken
+    // where the poll already happens, not a second loop. It runs on the fetched
+    // path only, which is precisely the point of the cache: a PR nobody has
+    // pushed to costs no call, and nothing about it can have changed.
+    try {
+      noteActivity({
+        prId: target.id,
+        commitId: target.commitId,
+        // From `me()`, i.e. the credential — never from the request.
+        viewerId: identity,
+        threads: all,
+        bots,
+        failed: data.checks.failed,
+      }, Date.now(), db)
+    } catch {
+      // A notification that could not be written must not cost this row its
+      // badges. The panel missing an entry is a smaller failure than an inbox
+      // that renders a PR as unknown, and the next fetched hydration will diff
+      // against the same watermark and try again.
+    }
 
     return { id: target.id, ok: true, data }
   } catch (error) {

@@ -180,6 +180,20 @@ rewrite. Evidence in [`docs/research/`](./research/).
    says where a list ends (present on every 200 measured); a *short* page is not proof of
    a last page — compare the ADO paging rule below, where a service filters after it
    pages.
+9. **Detection that trusts "a poll happened" announces the wrong things, quietly.**
+   Three ways, all found building T-039. (a) `hydrate` runs on the *detail* route too,
+   for pull requests that are nobody's business here — so the watch list has to be an
+   explicit table (`pr_signal`, written only by the inbox poll) and not "whatever got
+   hydrated". (b) The same table is what makes a cold start silent: each watermark
+   starts at `−1` and primes rather than fires, because "new since you last looked" and
+   "new to this database" are indistinguishable and the second one plays forty sounds
+   at launch. (c) **The list row cannot tell you whether a pull request is yours** —
+   `toRow` keeps a display *name* and no author GUID, and drops `reviewers[]` entirely
+   — so author-vs-reviewer must come from which inbox section the row was in, and
+   "me" must still come from `connectionData` server-side. Deriving either from the
+   list entry mislabels without erroring. Events that live in `threads` or
+   `policy/evaluations` are therefore diffed only on a *fetched* hydration; doing it
+   per poll restores the 1+3N the commit-keyed cache exists to remove.
 
 ### Structural facts about the ADO API
 

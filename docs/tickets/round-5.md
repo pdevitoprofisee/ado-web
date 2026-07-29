@@ -509,7 +509,7 @@ because the server always knows the answer.
 
 ## T-039 — Notifications
 
-**Type:** feature · **Status:** open · **Blocked by:** T-031, T-033
+**Type:** feature · **Status:** resolved · **Blocked by:** T-031, T-033
 
 **Success:** while the app is open, four events find me: a build failed · a new comment on my
 pull request · someone voted on my pull request · a pull request I am reviewing got new commits.
@@ -537,6 +537,65 @@ The design constraints, all of which come from something already built or alread
 Out of scope and stated so it is not silently attempted: nothing runs while the app is closed,
 there are no OS notifications, and there are no service hooks (they need a reachable HTTP
 endpoint, which a localhost app has not got).
+
+### Resolution
+
+All four events ship, but they are not detected on the same schedule, and the honest version of
+that is worth stating before the parts list. **New commits on a pull request I am reviewing** is
+diffed on *every* inbox poll and costs nothing: `PullRequestRow.commitId` is already on the one
+cheap list call, so `watch()` compares it against the stored one and says so. **A build failed**,
+**a new comment on my pull request** and **someone voted on my pull request** are diffed only on
+a *fetched* hydration — a cache miss, which is what a push causes, or an explicit Refresh —
+because the signals live in `policy/evaluations` and `threads`, and diffing them on every poll
+would restore the 1+3N cost the commit-keyed cache exists to remove. So a vote cast on a quiet
+pull request is noticed the next time anything makes that pull request's head commit change or
+the user refreshes it, not two minutes later. Nothing was added to the inbox poll, per the
+ticket. One signal is genuinely unavailable rather than merely deferred: **other reviewers'
+votes cannot come from the list call at all**, because `toRow` drops `reviewers[]` and only
+`myVote` survives — the vote event therefore comes from the `VoteUpdate` system threads, which
+is a fetched-hydration signal.
+
+Migrations **5 (`notification-log`)** and **6 (`pr-signal`)**, both `STRICT`. `notification` is
+the log: `key TEXT PRIMARY KEY` plus kind, pull request, title, detail, project, repository,
+`created_at`, `announced_at`, `read_at`. Every key is derived from what happened —
+`commits:<pr>:<commit>`, `comment:<pr>:<thread>:<comment>`, `vote:<pr>:<thread>`,
+`build:<pr>:<commit>` — and inserts are `ON CONFLICT(key) DO NOTHING`, so dedup is structural
+rather than a policy anyone has to remember. `pr_signal` is one row per watched pull request
+holding the three watermarks (`comment_at`, `vote_at`, `failed`) and the last commit. Two things
+follow from it, and both are the cold-start rule: **`pr_signal` is the watch list**, so
+`noteActivity` says nothing at all about a pull request the inbox has never shown — which is what
+keeps the detail route silent for a colleague's pull request you merely opened — and each
+watermark starts at `UNOBSERVED = -1`, which primes instead of firing. `pr_cache` needed no
+migration: detection reads the raw responses, and the cached payload shape is untouched.
+
+Detection is wired into `hydrate()` immediately after `writePrCache`, in a `try`/`catch` that
+lets a failed notification cost the panel an entry rather than cost the row its badges, and into
+`watch()` on the inbox side. `viewerId` comes from `me()` — the credential — never from the
+request body, so a comment or vote of my own is skipped, as are the bots `botIds` already
+identifies and every `commentType: 'system'` thread. `role` (author vs reviewer) *is* supplied by
+the client, because `PullRequestRow` carries a display name and no author GUID and `inbox.ts` was
+not this ticket's file; it is validated to the literal union, and it decides only which events a
+pull request is eligible for, never who "me" is.
+
+The panel is built on `react-aria-components` directly rather than on `Dialog`, because `Dialog`
+is a centred, zooming `sm:max-w-sm` card and every one of its positioning classes would have had
+to be overridden; it reuses `DialogOverlay` (identical dim, blur and dismiss behaviour) and
+`DialogTitle`. It mounts as a sibling of `{children}` inside `CommandProvider` in `__root.tsx`,
+with no wrapper div, so `b` opens it from the diff as well as the inbox, and a `nav.back` binding
+takes Escape off the shell while it is open so dismissing a notification cannot also navigate the
+page underneath. Sound is WebAudio synthesis in `src/lib/notify.ts` — bundled by definition,
+there is no asset and no request — four distinguishable shapes, one tone per batch (the
+highest-priority kind present, so the first poll after lunch does not play four at once), silent
+until a real gesture has unlocked the context, and the mute is checked *before* the context is
+ever constructed, which the tests assert as `built === 0`. Hydration-detected events reach the
+client through `announced_at`: `observeNotifications` claims the un-announced rows once per
+inbox poll, keyed on `query.dataUpdatedAt`, so there is no new interval anywhere.
+
+**45 test files, 766 tests, all passing** (from 41 / 718); `tsc --noEmit` clean. The tests
+covering the rules the ticket names: cold-start silence in both layers, dedup across a simulated
+restart (a real file database, closed and reopened), the viewer's own comment and vote ignored at
+either casing while the watermark still advances past them, read state and the badge count, the
+migration count bump, mute, and the hydration wiring end to end.
 
 ---
 

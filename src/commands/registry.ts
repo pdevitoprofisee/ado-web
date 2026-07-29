@@ -38,6 +38,10 @@ export const COMMANDS = [
   // control lives in the inbox header, and the diff is where you are when the
   // room gets dark.
   { id: 'view.theme', key: 't', label: 'Light or dark', group: 'View' },
+  // `b` for bell. The panel is mounted by the shell rather than by a page, so
+  // this reaches it from the diff as well — which is where you are when the
+  // build you are waiting on breaks.
+  { id: 'view.notifications', key: 'b', label: 'Notifications', group: 'View' },
   { id: 'help.shortcuts', key: '?', label: 'Keyboard shortcuts', group: 'Help' },
 ] as const satisfies ReadonlyArray<Command>
 

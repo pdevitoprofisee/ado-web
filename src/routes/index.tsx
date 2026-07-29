@@ -7,11 +7,33 @@ import { CADENCE, useCadence } from '@/lib/cadence'
 import { toggleTheme, useTheme } from '@/lib/theme'
 import { PullRequestSection, useInboxSelection } from '@/components/pr-list'
 import { useHydration } from '@/components/use-hydration'
+import { useObserve } from '@/components/notifications/use-notifications'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 
+import type { PullRequestRow } from '@/server/inbox'
+import type { Role, WatchedPullRequest } from '@/server/notifications'
+
 export const Route = createFileRoute('/')({ component: Home })
+
+/** The rows of one inbox section, as much of them as detection can use. */
+function watchable(rows: readonly PullRequestRow[], role: Role): WatchedPullRequest[] {
+  return rows.flatMap((row) =>
+    row.commitId && row.projectId && row.repositoryId
+      ? [
+          {
+            prId: row.id,
+            title: row.title,
+            projectId: row.projectId,
+            repositoryId: row.repositoryId,
+            role,
+            commitId: row.commitId,
+          },
+        ]
+      : [],
+  )
+}
 
 /**
  * The visible half of dark mode, in the one line on the page that already
@@ -79,6 +101,26 @@ function Home() {
   )
   const { hydrationOf, registerList } = useHydration(rows, generation)
   const selectedId = useInboxSelection(rows)
+
+  // What the notification panel is allowed to notice. Built from the two
+  // sections separately because which one a row came from is the only place the
+  // app knows whether this pull request is mine or one I am reviewing — the list
+  // entry carries an author *name* and no author id — and "someone voted on my
+  // PR" and "a PR I am reviewing got new commits" are different events.
+  //
+  // A row missing any of the three ids is skipped rather than defaulted: those
+  // are what the panel links with, and a notification you cannot open is worse
+  // than one you never got.
+  const watched = useMemo(
+    () => [
+      ...watchable(inbox?.mine ?? [], 'author'),
+      ...watchable(inbox?.assignedToMe ?? [], 'reviewer'),
+    ],
+    [inbox],
+  )
+  // Handed over once per poll. The inbox is the only clock in the app and this
+  // rides it — nothing here starts an interval of its own.
+  useObserve(watched, query.dataUpdatedAt)
 
   return (
     <main className="mx-auto flex max-w-4xl flex-col items-start gap-5 p-8">

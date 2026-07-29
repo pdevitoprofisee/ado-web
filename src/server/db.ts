@@ -116,6 +116,67 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
     // are keyed on is still current, so nothing would ever refetch them.
     up: 'DELETE FROM pr_cache',
   },
+  {
+    version: 5,
+    name: 'notification-log',
+    // Not a cache either, so the `DELETE FROM` licence does not extend here: a
+    // notification is the record that something happened while the app was
+    // open, and nothing can refetch it — the poll it was a diff against is
+    // gone.
+    //
+    // `key` is the primary key and it describes **what happened**, never when it
+    // was noticed: `vote:<pr>:<thread>` rather than a timestamp. That is the
+    // whole of the deduplication story. Two detection paths racing on the same
+    // vote, or the same vote seen again after a restart, collide on this column
+    // and the second insert does nothing. See src/server/notifications.ts.
+    //
+    // `announced_at` is separate from `read_at` because they answer different
+    // questions: announced means the sound has played, read means the person
+    // looked. A row can be announced and unread, which is the normal state of a
+    // notification sitting in the panel.
+    // The two GUIDs are stored rather than a path, because the panel links with
+    // typed route params like every other link in the app, and because a row has
+    // to keep making sense after the pull request has left the inbox — a
+    // notification outlives the `pr_signal` row it was detected from.
+    up: `CREATE TABLE notification (
+           key           TEXT    PRIMARY KEY,
+           kind          TEXT    NOT NULL,
+           pr_id         INTEGER NOT NULL,
+           title         TEXT    NOT NULL,
+           detail        TEXT    NOT NULL,
+           project_id    TEXT    NOT NULL,
+           repository_id TEXT    NOT NULL,
+           created_at    INTEGER NOT NULL,
+           announced_at  INTEGER,
+           read_at       INTEGER
+         ) STRICT`,
+  },
+  {
+    version: 6,
+    name: 'pr-signal',
+    // The other half of a diff: what the previous poll saw. One row per pull
+    // request the app has looked at, and its *existence* is what makes the first
+    // poll silent — a pull request with no row here has no previous poll to be
+    // compared against, so it produces no events, only this row.
+    //
+    // The three watermarks start at -1, meaning "not observed yet", which is a
+    // different thing from 0: no failing checks is news the next time a check
+    // fails, whereas not knowing yet must announce nothing. A STRICT table would
+    // take NULL here, but then every read would have to decide what NULL means,
+    // and the two possible answers are exactly the bug.
+    up: `CREATE TABLE pr_signal (
+           pr_id         INTEGER PRIMARY KEY,
+           title         TEXT    NOT NULL,
+           project_id    TEXT    NOT NULL,
+           repository_id TEXT    NOT NULL,
+           role          TEXT    NOT NULL,
+           commit_id     TEXT    NOT NULL,
+           comment_at    INTEGER NOT NULL,
+           vote_at       INTEGER NOT NULL,
+           failed        INTEGER NOT NULL,
+           updated_at    INTEGER NOT NULL
+         ) STRICT`,
+  },
 ]
 
 /**

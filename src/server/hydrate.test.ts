@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { openDatabase } from './db'
 import { approvalWasReset, countUnresolved, hydrate, readBlocked, readChecks } from './hydrate'
+import { listNotifications, watch } from './notifications'
 
 import type { DatabaseSync } from 'node:sqlite'
 import type { AdoClient, QueryValue } from './ado-client'
@@ -415,5 +416,94 @@ describe('hydrate', () => {
     )
 
     expect(resolved).toBe(0)
+  })
+})
+
+describe('what hydration notices for the notification panel', () => {
+  // T-039's detection is a diff taken where the poll already happens, so the
+  // wiring is here: these three signals are only visible in the responses this
+  // function already fetches, and nothing else in the app fetches them.
+  const human = (by: string, at: string, id: number) => ({
+    id,
+    status: 'active',
+    publishedDate: at,
+    comments: [
+      { id: 1, commentType: 'text', content: 'needs a rollback plan', publishedDate: at, author: { id: by, displayName: 'Ravi' } },
+    ],
+  })
+
+  const replies = (threads: readonly unknown[], evaluations: readonly unknown[]) => ({
+    '/threads': { value: threads },
+    '/statuses': { value: [{ createdBy: { id: SONAR } }] },
+    '/policy/evaluations': { value: evaluations },
+  })
+
+  const watched = {
+    prId: TARGET.id,
+    title: 'disable sql auditing',
+    projectId: TARGET.projectId,
+    repositoryId: TARGET.repositoryId,
+    role: 'author' as const,
+    commitId: TARGET.commitId,
+  }
+
+  it('announces nothing on the first hydration, and the new things on the second', async () => {
+    const db = memory()
+    watch([watched], 1000, db)
+
+    const first = await hydrate(
+      fakeClient(replies([human(COLLEAGUE, '2026-07-20T10:00:00Z', 10)], [{ status: 'approved' }])),
+      TARGET,
+      me,
+      db,
+    )
+
+    expect(first.ok).toBe(true)
+    expect(listNotifications(50, db)).toEqual([])
+
+    // A push, so the commit-keyed cache misses and the responses are fetched
+    // again — carrying a colleague's new comment, a bot's, one of my own, and a
+    // rejected policy.
+    const second = await hydrate(
+      fakeClient(
+        replies(
+          [
+            human(COLLEAGUE, '2026-07-20T10:00:00Z', 10),
+            human(COLLEAGUE, '2026-07-21T10:00:00Z', 11),
+            human(SONAR, '2026-07-21T11:00:00Z', 12),
+            human(ME, '2026-07-21T12:00:00Z', 13),
+          ],
+          [{ status: 'approved' }, { status: 'rejected' }],
+        ),
+      ),
+      { ...TARGET, commitId: 'b'.repeat(40) },
+      me,
+      db,
+    )
+
+    expect(second.ok).toBe(true)
+    // Not the bot's, and not mine — `viewerId` comes from `me()`, which is the
+    // credential, so nothing a request could say changes this.
+    expect(listNotifications(50, db).map((item) => [item.kind, item.detail])).toEqual([
+      ['comment', 'Ravi: needs a rollback plan'],
+      ['build', 'A check is failing'],
+    ])
+  })
+
+  it('still returns the row when the notification cannot be written', async () => {
+    const db = memory()
+    watch([watched], 1000, db)
+    db.exec('DROP TABLE notification')
+
+    const result = await hydrate(
+      fakeClient(replies([human(COLLEAGUE, '2026-07-20T10:00:00Z', 10)], [{ status: 'rejected' }])),
+      TARGET,
+      me,
+      db,
+    )
+
+    // The badges are the point of this call. A panel that could not be written to
+    // must not cost the row the counts it already paid for.
+    expect(result.ok && result.data.checks.failed).toBe(1)
   })
 })

@@ -44,12 +44,21 @@ describe('migrations', () => {
 
     // Shipped tables only. Empty tables for later phases are not schema, they
     // are guesses; the phase that needs one adds it.
-    expect(tables).toEqual(['blob_cache', 'pr_cache', 'schema_migrations', 'viewed_file'])
+    expect(tables).toEqual([
+      'blob_cache',
+      'notification',
+      'pr_cache',
+      'pr_signal',
+      'schema_migrations',
+      'viewed_file',
+    ])
     expect(db.prepare('SELECT version, name FROM schema_migrations').all()).toEqual([
       { version: 1, name: 'pr-cache' },
       { version: 2, name: 'blob-cache' },
       { version: 3, name: 'viewed-files' },
       { version: 4, name: 'pr-cache-ready' },
+      { version: 5, name: 'notification-log' },
+      { version: 6, name: 'pr-signal' },
     ])
 
     db.close()
@@ -101,7 +110,7 @@ describe('migrations', () => {
     const second = openDatabase(path)
     migrate(second) // and again, in-process, for good measure
 
-    expect(second.prepare('SELECT count(*) c FROM schema_migrations').get()?.c).toBe(4)
+    expect(second.prepare('SELECT count(*) c FROM schema_migrations').get()?.c).toBe(6)
     expect(readPrCache(7, 'a'.repeat(40), second)).toEqual({ checks: 'green' })
 
     second.close()
