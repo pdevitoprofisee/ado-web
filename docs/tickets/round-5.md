@@ -44,7 +44,7 @@ notifications while the app is closed. No comment likes (`usersLiked` was non-em
 
 ## T-029 — Build, timeline, log and test-result endpoint inventory
 
-**Type:** task (HITL — needs a real credential) · **Status:** open · **Blocked by:** —
+**Type:** task (HITL — needs a real credential) · **Status:** resolved · **Blocked by:** —
 
 Phase 5 is four features stacked on endpoints this repo has never called. `src/lib/requeue.ts`
 proves the *policy* half — requeuing an evaluation is the documented way to re-run a PR build —
@@ -70,11 +70,36 @@ reference and marked **unproven**, because sending one would re-run a colleague'
 Then `src/lib/checks-contract.ts` is frozen out of it — the types the server layer and the
 panel are both written against, before either exists.
 
+### Resolution
+
+`ceb07c1`. `scripts/checks-inventory.mjs` (GET-only by construction — its `ado()` helper has no
+`method` parameter at all, so a write is not something you have to remember not to write), 176
+requests over two passes, output in `docs/research/checks-inventory.md`, and
+`src/lib/checks-contract.ts` frozen from it.
+
+The finding that shaped the contract: **a timeline is 9.7–69.1 KB and a failed-test list up to
+191 KB, and a pull request can carry five build policies.** Eager-fetching everything a panel
+*might* show is 24 calls where 6 will do, so `CheckDetail` is a separate second fetch from
+`ChecksReport` rather than a richer version of it. The sample did contain a failed build with a
+failing step and a build with failing tests, which is where `isFailingStep`'s
+`errorCount > 0 && children.length === 0` came from — a failed *parent* record is not a failing
+step, and an all-happy sample would have hidden that.
+
+Two numbers to design around: ADO truncates a stack trace at exactly **4000** characters (8 of
+28 were 4000 on the nose, so a trace at the limit is a floor not a length), and every log
+response carries `cache-control: no-cache, expires: -1`, which makes caching the app's decision
+rather than the transport's — hence `LOG_CACHE_MS`.
+
+`RequeueRequest` is transcribed and **unproven**: `PATCH policy/evaluations/{id}` with no body,
+where the `-preview.1` suffix is not optional (plain `7.1` answers 400, "The -preview flag must
+be supplied"). Requeueing **cancels a build that is currently running**, which is why
+`requeueTarget()` refuses a `running` policy.
+
 ---
 
 ## T-030 — Identity search and avatar inventory
 
-**Type:** task (HITL — needs a real credential) · **Status:** open · **Blocked by:** —
+**Type:** task (HITL — needs a real credential) · **Status:** resolved · **Blocked by:** —
 
 Three features were deferred for want of exactly this measurement:
 [T-026](./round-4.md#t-026--the-composer) declined to probe `graph/subjectquery`, so `@mentions`
@@ -104,6 +129,57 @@ Authorised exception to the read-only rule: `POST graph/subjectquery` and
 nothing, and neither is a pull request. **No other non-GET request.**
 
 Then `src/lib/identity-contract.ts` is frozen out of it.
+
+### Resolution
+
+`5e176fc`. `scripts/identity-inventory.mjs`, `docs/research/identity-inventory.md`, and
+`src/lib/identity-contract.ts` frozen from it. The authorised exception was used exactly twice;
+the probe refuses any other non-GET at its single request chokepoint rather than trusting itself
+not to write one.
+
+**Host first, because it looks like a typo and is not.** Everything identity-related is on
+`vssps.dev.azure.com`. `graph/subjectquery` and `graph/users` on `dev.azure.com` answer **404**
+with "The controller for path … was not found or does not implement IController" — which reads
+like a wrong path and is a wrong host.
+
+**The search:** `POST graph/subjectquery`, preview-only (`7.1` → 400), **~135 ms** at
+`x-ratelimit-cost` 0 — fast enough for a keystroke at a 150 ms debounce. Two behaviours that
+matter more than the latency: it is a **prefix match, not a substring search** (`Jordan` → 2
+hits, the surname `Vincent` → **0**, `orda` → 0), and it caps at **100** silently, ignoring
+`$top`, with no continuation token.
+
+**The descriptor↔GUID gap costs one call, not one per candidate.**
+`GET _apis/identities?subjectDescriptors={csv}` crosses it for a whole page at once — six calls
+of 50 took 140–227 ms, and two descriptors took 127, so batch size is nearly free. The ceiling is
+URL length and it arrives as a **404**: 60 descriptors → 200, **70 → 404**. Three dead ends,
+measured so nobody tries them again: `descriptors=` (the wrong parameter name) answers **200 with
+`[null, null]`**; `subjectlookup` carries no `id` either; and `originId` equalled the identity id
+**127 of 299** times — right for two people in five, which is worse than reliably wrong.
+Base64-decoding the descriptor matched **0** times in 300.
+
+**The mention form, verbatim and real:** `@<DDE322B5-997F-6B0C-8C02-E3C7B90F91D6>` — literal
+angle brackets, **upper case** — 5 of 5, found across 29 pull requests / 218 threads / 232
+comments. So T-035 does not have to fabricate markup. T-026's `#mention:` guess is **wrong**:
+zero occurrences, and zero `<a href=` in any comment body. The comment has **no `properties`
+key**, so the body text is the only record of who was mentioned. `identities?identityIds=`
+answers `id` in **lower** case, which is exactly the casing hazard `people.ts` already guards.
+
+**The image proxy does not need to exist.** `MemberAvatars/{descriptor}` answers 200 with the
+identical image and **no auth header at all** (on `dev.azure.com`, not vssps); `identityImage?id=`
+302s to the sign-in page. The catch, dug out late and verified: **`imageUrl` is not one URL
+shape.** Comment authors carry the credential-free form (42/42); reviewers (30/30) and pull
+request authors (99/99) carry the one that redirects. So a client must inspect the URL, not trust
+the field name. Reviewers carry no `descriptor` field (0/30) but `_links.avatar.href` ends in one
+on 30/30, so the swap costs nothing.
+
+Unmeasured and marked so: `PUT`/`DELETE .../reviewers/{id}` is transcribed from Microsoft's
+reference, because sending one would edit a colleague's pull request — upsert-vs-error, removing
+an absent reviewer, and changing `isRequired` after the fact are all unproven. Also unmeasured:
+throttling under real load (only `x-ratelimit-cost` ever appeared, on 25 of 182 responses), and
+`subjectquery` paging in an org with more than 100 matches.
+
+One flag carried into T-035: `ado-client.ts`'s `write()` hard-codes host `'core'`, and the only
+authorised POST here is on `vssps`.
 
 ---
 
