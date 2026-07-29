@@ -730,72 +730,10 @@ function TabStrip({
           {/* Inside the button so it tracks the label's width, and `aria-hidden`
               because the tab already says which one it is through
               `aria-selected`. */}
-          {tab === id ? <TabInk /> : null}
+          {tab === id ? <span className="prof-tab__ink" aria-hidden /> : null}
         </button>
       ))}
     </div>
-  )
-}
-
-/**
- * The stroke under the active tab, drawn rather than shown.
- *
- * The finished stroke is always there; what moves is the window it is seen
- * through, sweeping left to right. The ink behind the edge is already the whole
- * curve, which is what makes it read as a pen laying it down rather than as a
- * line stretching into place.
- *
- * The wrapper is not decoration, and this is the one thing to know before
- * touching it. `.prof-tab__ink` clips, and the two elements carry transform
- * animations that cancel: the window slides in from `-100%` while the stroke
- * slides the same distance the other way, so the stroke never actually moves and
- * only the clip travels. It is written that way because `transform` is one of the
- * two properties a browser can animate off the main thread. The three earlier
- * cuts of this all animated a main-thread property — framer-motion writing
- * `pathLength` per frame, then a CSS `stroke-dashoffset` — and both stall dead
- * when the thread is busy. It is busy exactly here: on the diff tabs this mark is
- * drawn in the same moment `ChangedFiles` mounts, and a stalled 320ms animation
- * does not slow down, it shows three frames and jumps. On the compositor it does
- * not care what the diff is doing.
- *
- * Both keyframes must keep the same duration and easing or the cancellation comes
- * apart mid-sweep and the stroke visibly drifts. Any easing is safe as long as it
- * is the *same* easing: the two translations are equal and opposite at every
- * point on the timeline, so they sum to zero however the curve is shaped.
- *
- * Rendered only inside the active tab, so switching tabs unmounts it and mounts a
- * new one: the pen lifts and draws again under the new label rather than sliding
- * across the gap, and a fresh element is also what restarts the animation.
- *
- * The `d` and the 160×8 box are `--stroke-underline-teal`'s, so light and dark
- * still meet at the same curve; `--teal-500` is the one thing that differs
- * between them and CSS already answers that — as it does `prefers-reduced-motion`,
- * which no longer needs a hook to ask about.
- */
-function TabInk() {
-  return (
-    <span className="prof-tab__ink" aria-hidden>
-      <svg
-        className="prof-tab__ink-stroke"
-        viewBox="0 0 160 8"
-        // The stroke is set as wide as the label, whatever the label is, and a
-        // 5-character tab is not a 22-character one. Prof's own underline is a
-        // stretched background image for the same reason.
-        preserveAspectRatio="none"
-      >
-        <path
-          d="M3 5.5 C 40 3.2, 95 3.0, 157 4.6"
-          fill="none"
-          // The colour is in `styles.css`, not a `stroke=` here, because a `var()`
-          // in an SVG presentation attribute is not resolved by any browser — and
-          // an unresolvable `stroke` is `none`, so the first cut of this drew a
-          // perfect invisible line. The stylesheet is where `--teal-500` can be
-          // read anyway, and it is where the theme rebinds it.
-          strokeWidth={2.2}
-          strokeLinecap="round"
-        />
-      </svg>
-    </span>
   )
 }
 

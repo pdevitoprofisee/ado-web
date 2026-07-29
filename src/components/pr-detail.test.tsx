@@ -870,29 +870,28 @@ describe('PullRequestDetailView tabs', () => {
     expect(screen.getByRole('tab', { name: /Details/ })).toHaveAttribute('tabindex', '-1')
   })
 
-  it('draws the underline under the active tab rather than showing it', async () => {
+  it('marks the active tab with ink inside the tab itself', async () => {
     render(<PullRequestDetailView pr={detail({ files })} />)
 
-    const ink = () => document.querySelector('.prof-tab__ink path')
-    // The sweep itself is two cancelling transforms in `styles.css`, and jsdom
-    // loads no stylesheet to run them. What is checkable here is the structure
-    // they need: a clipping wrapper with the stroke as its own element inside,
-    // because each carries one half of the pair. Flatten it back to a single
-    // `<svg>` — the shape this had twice before — and there is nothing left to
-    // animate against, so the nesting is the assertion.
-    expect(ink()).not.toBeNull()
-    expect(document.querySelector('.prof-tab__ink > .prof-tab__ink-stroke')).not.toBeNull()
+    const inkIn = (name: RegExp) =>
+      screen.getByRole('tab', { name }).querySelector('.prof-tab__ink')
 
-    // The stroke's colour is deliberately not here: a `var()` in an SVG
-    // presentation attribute resolves to nothing in every browser, so it lives in
-    // `styles.css` where the theme rebinds it.
-    expect(ink()).not.toHaveAttribute('stroke')
+    // The stroke is a background image on this span, so what it looks like is
+    // `styles.css`'s and jsdom loads no stylesheet to check it. What belongs here
+    // is where the span lives: *inside* the button, which is the only reason the
+    // mark is the width of the label rather than of the strip.
+    expect(inkIn(/Details/)).not.toBeNull()
 
-    // And it is the *active* tab's, so switching draws a new one instead of
-    // sliding the old one across.
+    // Exactly one, and the active tab's: it moves by being rendered somewhere
+    // else, so two marks at once would mean two tabs claiming to be current.
     await userEvent.click(screen.getByRole('tab', { name: /Combined/ }))
-    expect(screen.getByRole('tab', { name: /Details/ }).querySelector('.prof-tab__ink')).toBeNull()
-    expect(screen.getByRole('tab', { name: /Combined/ }).querySelector('.prof-tab__ink')).not.toBeNull()
+    expect(inkIn(/Details/)).toBeNull()
+    expect(inkIn(/Combined/)).not.toBeNull()
+    expect(document.querySelectorAll('.prof-tab__ink')).toHaveLength(1)
+
+    // `aria-hidden`, because `aria-selected` on the tab already says this, and a
+    // screen reader does not need the decoration twice.
+    expect(inkIn(/Combined/)).toHaveAttribute('aria-hidden')
   })
 
   it('falls back to the details when the tab it was on stops existing', () => {
