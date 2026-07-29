@@ -275,6 +275,14 @@ export interface PullRequestDetail {
   readonly sourceBranch: string
   readonly targetBranch: string
   readonly merge: MergeState
+  /**
+   * The source branch's tip commit as ADO last saw it, or `null` if ADO did not
+   * say. Read for one reason: `completePullRequest` sends it back, and ADO then
+   * refuses the merge if the branch has moved since this page was drawn. So a
+   * push that landed while somebody was reading cannot be merged unseen — which
+   * makes a missing value a reason not to offer the button, not a formality.
+   */
+  readonly lastMergeSourceCommit: string | null
   readonly reviewers: readonly Reviewer[]
   readonly policies: readonly Policy[]
   readonly commits: readonly Commit[]
@@ -320,6 +328,8 @@ interface AdoDetail {
   readonly targetRefName?: string
   /** Absent on every abandoned PR measured, so `undefined` is a real answer. */
   readonly mergeStatus?: string
+  /** The source branch's tip as ADO last saw it — see `PullRequestDetail`. */
+  readonly lastMergeSourceCommit?: { readonly commitId?: string }
   readonly reviewers?: readonly AdoReviewer[]
   readonly repository?: {
     readonly name?: string
@@ -731,6 +741,55 @@ export async function setTitle(
   await client.write('PATCH', prBase(ref), { title })
 }
 
+/**
+ * Squash-merge this pull request — "complete", in ADO's vocabulary.
+ *
+ * The request body was confirmed against Microsoft's `Pull Requests - Update`
+ * reference at api-version 7.1 rather than guessed, because two of its three
+ * fields have a plausible wrong spelling:
+ *
+ * - The strategy is `completionOptions.mergeStrategy: 'squash'`
+ *   (`GitPullRequestMergeStrategy` is `noFastForward` | `squash` | `rebase` |
+ *   `rebaseMerge`). The doc is explicit that the older `squashMerge` boolean is
+ *   deprecated and **ignored** whenever `mergeStrategy` is set, so only one of
+ *   the two is sent — sending both would be sending a field ADO throws away.
+ * - `status: 'completed'` is the `PullRequestStatus` enum. That route takes
+ *   exactly seven updatable fields, and per the doc anything else either earns
+ *   an `InvalidArgumentValueException` or is silently ignored, which is why
+ *   nothing else is in here.
+ * - `lastMergeSourceCommit` is a **top-level** `GitCommitRef`, not a completion
+ *   option. It is the guard: ADO refuses the completion when the source branch
+ *   has moved past the sha we read, so a push that landed while the page was
+ *   open cannot be merged unseen.
+ *
+ * No `api-version` override: 7.1 is the client's default and the version the
+ * doc describes, unlike the preview-only evaluations route above.
+ *
+ * Deliberately absent. `bypassPolicy` and `bypassReason`, because bypassing a
+ * branch policy is out of this app's scope entirely (docs/map.md) and a write
+ * that could do it by mistake is a write that will. `deleteSourceBranch`,
+ * because deleting the branch is a second irreversible act and one confirmation
+ * must not buy two — leaving it out means ADO's own default, which is to keep
+ * the branch. `mergeCommitMessage`, because ADO composes the squash message
+ * from the title and description the reviewer has just read; sending our own
+ * would silently replace it.
+ *
+ * Unproven against ADO: no write has ever been sent from this app, and the PAT
+ * needs `vso.code_write`. The refreshed pull request it answers with is dropped
+ * for `requeueEvaluation`'s reason — the caller re-reads the page.
+ */
+export async function completePullRequest(
+  client: AdoClient,
+  ref: PullRequestRef,
+  lastMergeSourceCommit: string,
+): Promise<void> {
+  await client.write('PATCH', prBase(ref), {
+    status: 'completed',
+    lastMergeSourceCommit: { commitId: lastMergeSourceCommit },
+    completionOptions: { mergeStrategy: 'squash' },
+  })
+}
+
 async function loadCommits(
   client: AdoClient,
   ref: PullRequestRef,
@@ -917,6 +976,7 @@ export async function loadPullRequest(
       conflicted,
       conflicts: conflicts.data,
     },
+    lastMergeSourceCommit: pr.lastMergeSourceCommit?.commitId ?? null,
     reviewers: (pr.reviewers ?? []).map((reviewer) => ({
       id: reviewer.id ?? '',
       displayName: reviewer.displayName ?? 'unknown',

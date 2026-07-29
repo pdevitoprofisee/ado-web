@@ -1,12 +1,17 @@
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render as renderBare, screen, within } from '@testing-library/react'
+import { render as renderBare, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-import { PullRequestDetailView as Detail, voteWord } from './pr-detail'
+import { PullRequestDetailView as Detail, mergeBlocker, voteWord } from './pr-detail'
 import { viewedKey } from '@/lib/viewed-key'
-import { iterationChangesQuery, renamePullRequest, requeuePolicy } from '@/server/pull-request-fn'
+import {
+  iterationChangesQuery,
+  renamePullRequest,
+  requeuePolicy,
+  squashMerge,
+} from '@/server/pull-request-fn'
 import { startThread, threadsQuery } from '@/server/threads-fn'
 import { markViewed, viewedQuery } from '@/server/viewed-fn'
 
@@ -52,6 +57,10 @@ vi.mock('@/server/pull-request-fn', () => ({
   // Same reason as the requeue: `useRename` is called by the header on every
   // render, whether or not a test presses anything.
   renamePullRequest: vi.fn(async () => ({ ok: true, error: null, connected: true })),
+  // Mocked for the same reason, and with more riding on it: this is the one write
+  // in the app that would complete a real pull request, so the module must not
+  // reach a bundle that could send it.
+  squashMerge: vi.fn(async () => ({ ok: true, error: null, connected: true })),
   iterationChangesQuery: vi.fn(async () => ({
     changes: {
       files: [
@@ -117,6 +126,12 @@ const REF: PullRequestRef = {
 
 /** One evaluation of one policy, which is what a requeue addresses. */
 const EVALUATION = '33333333-3333-3333-3333-333333333333'
+
+/**
+ * The source branch's tip as ADO last saw it. A real 40-hex sha rather than a
+ * token, because the merge request is validated by shape on the way out.
+ */
+const SOURCE_TIP = '4f3c9a1b2d7e5068c1a4b39f7e2d05c8a6b1f394'
 
 /**
  * The view, plus the one piece of its state the route owns.
@@ -196,6 +211,7 @@ const detail = (over: Partial<PullRequestDetail> = {}): PullRequestDetail => ({
   sourceBranch: 'refs/heads/feature/logging-sink',
   targetBranch: 'refs/heads/main',
   merge: { status: 'succeeded', conflicted: false, conflicts: [] },
+  lastMergeSourceCommit: SOURCE_TIP,
   reviewers: [],
   policies: [],
   commits: [],
@@ -560,7 +576,11 @@ describe('PullRequestDetailView merge state', () => {
     )
 
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(screen.queryByText(/merge/i)).toBeNull()
+    // The banner's own sentences, specifically. `/merge/i` used to do here, and
+    // cannot any more: the squash control underneath says "merge" all day, which
+    // is not the thing this test is about.
+    expect(screen.queryByText(/conflicts with its target/i)).toBeNull()
+    expect(screen.queryByText(/has not tested this merge/i)).toBeNull()
   })
 
   it('still shouts the conflict when the list of files is the part that failed', () => {
@@ -589,7 +609,171 @@ describe('PullRequestDetailView merge state', () => {
     render(<PullRequestDetailView pr={detail()} />)
 
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(screen.queryByText(/merge/i)).toBeNull()
+    expect(screen.queryByText(/conflicts with its target/i)).toBeNull()
+    expect(screen.queryByText(/has not tested this merge/i)).toBeNull()
+  })
+})
+
+/**
+ * Every state that keeps the button off, with the sentence it is kept off with.
+ * Written as a table because the sentences *are* the feature — a disabled control
+ * that will not say why is the thing this replaces — so a reason that changes
+ * silently should fail here.
+ */
+const BLOCKED: ReadonlyArray<[string, Partial<PullRequestDetail>, string]> = [
+  ['a completed pull request', { status: 'completed' }, 'This pull request has already been completed.'],
+  ['an abandoned one', { status: 'abandoned' }, 'This pull request has been abandoned.'],
+  // ADO's word, passed through rather than guessed at.
+  ['a status nobody wrote a case for', { status: 'notSet' }, 'Azure DevOps says this pull request is notSet, not active.'],
+  ['a status ADO omitted', { status: '' }, 'Azure DevOps says this pull request is in a state it did not name, not active.'],
+  ['a draft', { isDraft: true }, 'This is a draft. Publish it in Azure DevOps before merging.'],
+  [
+    'a conflicted branch',
+    { merge: { status: 'conflicts', conflicted: true, conflicts: [] } },
+    'This branch conflicts with its target.',
+  ],
+  [
+    'a merge nobody has attempted',
+    { merge: { status: 'queued', conflicted: false, conflicts: [] } },
+    'Azure DevOps has not tested this merge yet, so it cannot be completed from here.',
+  ],
+  [
+    'a merge status ADO omitted',
+    { merge: { status: '', conflicted: false, conflicts: [] } },
+    'Azure DevOps did not say whether this branch merges cleanly.',
+  ],
+  [
+    'a merge status we have never seen',
+    { merge: { status: 'failure', conflicted: false, conflicts: [] } },
+    'Azure DevOps says the merge is failure.',
+  ],
+  [
+    'one unsatisfied blocking policy',
+    { policies: [policy({ blocking: true })] },
+    'One blocking policy is not satisfied yet.',
+  ],
+  [
+    'a source tip ADO did not name',
+    { lastMergeSourceCommit: null },
+    'Azure DevOps did not say which commit the source branch is on, so merging from here could merge work this page never showed.',
+  ],
+]
+
+describe('mergeBlocker', () => {
+  it.each(BLOCKED)('refuses %s', (_state, over, reason) => {
+    expect(mergeBlocker(detail(over), {})).toBe(reason)
+  })
+
+  it('counts the blocking policies rather than saying "some"', () => {
+    expect(
+      mergeBlocker(
+        detail({
+          policies: [
+            policy({ id: '1', blocking: true }),
+            policy({ id: '2', blocking: true }),
+            // Required and satisfied is not blocking, so it is not counted.
+            policy({ id: '3', status: 'approved', blocking: false }),
+          ],
+        }),
+        {},
+      ),
+    ).toBe('2 blocking policies are not satisfied yet.')
+  })
+
+  it('refuses when the policies are the part that did not load', () => {
+    // "We do not know" is not "yes". A page that offers the merge here is a page
+    // that offers it on a pull request three policies are refusing.
+    expect(mergeBlocker(detail(), { policies: true })).toBe(
+      'The branch policies could not be loaded, so whether this may merge is unknown.',
+    )
+  })
+
+  it('allows it when nothing we can see is in the way', () => {
+    expect(mergeBlocker(detail({ policies: [policy({ status: 'approved', blocking: false })] }), {})).toBeNull()
+  })
+})
+
+describe('PullRequestDetailView squash merge', () => {
+  beforeEach(() => {
+    vi.mocked(squashMerge).mockClear()
+    vi.mocked(squashMerge).mockResolvedValue({ ok: true, error: null, connected: true })
+  })
+
+  const trigger = () => screen.getByRole('button', { name: 'Squash and merge' })
+  const confirm = () => within(screen.getByRole('dialog')).getByRole('button', { name: 'Squash and merge' })
+
+  it('opens a confirmation rather than merging, and names what would be merged', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await userEvent.click(trigger())
+    // The whole point of the confirmation: the press that reaches the button is
+    // not the press that merges.
+    expect(squashMerge).not.toHaveBeenCalled()
+
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('!24698 move the logging sink off the shared account')
+    expect(dialog).toHaveTextContent('Every commit on feature/logging-sink becomes one commit on main')
+    expect(dialog).toHaveTextContent('cannot be undone')
+    // Both promises this app is making on ADO's behalf, in writing.
+    expect(dialog).toHaveTextContent('The source branch is left in place, and no policy is bypassed.')
+  })
+
+  it('sends the pull request and the tip it was read at, once confirmed', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await userEvent.click(trigger())
+    await userEvent.click(confirm())
+
+    // The sha is the guard, not decoration: without it ADO would merge whatever
+    // the branch has grown since this page was drawn.
+    expect(squashMerge).toHaveBeenCalledWith({
+      data: { ...REF, lastMergeSourceCommit: SOURCE_TIP },
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('merges nothing when the confirmation is cancelled', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await userEvent.click(trigger())
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(squashMerge).not.toHaveBeenCalled()
+  })
+
+  it('shows a refusal in Azure DevOps own words, and stays open', async () => {
+    vi.mocked(squashMerge).mockResolvedValue({
+      ok: false,
+      error: 'TF401028: The pull request cannot be completed: the source branch has been updated.',
+      connected: true,
+    })
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await userEvent.click(trigger())
+    await userEvent.click(confirm())
+
+    const refusal = await screen.findByRole('alert')
+    expect(refusal).toHaveTextContent(
+      'Azure DevOps did not merge it: TF401028: The pull request cannot be completed: the source branch has been updated.',
+    )
+    // Still standing, because the message is the reason the reviewer pressed it.
+    expect(screen.getByRole('dialog')).toBeVisible()
+  })
+
+  it('disables the button with the reason as its description', async () => {
+    render(<PullRequestDetailView pr={detail({ isDraft: true })} />)
+
+    const button = trigger()
+    expect(button).toBeDisabled()
+    // On the page for the eye, and on the control for anything that reads it out.
+    expect(button).toHaveAccessibleDescription(
+      'This is a draft. Publish it in Azure DevOps before merging.',
+    )
+
+    await userEvent.click(button)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(squashMerge).not.toHaveBeenCalled()
   })
 })
 

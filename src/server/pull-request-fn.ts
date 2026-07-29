@@ -2,7 +2,13 @@ import { createServerFn } from '@tanstack/react-start'
 
 import { NotConnectedError, adoClient } from './ado'
 import { AdoError } from './ado-client'
-import { loadChanges, loadPullRequest, requeueEvaluation, setTitle } from './pull-request'
+import {
+  completePullRequest,
+  loadChanges,
+  loadPullRequest,
+  requeueEvaluation,
+  setTitle,
+} from './pull-request'
 
 import type { AdoClient, RateLimit } from './ado-client'
 import type { ChangeSet, PullRequestDetail, PullRequestRef } from './pull-request'
@@ -14,6 +20,7 @@ import type { ChangeSet, PullRequestDetail, PullRequestRef } from './pull-reques
 // a GUID cannot contain a traversal sequence, and an encoded one still can.
 
 const GUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i
+const SHA = /^[0-9a-f]{40}$/i
 
 /**
  * The three sections that are allowed to fail without taking the page with
@@ -147,6 +154,46 @@ export interface RequeueResult {
   readonly ok: boolean
   readonly error: string | null
   readonly connected: boolean
+}
+
+/**
+ * Which pull request to squash, and the tip it was read at.
+ *
+ * `lastMergeSourceCommit` is not decoration and not a cache key: ADO compares it
+ * to the source branch's actual tip and refuses the completion if they differ,
+ * so it is what stops this merging a commit nobody in this session ever saw. It
+ * comes off the page's own `PullRequestDetail`, and it is still checked here,
+ * because it reaches an ADO request body and a shape check is cheap next to a
+ * merge.
+ */
+export interface MergeRequest extends PullRequestRef {
+  readonly lastMergeSourceCommit: string
+}
+
+/**
+ * Whether ADO merged it.
+ *
+ * Same three fields as `RequeueResult` and for the same reason, but the failure
+ * matters more here: ADO's refusals on this route are the interesting part —
+ * a policy that is not satisfied, a branch that moved, a PAT without
+ * `vso.code_write` — so the message is passed through for the view to show
+ * verbatim rather than folded into one of ours.
+ */
+export interface MergeResult {
+  readonly ok: boolean
+  readonly error: string | null
+  readonly connected: boolean
+}
+
+export function mergeRequest(input: unknown): MergeRequest {
+  const ref = pullRequestRef(input)
+  const raw = (input ?? {}) as Record<string, unknown>
+
+  if (typeof raw.lastMergeSourceCommit !== 'string' || !SHA.test(raw.lastMergeSourceCommit)) {
+    throw new Error('lastMergeSourceCommit must be a commit sha.')
+  }
+
+  return { ...ref, lastMergeSourceCommit: raw.lastMergeSourceCommit }
 }
 
 export function requeueRequest(input: unknown): RequeueRequest {
@@ -343,6 +390,43 @@ export const renamePullRequest = createServerFn({ method: 'POST' })
 
     try {
       await setTitle(client, ref, title)
+
+      return { ok: true, error: null, connected: true }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        connected: true,
+      }
+    }
+  })
+
+/**
+ * Squash-merge the pull request.
+ *
+ * The one write in this app that changes a branch, so two things about it are
+ * deliberate. It sends no bypass of any kind — `completePullRequest` says why —
+ * and it decides nothing: whether merging is even possible is judged where the
+ * page's own state is, in `mergeBlocker`, and re-judged by ADO, which owns the
+ * answer. Duplicating that judgement here would mean two rules that can drift,
+ * and the one that would win is the weaker.
+ *
+ * `ok: false` rather than a throw, like `requeuePolicy`: "not connected" and
+ * "ADO refused" are both things the confirmation dialog has to say out loud, and
+ * ADO's refusal is usually the only place the actual reason is written down.
+ */
+export const squashMerge = createServerFn({ method: 'POST' })
+  .validator(mergeRequest)
+  .handler(async ({ data }): Promise<MergeResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) {
+      return { ok: false, error: client.message, connected: false }
+    }
+
+    const { lastMergeSourceCommit, ...ref } = data
+
+    try {
+      await completePullRequest(client, ref, lastMergeSourceCommit)
 
       return { ok: true, error: null, connected: true }
     } catch (error) {

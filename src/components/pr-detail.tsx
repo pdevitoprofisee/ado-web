@@ -15,10 +15,19 @@ import { FileTree } from './diff/file-tree'
 import { SonarPanel, scrollToFinding } from './sonar/panel'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogClose,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { COMBINED, useChanges } from '@/lib/changes'
 import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
+import { useSquashMerge } from '@/lib/merge'
 import { useRename } from '@/lib/rename'
 import { useRequeue } from '@/lib/requeue'
 import { cn } from '@/lib/utils'
@@ -450,6 +459,186 @@ function MergeBanner({ merge, conflictsError }: { merge: MergeState; conflictsEr
   }
 
   return null
+}
+
+/**
+ * Why this pull request cannot be squash-merged from this page, or `null` when it
+ * can be.
+ *
+ * A pure function, exported, and every branch is a whole sentence, because a
+ * disabled button that will not say why is worse than no button at all — the
+ * reason is drawn beside the control rather than left for the reviewer to guess.
+ *
+ * It answers "not from here", not "not possible". Azure DevOps re-checks every
+ * one of these on the write and owns the real answer, so where this is unsure it
+ * refuses: a policy list that failed to load and a source tip ADO did not name
+ * both read as "we do not know", which is a reason to keep the button off.
+ *
+ * The order is the order the question is actually asked in — is this open, is it
+ * still a draft, does it merge at all, do we know about the policies, do the
+ * policies allow it, and do we know what we would be merging.
+ */
+export function mergeBlocker(
+  pr: Pick<
+    PullRequestDetail,
+    'status' | 'isDraft' | 'merge' | 'policies' | 'lastMergeSourceCommit'
+  >,
+  failed: FailedSections,
+): string | null {
+  if (pr.status !== 'active') {
+    if (pr.status === 'completed') return 'This pull request has already been completed.'
+    if (pr.status === 'abandoned') return 'This pull request has been abandoned.'
+
+    // An unrecognised status is not narrowed into one of the two above: ADO's
+    // word is shown as-is, because guessing which of them a fourth value means
+    // is how a page tells somebody their merged PR is still open.
+    return `Azure DevOps says this pull request is ${pr.status === '' ? 'in a state it did not name' : pr.status}, not active.`
+  }
+  if (pr.isDraft) return 'This is a draft. Publish it in Azure DevOps before merging.'
+  // Ahead of the status because a conflicted PR *has* a status, `conflicts`, and
+  // the conflict is the sentence worth saying. Same reason `MergeBanner` keys on
+  // this flag rather than on the word.
+  if (pr.merge.conflicted) return 'This branch conflicts with its target.'
+  // Not the banner's sentence word for word, which is deliberate: the banner
+  // reports the state, and a reason attached to a disabled control owes the
+  // consequence as well. Repeating it verbatim would also put the same string on
+  // the page twice, two lines apart.
+  if (UNTESTED.has(pr.merge.status)) {
+    return 'Azure DevOps has not tested this merge yet, so it cannot be completed from here.'
+  }
+  if (pr.merge.status !== 'succeeded') {
+    return pr.merge.status === ''
+      ? 'Azure DevOps did not say whether this branch merges cleanly.'
+      : `Azure DevOps says the merge is ${pr.merge.status}.`
+  }
+  if (failed.policies === true) {
+    return 'The branch policies could not be loaded, so whether this may merge is unknown.'
+  }
+
+  // `Policy.blocking` already means "required and not yet satisfied", so a
+  // passing required policy does not count itself here.
+  const blocking = pr.policies.filter((policy) => policy.blocking).length
+  if (blocking > 0) {
+    return blocking === 1
+      ? 'One blocking policy is not satisfied yet.'
+      : `${blocking} blocking policies are not satisfied yet.`
+  }
+
+  if (pr.lastMergeSourceCommit === null) {
+    return 'Azure DevOps did not say which commit the source branch is on, so merging from here could merge work this page never showed.'
+  }
+
+  return null
+}
+
+/**
+ * The squash-merge control, and the confirmation in front of it.
+ *
+ * Under the policy checklist rather than up in the header, because it is the
+ * answer to what the checklist just asked — and because the header is a place
+ * the eye passes over on the way to the diff, which is the wrong place for the
+ * one control on this page that changes a branch.
+ *
+ * The confirmation is not a formality: completing a pull request is irreversible
+ * and everybody watching the repository sees it. So it names the pull request,
+ * both branches, and what squashing does to the history, and it is reached by
+ * pressing a button — there is deliberately no keyboard shortcut anywhere near
+ * this, because no single keypress should be able to merge anything.
+ */
+function MergeControl({
+  pr,
+  prRef,
+  failed,
+}: {
+  pr: PullRequestDetail
+  prRef: PullRequestRef
+  failed: FailedSections
+}) {
+  const [confirming, setConfirming] = useState(false)
+  // Closing on success only, which is what the hook's callback is for: a refused
+  // merge has to leave the dialog standing, because ADO's refusal is the whole
+  // reason the reviewer pressed the button and it is written right there.
+  const merge = useSquashMerge(prRef, () => setConfirming(false))
+
+  const blocker = mergeBlocker(pr, failed)
+  const sha = pr.lastMergeSourceCommit
+
+  return (
+    <div className="flex w-full flex-col items-start gap-1.5">
+      <Button
+        isDisabled={blocker !== null}
+        // The reason is a sentence on the page, and it is also this button's
+        // description — a disabled control whose explanation is only visual is
+        // still a control that will not say why.
+        aria-describedby={blocker === null ? undefined : 'merge-blocked'}
+        onPress={() => setConfirming(true)}
+      >
+        Squash and merge
+      </Button>
+      {blocker === null ? null : (
+        <p id="merge-blocked" className="text-muted-foreground text-xs">
+          {blocker}
+        </p>
+      )}
+
+      <Dialog
+        isOpen={confirming}
+        onOpenChange={(open) => {
+          setConfirming(open)
+          // So reopening does not still show the last attempt's refusal.
+          if (!open) merge.dismiss()
+        }}
+        // Escape and a click outside are the cancel path, and they stay open
+        // exactly while a write is in flight — dismissing then would hide the
+        // outcome of something that has already been sent.
+        isDismissable={!merge.isPending}
+        showCloseButton={false}
+      >
+        <DialogHeader>
+          <DialogTitle>Squash and merge?</DialogTitle>
+          <DialogDescription className="flex flex-col gap-2">
+            {/* Named, not "this pull request": a confirmation that does not say
+                what it is about is a confirmation people click through. */}
+            <p>
+              <span className="font-mono tabular-nums">!{pr.id}</span> {pr.title}
+            </p>
+            <p>
+              Every commit on <span className="font-mono">{branch(pr.sourceBranch)}</span> becomes
+              one commit on <span className="font-mono">{branch(pr.targetBranch)}</span>. Completing
+              a pull request cannot be undone.
+            </p>
+            {/* Both stated because both are things a reviewer would otherwise
+                have to take on trust from a button labelled "merge". */}
+            <p>The source branch is left in place, and no policy is bypassed.</p>
+          </DialogDescription>
+        </DialogHeader>
+
+        {merge.error === null ? null : (
+          // ADO's own words. A refusal here names the policy, or says the source
+          // branch has moved, and no sentence of ours could carry that.
+          <p role="alert" className="text-destructive text-sm">
+            Azure DevOps did not merge it: {merge.error}
+          </p>
+        )}
+
+        <DialogFooter>
+          {/* Cancel first in the DOM, so the dialog opens with focus on the way
+              out rather than on the irreversible half. */}
+          <DialogClose isDisabled={merge.isPending}>Cancel</DialogClose>
+          <Button
+            isDisabled={merge.isPending || sha === null}
+            onPress={() => {
+              // Narrowing, not defence: `mergeBlocker` refuses a null tip, so
+              // the dialog cannot be open without one.
+              if (sha !== null) merge.run(sha)
+            }}
+          >
+            {merge.isPending ? 'Merging…' : 'Squash and merge'}
+          </Button>
+        </DialogFooter>
+      </Dialog>
+    </div>
+  )
 }
 
 const POLICY_WORDS: Record<PolicyStatus, string> = {
@@ -1575,6 +1764,10 @@ export function PullRequestDetailView({
               <PolicyChecklist policies={pr.policies} prRef={prRef} />
             )}
           </Section>
+
+          {/* Directly under the checklist, because it is the answer to what the
+              checklist asks. */}
+          <MergeControl pr={pr} prRef={prRef} failed={failed} />
 
           {/* Second, and for the same reason the policies are first: a failing
               quality gate is one of the things stopping this from merging. The

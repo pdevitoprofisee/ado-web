@@ -4,6 +4,7 @@ import {
   POLICY_VERSION,
   changeFlags,
   commitSubject,
+  completePullRequest,
   loadChanges,
   loadPullRequest,
   requeueEvaluation,
@@ -513,23 +514,30 @@ describe('requeueing a build policy', () => {
   })
 })
 
+/** The write, captured rather than sent. Nothing in either describe reaches Azure DevOps. */
+function capture() {
+  const writes: Array<{
+    method: string
+    path: string
+    body: unknown
+    params: Record<string, QueryValue>
+  }> = []
+
+  const client: AdoClient = {
+    ...fakeClient({}).client,
+    write: (method, path, body, params = {}) => {
+      writes.push({ method, path, body, params })
+
+      return Promise.resolve(null)
+    },
+  }
+
+  return { client, writes }
+}
+
 describe('renaming a pull request', () => {
   it('patches the pull request with the title alone, at the client api-version', async () => {
-    const writes: Array<{
-      method: string
-      path: string
-      body: unknown
-      params: Record<string, QueryValue>
-    }> = []
-
-    const client: AdoClient = {
-      ...fakeClient({}).client,
-      write: (method, path, body, params = {}) => {
-        writes.push({ method, path, body, params })
-
-        return Promise.resolve(null)
-      },
-    }
+    const { client, writes } = capture()
 
     await setTitle(client, REF, 'move the logging sink off the shared account')
 
@@ -548,6 +556,47 @@ describe('renaming a pull request', () => {
         params: {},
       },
     ])
+  })
+})
+
+describe('completing a pull request', () => {
+  it('patches the pull request to completed, squashed, at the tip it was read at', async () => {
+    const { client, writes } = capture()
+
+    await completePullRequest(client, REF, 'f'.repeat(40))
+
+    // Asserted whole rather than field by field, because what this request must
+    // *not* contain is the point: no `bypassPolicy`, no `deleteSourceBranch`, no
+    // `mergeCommitMessage`, and no `squashMerge` beside the strategy that
+    // deprecates it. Confirmed against Microsoft's "Pull Requests - Update"
+    // reference at api-version 7.1.
+    expect(writes).toEqual([
+      {
+        method: 'PATCH',
+        path: PR,
+        body: {
+          status: 'completed',
+          lastMergeSourceCommit: { commitId: 'f'.repeat(40) },
+          completionOptions: { mergeStrategy: 'squash' },
+        },
+        // No override: 7.1 is the client's own default, and it is the version the
+        // documented shape above belongs to.
+        params: {},
+      },
+    ])
+  })
+
+  it('sends the sha it was given rather than one of its own', async () => {
+    const { client, writes } = capture()
+    // The whole guard: ADO compares this to the source branch's real tip and
+    // refuses when they differ, so a value invented here would defeat it.
+    const tip = '4f3c9a1b2d7e5068c1a4b39f7e2d05c8a6b1f394'
+
+    await completePullRequest(client, REF, tip)
+
+    expect((writes[0].body as { lastMergeSourceCommit: unknown }).lastMergeSourceCommit).toEqual({
+      commitId: tip,
+    })
   })
 })
 
