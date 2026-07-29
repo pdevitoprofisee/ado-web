@@ -307,6 +307,61 @@ describe('ChangedFileDiff', () => {
     expect(call).toHaveBeenCalledTimes(1)
   })
 
+  it('says in words which line the jump landed on', async () => {
+    // The jump is dispatched by the page before this panel has any bytes — the
+    // scroll to the file is what starts the fetch — so the line has to be held
+    // here until there is a model to spend it on. Line 2 is the added line.
+    call.mockResolvedValue(answer(BLOBS))
+    draw(panel({ jumpTo: 2 }))
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Jumped to line 2.'))
+  })
+
+  it('says plainly when the line is not in this diff', async () => {
+    // Half the feature, and not an error: Sonar analyses the merge result while
+    // this shows the iteration (note 6), so a finding on a line the diff does not
+    // contain is routine. Landing on the file and saying nothing would read as
+    // having landed on the wrong line.
+    call.mockResolvedValue(answer(BLOBS))
+    draw(panel({ jumpTo: 214 }))
+
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('Line 214 is not in this diff.'),
+    )
+  })
+
+  it('opens the collapsed context a line was hiding in', async () => {
+    // A hundred lines with one change near the bottom, so line 5 is inside the
+    // leading gap and has no row at all until the gap goes. Without the reveal the
+    // scroll lands on the nearest row that does exist and says it succeeded.
+    const lines = Array.from({ length: 100 }, (_, at) => `line ${at + 1}`)
+    const after = lines.slice()
+    after[89] = 'line 90 changed'
+    call.mockResolvedValue(
+      answer({
+        path: FILE.path,
+        before: { kind: 'text', lines, bytes: 800, noFinalNewline: false },
+        after: { kind: 'text', lines: after, bytes: 808, noFinalNewline: false },
+        renamedOnly: false,
+      }),
+    )
+    draw(panel({ jumpTo: 5 }))
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Jumped to line 5.'))
+    expect(screen.queryByRole('button', { name: 'Expand 86 hidden lines' })).toBeNull()
+  })
+
+  it('keeps the live region there before there is anything to say in it', async () => {
+    // A live region inserted into the page together with its own text is a region
+    // several screen readers never announce, and this sentence is the whole of what
+    // they get on arrival.
+    call.mockResolvedValue(answer(BLOBS))
+    draw(panel())
+
+    await waitFor(() => expect(screen.getByRole('region', { name: FILE.path })).toBeInTheDocument())
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+  })
+
   it('marks a file viewed without its bytes ever arriving', async () => {
     // Progress has to be recordable from the list, which means the checkbox
     // works on a file whose bytes were never fetched.

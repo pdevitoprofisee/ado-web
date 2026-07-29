@@ -1528,6 +1528,7 @@ function ChangedFiles({
   hideDone,
   onHideDoneChange,
   iterationContext,
+  jump,
 }: {
   /** The selected view's files — the combined diff, or one update's. */
   changes: ChangeSet
@@ -1562,6 +1563,12 @@ function ChangedFiles({
   onHideDoneChange: (hideDone: boolean) => void
   /** Which iterations a thread started on this diff is written against. */
   iterationContext: IterationContext | null
+  /**
+   * Where a click on the details tab is sending the reader, while it is still
+   * being answered. Only the line half is passed on: the file half is the page's
+   * own scroll, which has already happened by the time a panel sees this.
+   */
+  jump: SonarJump | null
 }) {
   const nodes = useMemo(() => buildFileTree(changes.files), [changes.files])
 
@@ -1645,6 +1652,11 @@ function ChangedFiles({
                 threadActions={threadActions}
                 hideDone={hideDone}
                 iterationContext={iterationContext}
+                // Matched on the path here rather than compared inside each panel,
+                // so 293 of the 294 are handed the `null` that means "not you".
+                // `line` is null on a finding about the file as a whole, and that is
+                // the same `null`: the page's scroll was the whole of that jump.
+                jumpTo={jump !== null && jump.path === file.path ? jump.line : null}
               />
             </li>
           ))}
@@ -1955,7 +1967,9 @@ export function PullRequestDetailView({
 
     scrollToFinding(jump)
     // Once, not on every later render: a stale jump would drag the page back
-    // the next time this file list changed underneath it.
+    // the next time this file list changed underneath it. The line half of the
+    // jump outlives this — the panel it names has taken a copy by now and is
+    // waiting on its own bytes to act on it (see `ChangedFileDiff`).
     setJump(null)
   }, [jump, active, changes.pending])
 
@@ -2214,6 +2228,7 @@ export function PullRequestDetailView({
               hideDone={hideDone}
               onHideDoneChange={setHideDone}
               iterationContext={iterationContext}
+              jump={jump}
             />
           )}
         </div>

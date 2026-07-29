@@ -121,11 +121,12 @@ function Chip({ children, tone }: { children: ReactNode; tone?: string }) {
 /**
  * Where a click on a finding wants the page to go.
  *
- * `line` is carried even though the default handler cannot use it: the anchor
- * scheme is per-file, and a line-level anchor would be a promise this panel
- * cannot keep. Sonar's line numbers drift from the diff when the branch was
- * pushed to after analysis (note 6), so the honest destination is the file
- * panel, with the line printed on the row that got you there.
+ * `line` is carried and `scrollToFinding` below still cannot use it: the anchor
+ * scheme is per-file, and a row in a virtualized list is not in the DOM to be
+ * found by id. T-038 spends the line where it can be spent — the diff panel owns
+ * the rows, so it is what scrolls to one and says when there is none (note 6:
+ * Sonar's numbers drift from the diff when the branch was pushed to after
+ * analysis). What arrives here is the request, not the destination.
  */
 export interface SonarJump {
   readonly path: string

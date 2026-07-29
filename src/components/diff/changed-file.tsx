@@ -8,6 +8,8 @@ import { diffFile } from '@/lib/diff'
 import {
   buildRows,
   expandGap,
+  jumpToLine,
+  rowIndexForLine,
   setComposer,
   setHideDone,
   setLayout,
@@ -17,6 +19,7 @@ import { fileAnchor } from '@/lib/file-anchor'
 import { sharedHighlighter } from '@/lib/highlight/shared'
 import { useNearViewport } from '@/lib/near-viewport'
 import { useTheme } from '@/lib/theme'
+import { cn } from '@/lib/utils'
 
 import type { ThreadActions } from '@/components/comments/thread-actions'
 import type { RowModel } from '@/lib/diff-rows'
@@ -54,6 +57,7 @@ export function ChangedFileDiff({
   threadActions,
   hideDone = false,
   iterationContext = null,
+  jumpTo = null,
 }: {
   projectId: string
   repositoryId: string
@@ -71,6 +75,11 @@ export function ChangedFileDiff({
   hideDone?: boolean
   /** Which iterations a thread started here is written against. */
   iterationContext?: IterationContext | null
+  /**
+   * A right-side line something off this diff is sending the reader to — a Sonar
+   * finding, today. `null` on every file that is not the one being jumped into.
+   */
+  jumpTo?: number | null
 }) {
   // Monotonic on purpose — "has been opened", not "is open". Closing a file
   // should not throw away what it cost two calls to fetch, and the query cache
@@ -130,6 +139,40 @@ export function ChangedFileDiff({
     if (next !== model) setModel(next)
   }
 
+  // The line a jump asked for, held until this file is in a position to answer it.
+  // The page cannot hold it: it clears its own jump as soon as the list has been
+  // scrolled to this panel, and at that moment the two blobs this panel needs are
+  // usually still in flight — `enabled: opened || near` means the scroll is what
+  // *starts* the fetch. So the request waits here for the model it belongs to.
+  const [wanted, setWanted] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (jumpTo !== null) setWanted(jumpTo)
+  }, [jumpTo])
+
+  useEffect(() => {
+    if (wanted === null || model === null) return
+
+    // Reveals the gap first if one is hiding the line — see `jumpToLine`. Cleared
+    // in the same breath: this is a request, answered once, and `model.jumped` is
+    // where the answer lives from here on.
+    setModel(jumpToLine(model, wanted))
+    setWanted(null)
+  }, [wanted, model])
+
+  // What the jump came to. Both outcomes are said in words, because the second one
+  // is not an error: Sonar analyses the merge result and this diff shows the
+  // iteration (note 6), so a finding whose line this file does not contain is
+  // ordinary, and landing on the file with nothing said would read as landing on
+  // the wrong line. Derived from the model rather than remembered, so the poll
+  // cannot erase it and new bytes drop it with the mark it describes.
+  const landing =
+    model === null || model.jumped === null
+      ? null
+      : rowIndexForLine(model.rows, model.jumped) === -1
+        ? `Line ${model.jumped} is not in this diff.`
+        : `Jumped to line ${model.jumped}.`
+
   const [tokens, setTokens] = useState<{
     before: HighlightedLines | null
     after: HighlightedLines | null
@@ -178,6 +221,18 @@ export function ChangedFileDiff({
     // The observer needs an element, and `scroll-mt` is what keeps the tree's
     // jump from parking a file's header flush against the top of the window.
     <div ref={wrapper} id={fileAnchor(file.path)} className="scroll-mt-2">
+      {/* Above the panel and inside the anchor, which is the top of wherever the
+          jump just put the page — so it is the first thing there is to read on
+          arrival, whether the file below it is open or was left marked read and
+          shut. Mounted empty rather than conditionally: a live region inserted
+          together with its own text is a region several screen readers never
+          announce, and this sentence is the whole of what they get. */}
+      <p
+        role="status"
+        className={cn('text-muted-foreground text-xs', landing !== null && 'px-2 pb-1')}
+      >
+        {landing}
+      </p>
       <FileDiffPanel
         blobs={
           blobs ?? {
@@ -259,6 +314,7 @@ export function ChangedFileDiff({
         threadActions={threadActions}
         hideDone={hideDone}
         iterationContext={iterationContext}
+        jumped={model?.jumped ?? null}
       />
     </div>
   )
