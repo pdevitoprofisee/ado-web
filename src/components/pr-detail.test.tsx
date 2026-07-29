@@ -1560,6 +1560,20 @@ describe('PullRequestDetailView conversation', () => {
     ...over,
   })
 
+  /** A colleague's comment on a line of the one changed file below. */
+  const onLine12 = (): Thread =>
+    thread({
+      id: 101,
+      context: {
+        filePath: '/src/log.ts',
+        rightStart: { line: 12, offset: 1 },
+        rightEnd: { line: 12, offset: 30 },
+        leftStart: null,
+        leftEnd: null,
+      },
+      comments: [comment({ id: 2, content: 'this loop is quadratic' })],
+    })
+
   const said = (threads: readonly Thread[], over: Partial<ThreadsResult> = {}): ThreadsResult => ({
     threads: {
       threads,
@@ -1616,28 +1630,27 @@ describe('PullRequestDetailView conversation', () => {
     expect(screen.getByText('Naveen Angali')).toBeVisible()
   })
 
-  it('counts the threads that belong on a line instead of repeating them here', async () => {
-    vi.mocked(threadsQuery).mockResolvedValue(
-      said([
-        thread(),
-        thread({
-          id: 101,
-          context: {
-            filePath: '/src/log.ts',
-            rightStart: { line: 12, offset: 1 },
-            rightEnd: { line: 12, offset: 30 },
-            leftStart: null,
-            leftEnd: null,
-          },
-          comments: [comment({ id: 2, content: 'this loop is quadratic' })],
-        }),
-      ]),
-    )
+  it('renders the threads that belong on a line, and not a count of them', async () => {
+    vi.mocked(threadsQuery).mockResolvedValue(said([thread(), onLine12()]))
     render(<PullRequestDetailView pr={detail({ files })} />)
 
-    expect(await screen.findByText('1 more thread on lines in the diff.')).toBeVisible()
-    // The place to read a comment about line 12 is line 12.
-    expect(screen.queryByText('this loop is quadratic')).toBeNull()
+    // The bug a count cost us: live, every comment a colleague had left was
+    // anchored to a line and every one of the reviewer's own was on the pull
+    // request, so "1 more thread on lines in the diff" read as "you are the only
+    // person who has ever commented here".
+    expect(await screen.findByText('this loop is quadratic')).toBeVisible()
+    expect(screen.getByRole('button', { name: '/src/log.ts:12' })).toBeVisible()
+  })
+
+  it('sends a click on an anchored thread to its file in the diff', async () => {
+    vi.mocked(threadsQuery).mockResolvedValue(said([onLine12()]))
+    render(<PullRequestDetailView pr={detail({ files })} />)
+
+    await userEvent.click(await screen.findByRole('button', { name: '/src/log.ts:12' }))
+
+    // Rendered here so it is not missed; still read on the line it is about,
+    // which is the crossing `SonarPanel`'s findings already make.
+    expect(await screen.findByRole('list', { name: 'Changed files' })).toBeVisible()
   })
 
   it('says what it left out rather than dropping it silently', async () => {

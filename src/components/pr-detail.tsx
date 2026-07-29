@@ -48,7 +48,7 @@ import { fileViewedKey } from '@/lib/viewed-key'
 import type { ThreadActions } from './comments/thread-actions'
 import type { SonarJump } from './sonar/panel'
 import type { ChangeView } from '@/lib/changes'
-import type { FileThreads, IterationContext } from '@/lib/comment-contract'
+import type { FileThreads, IterationContext, Thread } from '@/lib/comment-contract'
 import type { Conversation } from '@/lib/conversation'
 import type { DiffLayout } from '@/lib/diff-contract'
 import type { SonarReportResult } from '@/server/sonar-fn'
@@ -1451,22 +1451,53 @@ function ChangedFiles({
 }
 
 /**
- * The conversation that is about the pull request rather than about a line.
+ * Where a thread hangs, as one string: `path:line`, or the path when ADO gave a
+ * file and no position — which is its own way of commenting on a whole file.
  *
- * It needs somewhere of its own because nothing else can hold it: `fileThreads`
- * keys on a path and these threads have none, and 44 of the 56 threads T-022
- * sampled were exactly this. A page that only rendered comments inside diff rows
- * would be hiding most of what was said.
+ * `leftStart` is read as a fallback because a comment on a deleted line has only
+ * that, and printing the file with no line at all would lose the one fact the
+ * row is for.
+ */
+function anchorOf(thread: Thread): { path: string; line: number | null } | null {
+  const context = thread.context
+  if (context === null) return null
+
+  return {
+    path: context.filePath,
+    line: context.rightStart?.line ?? context.leftStart?.line ?? null,
+  }
+}
+
+/**
+ * Everything a person said about this pull request — on it, and on its lines.
+ *
+ * The PR-level half needs somewhere of its own because nothing else can hold it:
+ * `fileThreads` keys on a path and those threads have none, and 44 of the 56
+ * threads T-022 sampled were exactly this.
+ *
+ * **The anchored half is here too, and that is a fix rather than a duplication.**
+ * This section used to count them — "11 more threads on lines in the diff" — on
+ * the reasoning that the place to read a comment about line 40 is line 40. Live,
+ * that reasoning cost the section its whole point: on the sampled org every
+ * comment a colleague had left was anchored to a line and every one of the
+ * reviewer's own was on the pull request, so the page read as "you are the only
+ * person who has commented here". A conversation you have to go hunting for
+ * across a tab and a collapsed file panel is one you do not know exists. So each
+ * anchored thread is rendered here under a `path:line` that jumps to it, and line
+ * 40 is still where it is read in full.
  */
 function PullRequestConversation({
   conversation,
   hideDone,
   onHideDoneChange,
+  onJump,
 }: {
   conversation: Conversation
   /** The page's flag, shared with the diff — one answer to "am I hiding resolved threads". */
   hideDone: boolean
   onHideDoneChange: (hideDone: boolean) => void
+  /** Where an anchored thread's `path:line` sends the page. */
+  onJump: (jump: { path: string; line: number | null }) => void
 }) {
   const [composing, setComposing] = useState(false)
 
@@ -1481,13 +1512,10 @@ function PullRequestConversation({
     : { viewerId: conversation.actions.viewerId }
   const onNewThread = actions.onNewThread
 
-  const shown = hideDone
-    ? onPullRequest.filter((thread) => thread.resolution === 'open')
-    : onPullRequest
+  const open = (thread: Thread) => !hideDone || thread.resolution === 'open'
 
-  // Everything else is anchored, so it is on the other tab. Counted rather than
-  // repeated here: the place to read a comment about line 40 is line 40.
-  const onFiles = threads.length - onPullRequest.length
+  const shown = onPullRequest.filter(open)
+  const shownAnchored = threads.filter((thread) => thread.context !== null && open(thread))
 
   return (
     <div className="flex w-full flex-col gap-2">
@@ -1495,35 +1523,55 @@ function PullRequestConversation({
           offered here because this is the other place threads are rendered and the
           two tabs are never on screen together. Only when there is something to
           hide: a button that does nothing visible is a button that reads as broken. */}
-      {onPullRequest.some((thread) => thread.resolution !== 'open') ? (
+      {threads.some((thread) => thread.resolution !== 'open') ? (
         <div className="text-muted-foreground flex justify-end text-xs">
           <HideDoneToggle hideDone={hideDone} onHideDoneChange={onHideDoneChange} />
         </div>
       ) : null}
 
-      {shown.length === 0 ? (
+      {shown.length + shownAnchored.length === 0 ? (
         <Empty>
-          {onPullRequest.length === 0
+          {threads.length === 0
             ? 'Nothing has been said about this pull request yet.'
             : 'Every thread on this pull request is resolved.'}
         </Empty>
-      ) : (
-        // One card per thread and not one for the lot: they are not replies to
-        // each other, and stacking them into a single card would say they were.
-        shown.map((thread) => (
-          <ThreadCard key={thread.id} threads={[thread]} actions={actions} className="pl-0" />
-        ))
-      )}
+      ) : null}
 
-      {/* Both said out loud, because both are threads that exist in ADO and are
-          not on this page. "No comments" while eleven sit in the diff, or while
-          Sonar has written thirty, is the wrong answer to "has anyone looked at
-          this". */}
-      {onFiles === 0 ? null : (
-        <p className="text-muted-foreground text-xs">
-          {onFiles} more {onFiles === 1 ? 'thread' : 'threads'} on lines in the diff.
-        </p>
-      )}
+      {/* One card per thread and not one for the lot: they are not replies to
+          each other, and stacking them into a single card would say they were. */}
+      {shown.map((thread) => (
+        <ThreadCard key={thread.id} threads={[thread]} actions={actions} className="pl-0" />
+      ))}
+
+      {shownAnchored.map((thread) => {
+        const anchor = anchorOf(thread)
+
+        return (
+          <div key={thread.id} className="flex w-full flex-col">
+            {/* Mono, because a path and a line number are figures rather than
+                prose — the same reading Sonar's occurrence rows are set in. The
+                click crosses a tab, so it is a button and not a link: the router
+                owns the URL and a `#file…` hash would survive into the back
+                button as state nobody meant to keep (see `fileAnchor`). */}
+            {anchor === null ? null : (
+              <button
+                type="button"
+                onClick={() => onJump(anchor)}
+                title={anchor.line === null ? anchor.path : `${anchor.path}:${anchor.line}`}
+                className="text-muted-foreground hover:text-primary max-w-full self-start truncate rounded-sm font-mono text-2xs underline decoration-[1.5px] underline-offset-[3px]"
+              >
+                {anchor.path}
+                {anchor.line === null ? null : `:${anchor.line}`}
+              </button>
+            )}
+            <ThreadCard threads={[thread]} actions={actions} className="pl-0" />
+          </div>
+        )
+      })}
+
+      {/* Said out loud, because these are threads that exist in ADO and are not
+          on this page. "No comments" while Sonar has written thirty is the wrong
+          answer to "has anyone looked at this". */}
       {conversation.systemCount === 0 && conversation.botCount === 0 ? null : (
         <p className="text-muted-foreground text-xs">
           {[
@@ -1685,6 +1733,13 @@ export function PullRequestDetailView({
   // list has to arrive, and neither has happened by the time the click returns.
   const [jump, setJump] = useState<SonarJump | null>(null)
 
+  // The same crossing for both things on the details tab that point at a line: a
+  // Sonar finding and, now, a thread anchored to one.
+  const goToFile = (next: SonarJump) => {
+    setJump(next)
+    onTabChange('combined')
+  }
+
   useEffect(() => {
     if (jump === null || active !== 'combined' || changes.pending) return
 
@@ -1821,10 +1876,7 @@ export function PullRequestDetailView({
               // ADO's own spelling, leading slash and all, on both sides — the
               // server normalised the Sonar half to it, so this is set membership.
               changedPaths={new Set(pr.files.files.map((file) => file.path))}
-              onJump={(next) => {
-                setJump(next)
-                onTabChange('combined')
-              }}
+              onJump={goToFile}
             />
           )}
 
@@ -1838,7 +1890,10 @@ export function PullRequestDetailView({
               review with it. */}
           <Section
             title="Conversation"
-            count={conversation.error !== null ? undefined : conversation.onPullRequest.length}
+            // Every human thread, not just the PR-level ones: the section renders
+            // both now, and a count that disagreed with the list under it would be
+            // the same "nobody has commented" the list itself used to tell.
+            count={conversation.error !== null ? undefined : conversation.threads.length}
           >
             {conversation.error !== null ? (
               <Failed>
@@ -1851,6 +1906,7 @@ export function PullRequestDetailView({
                 conversation={conversation}
                 hideDone={hideDone}
                 onHideDoneChange={setHideDone}
+                onJump={goToFile}
               />
             )}
           </Section>
