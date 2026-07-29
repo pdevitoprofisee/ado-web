@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
 import { diffFile } from './diff'
-import { buildRows, expandGap, setComposer, setHideDone, setLayout, setThreads } from './diff-rows'
+import {
+  buildRows,
+  expandGap,
+  jumpToLine,
+  rowIndexForLine,
+  setComposer,
+  setHideDone,
+  setLayout,
+  setThreads,
+} from './diff-rows'
 import type { FileThreads, Thread, ThreadContext } from './comment-contract'
 import type { DiffLine, DiffRow } from './diff-contract'
 
@@ -581,5 +590,116 @@ describe('setComposer', () => {
     expect(unchanged.rows).toEqual([])
     // The anchor is still recorded, so nothing silently disagrees about state.
     expect(unchanged.composer).toEqual(onLine(20))
+  })
+})
+
+/** The key of the row a jump would land on, or nothing — the miss test, spelled out. */
+const landing = (rows: readonly DiffRow[], line: number) => {
+  const at = rowIndexForLine(rows, line)
+  return at === -1 ? undefined : rows[at].key
+}
+
+describe('jumpToLine', () => {
+  it('records the line and leaves a row to find, in either layout', () => {
+    // Layout does not enter into it: the set of right-side lines is the same on
+    // both sides of the switch, so one lookup serves the pair.
+    for (const layout of ['unified', 'split'] as const) {
+      const model = jumpToLine(buildRows(DIFF, AFTER, layout), 21)
+
+      expect(model.jumped).toBe(21)
+      expect(landing(model.rows, 21)).toBe('-/21')
+    }
+  })
+
+  it('leaves the rows alone when the line is already on one of them', () => {
+    // The same array back, not a reprojection of it: `jumped` is the one input no
+    // row is derived from, and handing the view 5,000 new rows costs it a measure
+    // of every line it can see.
+    const plain = buildRows(DIFF, AFTER, 'unified')
+
+    expect(jumpToLine(plain, 20).rows).toBe(plain.rows)
+  })
+
+  it('opens the gap that was hiding the line, rather than landing near it', () => {
+    // Line 5 is inside the leading gap, and a line inside a gap has no row at all
+    // — so a scroll asked for before the reveal goes to the nearest row that does
+    // exist and looks for all the world like a successful jump.
+    const plain = buildRows(DIFF, AFTER, 'unified')
+
+    expect(landing(plain.rows, 5)).toBeUndefined()
+
+    const model = jumpToLine(plain, 5)
+
+    expect(landing(model.rows, 5)).toBe('5/5')
+    // The whole gap, the way the gutter expander's "all" does it.
+    expect(keys(gaps(model.rows))).not.toContain('~1,1')
+  })
+
+  it('asks the right side, because the line came from Sonar', () => {
+    // The two-line insertion puts the numbering out of step: `line 50 changed` is
+    // old 50 and new 52, and new 50 is a context line further up. A lookup that
+    // matched either side would send a finding on line 50 two lines wrong.
+    const { rows } = buildRows(DIFF, AFTER, 'split')
+
+    expect(landing(rows, 52)).toBe('50/52')
+    expect(landing(rows, 50)).toBe('48/50')
+  })
+
+  it('records a line the diff does not contain, which is the whole of the notice', () => {
+    // Sonar analyses the merge result and this diff shows the iteration (note 6),
+    // so a finding past the end of the file is routine, not a fault. The line is
+    // kept either way — the view needs it to be able to name it.
+    const model = jumpToLine(buildRows(DIFF, AFTER, 'unified'), 103)
+
+    expect(model.jumped).toBe(103)
+    expect(rowIndexForLine(model.rows, 103)).toBe(-1)
+  })
+
+  it('has nowhere to go on a file with no rows', () => {
+    // A binary file, or one the diff gave up on. Still a miss and not a crash.
+    const unchanged = jumpToLine(buildRows(diffFile(BEFORE, BEFORE), BEFORE, 'unified'), 20)
+
+    expect(unchanged.rows).toEqual([])
+    expect(unchanged.jumped).toBe(20)
+    expect(rowIndexForLine(unchanged.rows, 20)).toBe(-1)
+  })
+
+  it('rebuilds nothing when the same line is asked for twice', () => {
+    // Clicking the same finding again, or the effect running twice: identity is
+    // decided on the number, so neither costs a projection.
+    const jumped = jumpToLine(buildRows(DIFF, AFTER, 'unified'), 20)
+
+    expect(jumpToLine(jumped, 20)).toBe(jumped)
+
+    const plain = buildRows(DIFF, AFTER, 'unified')
+
+    expect(jumpToLine(plain, null)).toBe(plain)
+  })
+
+  it('clears on null and keeps the reveal the jump paid for', () => {
+    // Reaching a line in collapsed context expanded that context, and taking the
+    // mark away is not a reason to shut it again.
+    const cleared = jumpToLine(jumpToLine(buildRows(DIFF, AFTER, 'unified'), 5), null)
+
+    expect(cleared.jumped).toBeNull()
+    expect(landing(cleared.rows, 5)).toBe('5/5')
+  })
+
+  it('survives the poll, a layout switch and a hide-done toggle', () => {
+    // The reason it is a model input rather than component state: the rows are
+    // rebuilt from their inputs every thirty seconds, and a mark outside those
+    // inputs is rubbed out by the next tick.
+    const jumped = jumpToLine(buildRows(DIFF, AFTER, 'unified'), 21)
+    const threads = fileThreads({ 20: [thread(7)], 24: [thread(9, 'done')] })
+    const later = setHideDone(setLayout(setThreads(jumped, threads), 'split'), true)
+
+    expect(later.jumped).toBe(21)
+    expect(landing(later.rows, 21)).toBe('-/21')
+  })
+
+  it('is dropped by new bytes for the file, because 21 is not the same 21', () => {
+    // `buildRows` takes no jumped line: the next iteration renumbers the file, and
+    // a mark left on line 21 would then be drawn on whatever moved into it.
+    expect(buildRows(DIFF, AFTER, 'unified').jumped).toBeNull()
   })
 })

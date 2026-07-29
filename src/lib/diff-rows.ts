@@ -22,12 +22,18 @@ import { formatHunkHeader } from './diff'
 // thread that still occupies a row is a row the virtualizer still measures, and
 // a measured row is the expensive kind.
 //
-// T-037 added the last one, and it is the only input that is not about the file.
+// T-037 added the sixth, and it is the only input that is not about the file.
 // An open composer looks like local UI state and cannot be kept as any: the rows
 // are rebuilt from these inputs every time the thirty-second poll answers, so
 // anything outside them is erased by the next tick — with somebody's draft in it.
 // A sixth input is what makes the draft survive a poll, and it costs the same
 // identity-return every other input already has.
+//
+// T-038 added the seventh — the line a jump landed on — for that same reason and
+// one more: new bytes for the file have to *drop* it. A mark recorded against the
+// iteration you were reading points at different code in the next one, and
+// `buildRows` is the one door those bytes come through. It is also the only input
+// no row is derived from; see `jumpToLine`.
 
 /** Lines revealed by one click, matching what GitHub's expander shows. */
 export const GAP_EXPAND_LINES = 20
@@ -62,6 +68,15 @@ export interface RowModel {
    * of a rule somebody has to remember to enforce.
    */
   readonly composer: ThreadContext | null
+  /**
+   * The right-side line a jump landed on, or `null` when nothing has jumped here.
+   *
+   * The line that was *asked for*, not one that was found. Sonar's numbers drift
+   * from the diff (note 6), so a `jumped` line with no row is the ordinary second
+   * outcome of a jump and something the caller has to be able to say out loud —
+   * `rowIndexForLine` answering `-1` is the whole of that test.
+   */
+  readonly jumped: number | null
 }
 
 export function buildRows(
@@ -71,10 +86,11 @@ export function buildRows(
   threads: FileThreads | null = null,
   hideDone: boolean = false,
 ): RowModel {
-  // No composer parameter: a file's rows are never built with a draft already in
-  // them. New bytes for this file rebuild through here, which is also what closes
-  // a composer anchored to a line that may no longer be the same line.
-  return rebuild(diff, lines, layout, [], threads, hideDone, null)
+  // No composer parameter and no jumped line: a file's rows are never built with a
+  // draft already in them, or with a mark. New bytes for this file rebuild through
+  // here, which is also what closes a composer anchored to a line that may no
+  // longer be the same line — and drops a mark left on one.
+  return rebuild(diff, lines, layout, [], threads, hideDone, null, null)
 }
 
 /** The same diff and the same expansions, projected the other way. */
@@ -88,6 +104,7 @@ export function setLayout(model: RowModel, layout: DiffLayout): RowModel {
     model.threads,
     model.hideDone,
     model.composer,
+    model.jumped,
   )
 }
 
@@ -109,6 +126,7 @@ export function setThreads(model: RowModel, threads: FileThreads | null): RowMod
     threads,
     model.hideDone,
     model.composer,
+    model.jumped,
   )
 }
 
@@ -123,6 +141,7 @@ export function setHideDone(model: RowModel, hideDone: boolean): RowModel {
     model.threads,
     hideDone,
     model.composer,
+    model.jumped,
   )
 }
 
@@ -154,6 +173,7 @@ export function setComposer(model: RowModel, context: ThreadContext | null): Row
     model.threads,
     model.hideDone,
     next,
+    model.jumped,
   )
 }
 
@@ -191,7 +211,74 @@ export function expandGap(
     model.threads,
     model.hideDone,
     model.composer,
+    model.jumped,
   )
+}
+
+/**
+ * Mark the row a jump landed on, revealing it first if a gap is hiding it.
+ *
+ * One transition and not two, because a line inside collapsed context has no row
+ * at all: expanding the gap that hides it is part of arriving, and a caller left
+ * to remember that would find its jump landing on the nearest row that does
+ * exist, silently and some hundreds of lines away.
+ *
+ * The whole gap goes, which is what the gutter's own expander already does (see
+ * `changed-file.tsx`): the reveal here is a means of reaching one line, and
+ * uncollapsing 20 of the 300 lines it might be inside is landing somewhere else
+ * again.
+ *
+ * The line is recorded whether or not this diff contains it. That is not a lenient
+ * fallback — a finding on a line the iteration does not have is the routine second
+ * outcome (note 6), and the caller cannot say "line 214 is not in this diff" about
+ * a number the model refused to keep.
+ */
+export function jumpToLine(model: RowModel, line: number | null): RowModel {
+  if (line === null) return model.jumped === null ? model : { ...model, jumped: null }
+
+  const gap = model.rows.find(
+    (row) => row.kind === 'gap' && row.newStart <= line && line < row.newStart + row.hiddenLines,
+  )
+
+  if (gap === undefined || gap.kind !== 'gap') {
+    if (model.jumped === line) return model
+
+    // A copy rather than a `rebuild`, and the only place in this module that does
+    // that: `jumped` is the one input no row is derived from, so reprojecting the
+    // file would walk every line of it to produce an identical row array — and
+    // hand the view a *new* one, which is what makes it re-measure the widest line
+    // in a 5,000-line file for the sake of a mark on one of them.
+    return { ...model, jumped: line }
+  }
+
+  return rebuild(
+    model.diff,
+    model.lines,
+    model.layout,
+    union(model.revealed, { start: gap.newStart, end: gap.newStart + gap.hiddenLines }),
+    model.threads,
+    model.hideDone,
+    model.composer,
+    line,
+  )
+}
+
+/**
+ * Which row shows this right-side line, or `-1` when none does.
+ *
+ * Right-side only, and that is the whole subtlety: every anchor this app receives
+ * is written against the after side — Sonar's `textRange.startLine`,
+ * `FileThreads.byRightLine` — and in side-by-side one row carries both sides, so a
+ * lookup that matched either would answer with a row whose left number happens to
+ * collide.
+ *
+ * A scan, not an index. Indices move under every insertion `attach` makes, so a map
+ * built once would need rebuilding as often as it were read; and a jump is one
+ * click, where a few thousand comparisons cost nothing beside the render they are
+ * about to cause. Takes rows rather than a model because the view has only rows.
+ */
+export function rowIndexForLine(rows: readonly DiffRow[], line: number): number {
+  return rows.findIndex((row) => row.kind === 'line' && row.right?.newLine === line)
 }
 
 function rebuild(
@@ -202,6 +289,7 @@ function rebuild(
   threads: FileThreads | null,
   hideDone: boolean,
   composer: ThreadContext | null,
+  jumped: number | null,
 ): RowModel {
   return {
     rows: attach(project(flatten(diff, lines, revealed), layout), threads, hideDone, composer),
@@ -212,6 +300,7 @@ function rebuild(
     threads,
     hideDone,
     composer,
+    jumped,
   }
 }
 
