@@ -24,6 +24,8 @@ const REPOSITORY = '22222222-2222-2222-2222-222222222222'
 const ME = 'aaaaaaaa-1111-2222-3333-444444444444'
 const COLLEAGUE = 'dddddddd-1111-2222-3333-444444444444'
 const CONTRIBUTORS = 'cc86398c-49fe-4239-9765-4a4da7535e01'
+/** Where `_links.avatar.href` points, which is not where `imageUrl` does. */
+const AVATARS = 'https://dev.azure.com/profisee/_apis/GraphProfile/MemberAvatars'
 
 const REF: PullRequestRef = { projectId: PROJECT, repositoryId: REPOSITORY, id: 24698 }
 
@@ -309,8 +311,58 @@ describe('reviewers', () => {
 
     expect(pr.reviewers[0].vote).toBe(10)
     expect(pr.reviewers[1].votedFor).toEqual([
-      { id: CONTRIBUTORS, displayName: '[Products]\\Contributors' },
+      { id: CONTRIBUTORS, displayName: '[Products]\\Contributors', avatarHref: null },
     ])
+  })
+
+  it('takes the avatar from the link and not from imageUrl', async () => {
+    // T-030 counted `descriptor` on 0 of 30 reviewers and `_links.avatar.href`
+    // ending in one on 30 of 30, so the link is the only place a browser-loadable
+    // avatar can be recovered from. `imageUrl` is beside it on every one of the 30
+    // and is the `identityImage` form, which 302s to a sign-in page — carrying it
+    // would be carrying a broken image.
+    const pr = await load({
+      '/pullRequests/24698': detail({
+        reviewers: [
+          {
+            id: COLLEAGUE,
+            displayName: 'Naveen Angali',
+            vote: 10,
+            imageUrl: `https://dev.azure.com/profisee/_api/_common/identityImage?id=${COLLEAGUE}`,
+            _links: { avatar: { href: `${AVATARS}/aad.OWY0NTIwYTMtMzc` } },
+          },
+          { id: CONTRIBUTORS, displayName: '[Products]\\Contributors', isContainer: true },
+        ],
+      }),
+    }).loading
+
+    expect(pr.reviewers[0].avatarHref).toBe(`${AVATARS}/aad.OWY0NTIwYTMtMzc`)
+    // Nothing invented for the one that came without a link.
+    expect(pr.reviewers[1].avatarHref).toBeNull()
+  })
+
+  it('takes the authors avatar from the same link', async () => {
+    const pr = await load({
+      '/pullRequests/24698': detail({
+        createdBy: {
+          id: ME,
+          displayName: 'Paul DeVito',
+          imageUrl: `https://dev.azure.com/profisee/_api/_common/identityImage?id=${ME}`,
+          _links: { avatar: { href: `${AVATARS}/aad.NTQ0MzZiMGEtNzQ` } },
+        },
+      }),
+    }).loading
+
+    expect(pr.author.avatarHref).toBe(`${AVATARS}/aad.NTQ0MzZiMGEtNzQ`)
+  })
+
+  it('leaves the author without an avatar when ADO sends no link', async () => {
+    // The one thing T-030 did not measure is `createdBy._links` — it read
+    // `createdBy.imageUrl` on all 99 and nothing else — so absence is the case
+    // this has to survive, and initials are what it survives into.
+    const pr = await load({ '/pullRequests/24698': detail() }).loading
+
+    expect(pr.author.avatarHref).toBeNull()
   })
 })
 

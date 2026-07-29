@@ -213,7 +213,7 @@ const detail = (over: Partial<PullRequestDetail> = {}): PullRequestDetail => ({
   id: 24698,
   title: 'move the logging sink off the shared account',
   description: 'why this exists',
-  author: { id: 'author-1', displayName: 'Paul DeVito' },
+  author: { id: 'author-1', displayName: 'Paul DeVito', avatarHref: null },
   createdAt: '2026-07-20T00:00:00Z',
   isDraft: false,
   status: 'active',
@@ -256,6 +256,7 @@ const reviewer = (over: Partial<Reviewer> = {}): Reviewer => ({
   isContainer: false,
   isRequired: true,
   votedFor: [],
+  avatarHref: null,
   ...over,
 })
 
@@ -1196,7 +1197,7 @@ describe('PullRequestDetailView reviewers', () => {
   it('attributes a person’s vote to the container it counted toward', () => {
     // `votedFor` hangs off the person and names containers — never the reverse,
     // and the container's own vote is its top-level one.
-    const team = { id: 't1', displayName: '[Products]\\Contributors' }
+    const team = { id: 't1', displayName: '[Products]\\Contributors', avatarHref: null }
     render(
       <PullRequestDetailView
         pr={detail({

@@ -34,6 +34,7 @@ const reviewer = (over: Partial<Reviewer> = {}): Reviewer => ({
   isContainer: false,
   isRequired: true,
   votedFor: [],
+  avatarHref: null,
   ...over,
 })
 

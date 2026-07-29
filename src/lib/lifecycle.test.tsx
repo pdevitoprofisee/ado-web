@@ -33,7 +33,7 @@ const pr = (
   over: Partial<Pick<PullRequestDetail, 'status' | 'author' | 'viewerId'>> = {},
 ): Pick<PullRequestDetail, 'status' | 'author' | 'viewerId'> => ({
   status: 'active',
-  author: { id: ME, displayName: 'Paul DeVito' },
+  author: { id: ME, displayName: 'Paul DeVito', avatarHref: null },
   viewerId: ME,
   ...over,
 })

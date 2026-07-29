@@ -42,6 +42,24 @@ const FILE_LIMIT = 5000
 export interface Person {
   readonly id: string
   readonly displayName: string
+  /**
+   * `_links.avatar.href` — the credential-free avatar URL, or `null` when ADO
+   * sent no `_links` at all.
+   *
+   * **Not `imageUrl`, deliberately.** T-030 measured a PR author's `imageUrl` as
+   * the `_api/_common/identityImage?id={guid}` form on 99 of 99, and that form
+   * answers **302 to the sign-in page** without a credential — in an `<img src>`
+   * from the browser it is a broken image. The `_links` href is the
+   * `MemberAvatars/{descriptor}` form, which answers 200 anonymously. So this is
+   * the field that means "a face the browser can fetch"; `imageUrl` is not
+   * carried, because carrying it would only invite somebody to render it.
+   *
+   * `_links` on a PR's `createdBy` is the one part of this **not** measured by
+   * T-030 — it counted the href on 30 of 30 *reviewers* and never looked at
+   * `createdBy`. Read optimistically for that reason: absent or unrecognised
+   * lands on the monogram, which is where the author was already.
+   */
+  readonly avatarHref: string | null
 }
 
 /** One file the merge cannot reconcile on its own. */
@@ -116,6 +134,19 @@ export interface Reviewer {
    * row, and reading the nested one would report every team as undecided.
    */
   readonly votedFor: readonly Person[]
+  /**
+   * `_links.avatar.href`, which is the only key in a reviewer's `_links` — and
+   * the only place a reviewer's descriptor appears at all.
+   *
+   * A reviewer carries **no `descriptor` field** (0 of 30) and their `imageUrl`
+   * is the credentialed `identityImage` form (30 of 30), but this href ends in a
+   * subject descriptor on **30 of 30** — `vssgp.`×17, `aad.`×13 — and feeding
+   * those back through `identities?subjectDescriptors=` recovered each
+   * reviewer's own `id` on 30 of 30. So the credential-free avatar costs no extra
+   * call: it is already in the payload, one field over from the one that looks
+   * like it.
+   */
+  readonly avatarHref: string | null
 }
 
 /** ADO's evaluation vocabulary. `queued` covers "not yet satisfied", not just builds. */
@@ -343,6 +374,12 @@ export interface PullRequestRef {
 interface AdoIdentity {
   readonly id?: string
   readonly displayName?: string
+  /**
+   * `avatar` is the only key here on a reviewer, and its `href` is the one avatar
+   * URL a browser can load without a credential. `imageUrl` sits alongside on the
+   * wire and is deliberately not modelled — see `Person.avatarHref`.
+   */
+  readonly _links?: { readonly avatar?: { readonly href?: string } }
 }
 
 interface AdoReviewer extends AdoIdentity {
@@ -461,6 +498,7 @@ const branch = (ref: string | undefined): string => ref?.replace(/^refs\/heads\/
 const person = (identity: AdoIdentity | undefined): Person => ({
   id: identity?.id ?? '',
   displayName: identity?.displayName ?? 'unknown',
+  avatarHref: identity?._links?.avatar?.href ?? null,
 })
 
 const plural = (count: number, noun: string): string =>
@@ -1139,6 +1177,7 @@ export async function loadPullRequest(
       isContainer: reviewer.isContainer === true,
       isRequired: reviewer.isRequired === true,
       votedFor: (reviewer.votedFor ?? []).map(person),
+      avatarHref: reviewer._links?.avatar?.href ?? null,
     })),
     policies: policies.data,
     commits: commits.data,
