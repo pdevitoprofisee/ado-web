@@ -16,6 +16,17 @@ the <code>PATH</code> environment variable until it finds a matching executable.
 <h4>Arbitrary command execution</h4>
 <p>If a directory in <code>PATH</code> is writable by an unprivileged user, that user controls the command.</p>`
 
+/**
+ * A `how_to_fix` pair as Sonar writes it: two `<pre>` blocks sharing one
+ * `data-diff-id`, distinguished only by `data-diff-type`. This is the fixture the
+ * pairing feature exists for — without the schema extension the two are byte-for-
+ * byte the same element and the reader cannot tell which one is the answer.
+ */
+const PAIR = `<h4>Noncompliant code example</h4>
+<pre data-diff-id="1" data-diff-type="noncompliant"><code>const child = spawn("ls")</code></pre>
+<h4>Compliant solution</h4>
+<pre data-diff-id="1" data-diff-type="compliant"><code>const child = spawn("/usr/bin/ls")</code></pre>`
+
 const draw = (source: string) => render(<RuleHtml>{source}</RuleHtml>).container
 
 describe('RuleHtml', () => {
@@ -90,6 +101,59 @@ describe('RuleHtml', () => {
     const [neutralised] = Array.from(container.querySelectorAll('a'))
     expect(neutralised).toHaveTextContent('run')
     expect(neutralised.getAttribute('href')).toBeNull()
+  })
+
+  it('draws the compliant half of a pair differently from the non-compliant one', () => {
+    const container = draw(PAIR)
+    const [bad, good] = Array.from(container.querySelectorAll('pre'))
+
+    // The whole point: two blocks that used to be identical are not any more.
+    expect(bad.className).not.toBe(good.className)
+    expect(bad.className).toContain('border-pen-red')
+    expect(good.className).toContain('border-pen-green')
+    // And the pair is still a pair in the DOM — `data-diff-id` is what says which
+    // non-compliant example a compliant solution answers.
+    expect(bad.closest('[data-diff-id]')).toHaveAttribute('data-diff-id', '1')
+    expect(good.closest('[data-diff-id]')).toHaveAttribute('data-diff-id', '1')
+
+    expect(bad).toHaveTextContent('const child = spawn("ls")')
+    expect(good).toHaveTextContent('const child = spawn("/usr/bin/ls")')
+  })
+
+  it('says which half is which in words, not only in a colour', () => {
+    // A reader who cannot separate `pen-green` from `pen-red` still has to be able
+    // to read a rule. Sonar's own headings are `<h4>`s in the content, so these
+    // labels repeat them — deliberately, because the block is what carries the
+    // attribute and a heading three lines up is not a caption on it.
+    draw(PAIR)
+
+    expect(screen.getByText('Compliant solution', { selector: 'p' })).toBeVisible()
+    expect(screen.getByText('Noncompliant code example', { selector: 'p' })).toBeVisible()
+  })
+
+  it('leaves a block with no diff type, or an unmeasured one, drawn as it was', () => {
+    const container = draw(
+      `<pre data-diff-type="something-new"><code>a</code></pre><pre><code>b</code></pre>`,
+    )
+    const [unknown, plain] = Array.from(container.querySelectorAll('pre'))
+
+    expect(unknown.className).toBe(plain.className)
+    expect(unknown.className).toContain('border-border')
+    expect(screen.queryByText('Compliant solution')).toBeNull()
+  })
+
+  it('lets those two attributes through and nothing else', () => {
+    // The extension is narrow by name, so the neighbouring attribute a widened
+    // schema would have admitted is still gone, and `<p>` did not gain anything.
+    const container = draw(
+      `<pre data-diff-type="compliant" data-diff-other="x" id="block"><code>a</code></pre>` +
+        `<p data-diff-type="compliant">prose</p>`,
+    )
+
+    const pre = container.querySelector('pre')
+    expect(pre?.getAttribute('data-diff-other')).toBeNull()
+    expect(pre?.getAttribute('id')).toBeNull()
+    expect(container.querySelector('p[data-diff-type]')).toBeNull()
   })
 
   it('sends a real link to a new tab, the way the description renderer does', () => {

@@ -1,6 +1,10 @@
+import { Alert02Icon, Tick02Icon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 import ReactMarkdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
+
+import { cn } from '@/lib/utils'
 
 import type { Components } from 'react-markdown'
 import type { Options as SanitizeSchema } from 'rehype-sanitize'
@@ -36,22 +40,33 @@ import type { Options as SanitizeSchema } from 'rehype-sanitize'
 /**
  * What a rule description is allowed to be.
  *
- * `rehype-sanitize`'s GitHub schema, unextended, and that is a measured decision
- * rather than laziness: every tag the description corpus uses is already on its
- * allowlist — `<p>`, `<code>`, `<h1>`…`<h6>`, `<pre>`, `<ul>`, `<ol>`, `<li>`,
- * `<table>` and friends, `<a>` — while `<script>`, `<style>`, `<iframe>`, every
- * `on*` handler, inline `style` and any `href` outside
- * `http`/`https`/`mailto`/`irc`/`xmpp` are already off it. Extending a schema
- * for tags nothing measured needs is an extension nobody can justify later.
+ * `rehype-sanitize`'s GitHub schema, plus **two attributes on one element** and
+ * nothing else. The base schema is a measured decision rather than laziness:
+ * every tag the description corpus uses is already on its allowlist — `<p>`,
+ * `<code>`, `<h1>`…`<h6>`, `<pre>`, `<ul>`, `<ol>`, `<li>`, `<table>` and
+ * friends, `<a>` — while `<script>`, `<style>`, `<iframe>`, every `on*` handler,
+ * inline `style` and any `href` outside `http`/`https`/`mailto`/`irc`/`xmpp` are
+ * already off it.
  *
- * What this costs: Sonar hangs `data-diff-id` and `data-diff-type` on the
- * `<pre>` pairs it uses to show compliant against non-compliant code, and those
- * attributes are dropped. The code blocks still render, in order, with their
- * surrounding prose — the pairing is described in the text rather than drawn.
- * Allowing arbitrary `data-*` back in to recover a border is not a trade this
- * renderer makes.
+ * The extension is `data-diff-id` and `data-diff-type` on `<pre>`, which is how
+ * Sonar pairs a non-compliant example with its compliant answer. Named, on one
+ * element — not `data*` and not a widened schema: a wildcard would let a rule
+ * contributor hang arbitrary attributes on anything, to recover two borders.
+ *
+ * **The names here are hast property names, not HTML attribute names.**
+ * `hast-util-sanitize` filters the parsed tree, where `data-diff-id` is
+ * `dataDiffId`, so spelling these the way the markup does drops them again and
+ * silently — nothing errors, the borders just never appear. The component below
+ * reads the same two attributes back under their *DOM* names, which is the other
+ * half of the same trap.
  */
-export const RULE_HTML_SCHEMA: SanitizeSchema = defaultSchema
+export const RULE_HTML_SCHEMA: SanitizeSchema = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    pre: [...(defaultSchema.attributes?.pre ?? []), 'dataDiffId', 'dataDiffType'],
+  },
+}
 
 /**
  * `pre > code` is styled through the `pre` for the same reason `markdown.tsx`
@@ -61,14 +76,60 @@ export const RULE_HTML_SCHEMA: SanitizeSchema = defaultSchema
  * Drawn the way that renderer draws it, down to the string: the sunken sheet, the
  * pen at construction weight round it, and `font-mono` on the `pre` itself so a
  * bare block does not fall back to the browser's generic monospace instead of the
- * one this system draws in. A rule's compliant/non-compliant pair is the same kind
- * of object as a stack trace in a description — something pasted into the page —
- * and the outline is doing work here that it is not doing there, because the
- * `data-diff-*` attributes that used to pair those blocks are dropped by the
- * sanitiser. A drawn box each is what is left to say "two snippets, not one".
+ * one this system draws in.
+ *
+ * The pen colour is not in here, because on a `data-diff-type` pair it is the one
+ * thing that changes. Everything else about the two blocks is identical.
  */
 const PRE =
-  'bg-muted border-border mb-2 overflow-x-auto rounded-md border-[1.5px] p-3 font-mono text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit'
+  'bg-muted mb-2 overflow-x-auto rounded-md border-[1.5px] p-3 font-mono text-xs [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-inherit'
+
+/**
+ * Sonar's two `data-diff-type` values, and how each one is drawn.
+ *
+ * The labels are Sonar's own headings for these blocks, so a rule reads in-app
+ * the way it reads on the rule page. **The label is not decoration.** `pen-green`
+ * and `pen-red` are 4.01:1 and 4.65:1 on this sheet — fine for a stroke, and no
+ * use at all to a reader who cannot tell the two hues apart, which is most of the
+ * point of a "do this, not this" pair. The word says which is which; the pen and
+ * the glyph only make it quicker to see.
+ *
+ * A value that is not one of these two falls through to the neutral block: Sonar
+ * writes these attributes, and a third value would be Sonar saying something this
+ * renderer has not measured.
+ */
+const DIFF_TYPES: Record<
+  string,
+  { readonly border: string; readonly pen: string; readonly icon: typeof Tick02Icon; readonly label: string }
+> = {
+  compliant: {
+    border: 'border-pen-green',
+    pen: 'text-pen-green',
+    icon: Tick02Icon,
+    label: 'Compliant solution',
+  },
+  noncompliant: {
+    border: 'border-pen-red',
+    pen: 'text-destructive',
+    icon: Alert02Icon,
+    label: 'Noncompliant code example',
+  },
+}
+
+/**
+ * `data-diff-type`, read back under the name it actually arrives with.
+ *
+ * The other half of the trap in `RULE_HTML_SCHEMA`: the schema allowlists the
+ * hast property (`dataDiffType`), and react-markdown then hands the component the
+ * *attribute* (`data-diff-type`). Two spellings of one thing, and reading the
+ * wrong one gives `undefined` rather than an error. The cast is because React's
+ * `<pre>` props do not type arbitrary `data-*`.
+ */
+const attribute = (props: object, name: string): string | undefined => {
+  const value = (props as Record<string, unknown>)[name]
+
+  return typeof value === 'string' ? value : undefined
+}
 
 // The heading scale is flattened harder than the description renderer's, because
 // a rule reads at a deeper indent: it is inside an expanded finding group, which
@@ -92,7 +153,30 @@ const COMPONENTS: Components = {
   code: ({ children }) => (
     <code className="bg-muted rounded-sm px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
   ),
-  pre: ({ children }) => <pre className={PRE}>{children}</pre>,
+  // `...rest` and not just `children`: destructuring only the children is how the
+  // attributes get dropped a second time, after the schema has already let them
+  // through. `data-diff-id` is carried onto the element rather than read, because
+  // it is what says *which* pair a block belongs to — a rule with two examples of
+  // two kinds has four of these blocks — and the labels below only say which half.
+  pre: ({ children, ...rest }) => {
+    const type = DIFF_TYPES[attribute(rest, 'data-diff-type') ?? '']
+    const id = attribute(rest, 'data-diff-id')
+
+    if (type === undefined) return <pre className={cn(PRE, 'border-border')}>{children}</pre>
+
+    return (
+      <div data-diff-id={id}>
+        {/* `.annotation` is this system's label type, which is what a caption over
+            a code block is. Outside the `<pre>`, because everything inside one is
+            preformatted text and a heading is not. */}
+        <p className="annotation mb-1 flex items-center gap-1.5">
+          <HugeiconsIcon icon={type.icon} size={12} className={cn('shrink-0', type.pen)} aria-hidden />
+          {type.label}
+        </p>
+        <pre className={cn(PRE, type.border)}>{children}</pre>
+      </div>
+    )
+  },
   // A new tab and `noreferrer`, exactly as the description renderer does it: a
   // rule's "Resources" section is a list of links to OWASP and CWE, and losing
   // half-read diff to one of them is not on offer. `rel` and `target` are added

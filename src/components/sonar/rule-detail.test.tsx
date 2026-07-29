@@ -125,6 +125,27 @@ describe('RuleDetail', () => {
     expect(screen.queryAllByRole('heading', { level: 4 })).toEqual([])
   })
 
+  it('pairs the compliant examples on both render paths, because both use one schema', () => {
+    // The sectioned path and the whole-`html` fallback are two branches of one
+    // component and both hand their content to `RuleHtml`, so the `data-diff-*`
+    // schema covers both. Stated as a test because "one change covers both" is
+    // only true while that stays the case.
+    const pair =
+      '<pre data-diff-id="1" data-diff-type="noncompliant"><code>bad</code></pre>' +
+      '<pre data-diff-id="1" data-diff-type="compliant"><code>good</code></pre>'
+
+    const sectioned = render(
+      <RuleDetail rule={rule({ sections: [section('how_to_fix', pair)] })} />,
+    ).container
+    const blob = render(<RuleDetail rule={rule({ html: pair })} />).container
+
+    for (const container of [sectioned, blob]) {
+      const [bad, good] = Array.from(container.querySelectorAll('pre'))
+      expect(bad.className).toContain('border-pen-red')
+      expect(good.className).toContain('border-pen-green')
+    }
+  })
+
   it('says so when Sonar described the rule with nothing at all', () => {
     render(<RuleDetail rule={rule()} />)
 
