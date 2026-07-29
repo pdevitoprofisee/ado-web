@@ -67,12 +67,14 @@ function Home() {
   const result = query.data
   const inbox = result?.inbox ?? null
 
-  // Both sections as one list, in the order they are read. Hydration wants it
-  // because "visible first" is a property of the page, not of a list — the top
-  // of "Mine" is above the fold long before the bottom of "Assigned to me" is —
-  // and `j`/`k` want it for the same reason.
+  // Both sections as one list, in the order they are read — "Mine" first,
+  // matching the order they are rendered in below. Hydration wants it because
+  // "visible first" is a property of the page, not of a list: the top of
+  // "Assigned to me" is above the fold long before the bottom of "Mine" is, and
+  // `j`/`k` want it for the same reason. Reordering the sections without
+  // reordering this array is the one edit that breaks both silently.
   const rows = useMemo(
-    () => [...(inbox?.assignedToMe ?? []), ...(inbox?.mine ?? [])],
+    () => [...(inbox?.mine ?? []), ...(inbox?.assignedToMe ?? [])],
     [inbox],
   )
   const { hydrationOf, registerList } = useHydration(rows, generation)
@@ -89,6 +91,14 @@ function Home() {
           <span className="sketch-underline sketch-underline--teal">ado-web</span>
         </h1>
         <p className="text-muted-foreground text-xs">
+          {/* Ahead of `connections`, because it goes somewhere you read rather
+              than somewhere you configure — and the inbox is the only page that
+              can reasonably own the way in: it is where "what happened to my
+              other pull requests" is asked from. */}
+          <Link to="/history" className="text-ink hover:text-teal-600 underline underline-offset-4">
+            history
+          </Link>
+          {' · '}
           <Link
             to="/onboarding"
             className="text-ink hover:text-teal-600 underline underline-offset-4"
@@ -136,18 +146,22 @@ function Home() {
 
       {inbox ? (
         <>
+          {/* "Mine" first: the pull requests you are shepherding are the ones
+              you came to check on, and a review request you have not been asked
+              about twice can wait until after them. `rows` above must stay in
+              this order — it is what hydration and `j`/`k` read the page as. */}
           <PullRequestSection
-            title="Assigned to me"
-            rows={inbox.assignedToMe}
-            empty="Nothing waiting on you."
+            title="Mine"
+            rows={inbox.mine}
+            empty="You have no open pull requests."
             hydration={hydrationOf}
             listRef={registerList}
             selectedId={selectedId}
           />
           <PullRequestSection
-            title="Mine"
-            rows={inbox.mine}
-            empty="You have no open pull requests."
+            title="Assigned to me"
+            rows={inbox.assignedToMe}
+            empty="Nothing waiting on you."
             hydration={hydrationOf}
             listRef={registerList}
             selectedId={selectedId}
