@@ -361,7 +361,7 @@ closes without selecting, and the field is reachable without a pointer.
 
 ## T-035 — `@mentions` in the composer
 
-**Type:** feature · **Status:** open · **Blocked by:** T-030, T-034
+**Type:** feature · **Status:** resolved · **Blocked by:** T-030, T-034
 
 Phase 10. [T-026](./round-4.md#t-026--the-composer) deferred this twice over: the search was
 unmeasured, and the stored form of a mention was unknown. `src/lib/people.ts` already **reads**
@@ -383,6 +383,89 @@ The textarea is token-aware, which is the larger half of the work: the trigger f
 at a word boundary and not inside a word or a code fence, the caret survives insertion, the
 picker is arrow-navigable, and `Escape` dismisses the picker without dismissing the composer.
 Reuse T-034's search — one identity search hook, two consumers.
+
+### Resolution
+
+**The snapshot, not the live search.** One `GET _apis/graph/users` on `vssps` plus one batched
+`GET _apis/identities?subjectDescriptors=` per fifty people (`src/server/identity.ts`), held in
+the query cache for half an hour under a single key and filtered in memory
+(`src/lib/identity-query.ts`). Eight `GET`s per session at most, and none of them until somebody
+types an `@`: the picker is what reads the query, and it does not mount before then.
+
+**Why `POST graph/subjectquery` was rejected**, having read T-030's tables rather than the
+summary of them:
+
+1. **It matches a prefix of the whole display name.** Searching `Vincent` returns Jordan Vincent
+   zero times, and a picker that cannot find a colleague by surname is one people stop using
+   without ever filing a bug. That is a *wrong-answers* problem, not a performance one, and no
+   amount of debouncing fixes it. In memory, the same query is a substring match with a ranking
+   (`rank`: whole name, then a word inside it, then the mail address) and the surname works.
+2. **It is a `POST`, and the only `POST` path in this app is `write()`** — which hardcodes the
+   `core` host, and the graph API answers only on `vssps`. Making it work means widening the one
+   chokepoint every write goes through, in a round where three other tickets are writing through
+   it. The snapshot needs no change to `ado-client.ts` at all: `get(path, params, 'vssps')` and
+   `fanOut` were already there.
+3. Per-keystroke requests spend the 200-TSTU budget on typing. 344 people is 457 KB *on the
+   server*; only the six fields of `ReviewerCandidate` cross to the browser, about 150 bytes a
+   person.
+
+What the snapshot costs, said out loud rather than hidden: somebody who joined the org in the
+last half hour is not in the list until it goes stale.
+
+**The one-page question, which is the honest weakness.** T-030 read 344 users in one response
+with no continuation token anywhere in the body — but the only signal that another page *exists*
+is the `x-ms-continuationtoken` **header**, and `AdoClient.get` returns parsed JSON and exposes
+no headers. So this route cannot follow the pages, and it does not pretend the count proves
+anything: `Directory.complete` is `false` once the response reaches the documented graph page
+size of 500, and the picker then prints *"Azure DevOps returned a full page of people, so this
+list may be short."* under the list. The same admission covers the other gap — `total` counts
+the people the directory listed and `people.length` counts the ones that got as far as an
+identity GUID, so a failed crossing batch reads as *"50 of 344 people could not be looked up"*
+rather than as fifty colleagues who quietly do not exist. Following the pages properly needs a
+transport that can hand back a header; that is written down as note 12 in
+[`docs/map.md`](../map.md), and it is a change to a shared file rather than something to smuggle
+in here.
+
+**The mention is stored exactly as ADO writes it**, `@<UPPERCASE-GUID>` — T-030's §7, 5 of 5
+found live, upper case ×5 — and `insertMention` upper-cases the GUID it was handed, because the
+`identities` endpoint answers ids in **lower** case and a lower-cased mention posts with a 200
+and renders as literal text. That case is asserted from a deliberately lower-cased fixture in
+`composer.test.tsx`. **Still unproven against ADO's own renderer:** no comment was posted from
+this branch, and no request of any kind was sent to Azure DevOps for this ticket. The form is
+known to be *accepted* because colleagues' comments contain it; that it renders when *we* write
+it is the first thing to check the next time a comment is posted for real.
+
+**The keyboard contract**, which is the half the ticket called larger. Keys are offered to
+`MentionPickerHandle.keyDown` before the composer's own handler looks at them, and the picker
+returns whether it consumed one: `ArrowUp`/`ArrowDown` move the highlight and wrap, without
+moving the caret; `Enter` and `Tab` commit and are prevented, so neither inserts a newline nor
+takes focus out of the composer; `Escape` closes the list and stops there, so the draft
+survives — and it is remembered by the *offset* of the `@` it closed, since dismissing must not
+touch the text and the text is what matches. `Ctrl`/`Cmd + Enter` is never consumed, so submit
+still submits with the list open. The mouse path prevents its own `mousedown` rather than
+handling it, because a blur would close the picker before the click that chose somebody arrived.
+
+**ARIA:** the textarea keeps `role="textbox"` and grows `aria-autocomplete="list"`,
+`aria-haspopup="listbox"`, `aria-expanded`, `aria-controls` and `aria-activedescendant` while the
+list is open, with a hand-written `role="listbox"`/`role="option"`/`aria-selected` panel beneath
+it. Deliberately **not** RAC's `ListBox` or `ComboBox`: RAC's listbox takes DOM focus and moves
+it through the options, and the whole point here is that focus never leaves the textarea. And
+`role="combobox"` is not put on the field, because every reply box in the app is this component
+and a textarea that announces itself as a combobox for the whole time nobody is typing a name is
+worse than a textbox that carries `aria-activedescendant` for a moment.
+
+**Handed to T-034**, which is the reason the search is a module and not a hook inside the picker:
+`directoryOptions()`/`useDirectory()` own the one cache key (`['identity-directory']`), so a
+second consumer pays no second fetch, and `filterPeople(people, query, limit)` is the matching,
+with `limit` a parameter because a reviewer field and a mention list have different room.
+`ReviewerCandidate` carries `descriptor` and `avatarHref` that this ticket does not need and
+T-034 and T-036 do. What is *not* built for it: no debounce, no minimum query length, no
+in-flight cancellation — there is nothing per keystroke to debounce or cancel. If T-034 needs
+`isContainer`, the `kind` field is already `'user' | 'group'`.
+
+Built ahead of T-034 rather than after it, which inverts the ticket's "reuse T-034's search":
+both tickets were open, and the search had to exist before either could use it. **51 files / 930
+tests**, up from 48 / 882; `tsc --noEmit` clean.
 
 ---
 

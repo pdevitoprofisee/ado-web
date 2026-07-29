@@ -214,6 +214,20 @@ rewrite. Evidence in [`docs/research/`](./research/).
    with an unknown descriptor answers **500, not 404**, so "no such person" and "ADO is unwell"
    are the same response. Match on the parsed `URL.pathname` and allowlist the one measured
    form — a substring test accepts `identityImage?redirect=/_apis/GraphProfile/MemberAvatars/x`.
+12. **A `graph/*` list cannot be paged through `AdoClient.get`, and says nothing about it.**
+   The continuation token for the graph APIs is a *response header*
+   (`x-ms-continuationtoken`), and `get` hands back parsed JSON and exposes no headers at
+   all — so a caller reading `_apis/graph/users` gets page one and no way to learn that
+   page one is all it got. The body carries no token and no `count`, so there is not even
+   a short-page heuristic of the kind the PR list has (see the paging rule under
+   *Structural facts*, which is also the reason a short page proves nothing anyway). T-030
+   measured 344 users in one page, so this bites nobody today and bites silently the day
+   an org crosses the page size: the picker would offer a truncated directory as if it
+   were everybody. `loadDirectory` therefore reports `complete: false` at the documented
+   page size of 500 and the mention picker prints that the list may be short, which is a
+   count-based guess standing in for a fact the transport cannot see. Fixing it properly
+   means giving the client a way to return headers — a change to the file every read goes
+   through, and worth doing once rather than per feature.
 
 ### Structural facts about the ADO API
 
