@@ -202,6 +202,18 @@ rewrite. Evidence in [`docs/research/`](./research/).
    the only guard there is: `castVote` re-reads the reviewer list and refuses rather than
    sending. Not live-verified — from the "Pull Request Reviewers" reference at 7.1 — and no
    write on this path has been sent yet (T-040).
+11. **`imageUrl` is not one URL shape, and the wrong one fails without erroring.** The same
+   field name carries `_apis/GraphProfile/MemberAvatars/{descriptor}` on a comment author
+   (42/42) and `_api/_common/identityImage?id={guid}` on a reviewer (30/30) and a PR author
+   (99/99) — so a client must inspect the URL, and a client that trusts the field works on
+   every comment and breaks on every reviewer. Only `MemberAvatars` answers anonymously;
+   `identityImage` **302s to the sign-in page**, which in an `<img>` is a broken glyph and in
+   `fetch` is an HTML page with a 200 on it. Two silent failures underneath that, both from
+   T-030's table: `identityImage` with an **unknown GUID** answers `200 image/svg+xml` with a
+   *generated* monogram, so a wrong id looks like a working avatar forever; and `MemberAvatars`
+   with an unknown descriptor answers **500, not 404**, so "no such person" and "ADO is unwell"
+   are the same response. Match on the parsed `URL.pathname` and allowlist the one measured
+   form — a substring test accepts `identityImage?redirect=/_apis/GraphProfile/MemberAvatars/x`.
 
 ### Structural facts about the ADO API
 

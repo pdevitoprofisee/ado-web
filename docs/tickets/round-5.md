@@ -388,7 +388,7 @@ Reuse T-034's search — one identity search hook, two consumers.
 
 ## T-036 — Avatars
 
-**Type:** feature · **Status:** open · **Blocked by:** T-030
+**Type:** feature · **Status:** resolved · **Blocked by:** T-030
 
 Phase 10. [T-026](./round-4.md#t-026--the-composer) left comment authors as initials because
 `imageUrl` needs a credential the browser has not got, and standing up an image-proxying
@@ -409,6 +409,61 @@ The design follows T-030's finding, and this ticket has two legitimate shapes:
 
 Either way the fallback is not a broken-image icon: `initials()` in `people.ts` already exists
 and stays the answer for a missing, failed or slow avatar.
+
+### Resolution
+
+The cheap outcome was available, so the second shape of this ticket does not exist: **no proxy,
+no server function, no migration, no cache table, no token anywhere near the feature.** T-030
+measured `_apis/GraphProfile/MemberAvatars/{descriptor}` on `dev.azure.com` answering **200 with
+the PNG and no auth header at all** — no cookie, no PAT — so the URL goes straight into an
+`<img src>` and the browser fetches it unaided. The whole of the server-side change is one field
+on two types.
+
+What the ticket did not anticipate is that **`imageUrl` is not one URL shape**, and which shape
+you get depends entirely on which object you read it off:
+
+| read from | form | count |
+| --- | --- | --- |
+| a comment's `author.imageUrl` | `_apis/GraphProfile/MemberAvatars/{descriptor}` | 42 / 42 |
+| a reviewer's `imageUrl` | `_api/_common/identityImage?id={guid}` | 30 / 30 |
+| `createdBy.imageUrl` on a pull request | `_api/_common/identityImage?id={guid}` | 99 / 99 |
+
+`identityImage` **302s to the sign-in page** without a credential, which in an `<img>` is a
+broken glyph. So `imageUrl` rendered on trust works on every comment and breaks on every reviewer
+and every author, and the field name tells you nothing — only the URL does. `avatarUrlForm()` in
+`avatar.tsx` is therefore an **allowlist** matched on the parsed `URL.pathname`, not on the
+string: a substring test accepts `identityImage?redirect=/_apis/GraphProfile/MemberAvatars/x` and
+hands the browser the credentialed form anyway. Only `member-avatar` is rendered; `identity-image`,
+the third form (`graph/Subjects/{d}/avatars`, which answers JSON with a base64 `value` rather than
+image bytes), and anything unrecognised all fall to the monogram.
+
+For a reviewer the loadable URL is recovered from `_links.avatar.href`, which is a
+`MemberAvatars` URL and ends in a subject descriptor on **30 of 30** — `vssgp.` ×17, `aad.` ×13 —
+where the `descriptor` field itself is present on **0 of 30**. `Reviewer.avatarHref` and
+`Person.avatarHref` carry that href and deliberately do not carry `imageUrl`. The author's is read
+the same way, optimistically: T-030 read `createdBy.imageUrl` on all 99 and never looked at
+`createdBy._links`, so its absence is unmeasured and degrades to initials — the state the author
+was already in.
+
+No cache was built, and that is a decision rather than an omission. Sixty comments are sixty
+`<img>` elements but not sixty requests: the same person is the same URL string, which the browser
+coalesces and revalidates itself, and `loading="lazy"` means the ones below the fold are never
+asked for. The payload is a median **522 bytes** on an endpoint that reported
+`x-ratelimit-cost: 0`. Anything more would have to be a server function holding bytes — the
+credential path this feature just removed. The measured wrinkle, which the ticket could not have
+known: `MemberAvatars` answered **anonymously** sends `cache-control: no-cache, no-store,
+must-revalidate` where the credentialed call sends `max-age=172800`, so `AVATAR_MAX_AGE_SECONDS`
+does not actually apply to the way this loads. Reuse across a reload is not promised; reuse within
+a page is, and sixty comments live within a page.
+
+No layout shift, three ways at once: the monogram is *always* in the box and the `<img>` is laid
+over it with `absolute inset-0`, size is set at the call site so the box exists before the image
+does, and an `onError` that stores the **failed href** rather than a boolean — a boolean would
+follow a recycled virtualized row onto the next person and blank out their face too. The element
+is `aria-hidden` with `alt=""` at all three call sites, because every one of them writes the
+person's name as text immediately beside it.
+
+**896 tests over 49 files**, up from 882 over 48.
 
 ---
 
