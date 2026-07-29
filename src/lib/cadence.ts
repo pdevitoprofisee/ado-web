@@ -21,6 +21,16 @@ export const CADENCE = {
   /** The inbox. New review requests are not a thirty-second concern. */
   inbox: 120_000,
   /**
+   * My completed and abandoned pull requests — the one surface with no news in
+   * it, because a finished pull request does not become more finished.
+   *
+   * Nothing polls at this tier and it is deliberately not passed to
+   * `useCadence`: it is a `staleTime` only, so returning to the page inside the
+   * hour re-renders the list already in the cache and the two ADO calls it costs
+   * are paid once.
+   */
+  history: 60 * 60_000,
+  /**
    * Visible, but nobody has touched the machine in a while. Slow rather than
    * stopped: the window is on screen, so a wrong number on it is still a wrong
    * number someone can read.

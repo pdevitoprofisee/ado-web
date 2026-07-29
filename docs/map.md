@@ -46,15 +46,20 @@ personal token. Both in the credential store; the browser never receives either.
 
 ### The inbox
 
-Sectioned dense list: **Assigned to me** (including PRs where a *team you belong to*
-is the reviewer) and **Mine**. Rows carry check state, unresolved *human* comment
-count, staleness, conflict state, and whether a push reset your approval.
+Sectioned dense list: **Mine** first, then **Assigned to me** (including PRs where a
+*team you belong to* is the reviewer). Rows carry check state, unresolved *human*
+comment count, staleness, conflict state, and whether a push reset your approval.
 
 Rows hydrate lazily — visible rows first, the rest on idle — because check state and
 comment counts for N PRs is irreducibly 1+N calls (see notes). Cache keyed on
 `lastMergeSourceCommit.commitId`, so an unchanged PR costs nothing on re-poll.
 
 Refresh: ~30 s for the open PR, ~2 min for the inbox, backing off when unfocused.
+
+**History** (`/history`, linked from the inbox header) is the same list with the
+opposite filter: pull requests *you* authored that are `completed` or `abandoned`,
+newest-closed first. Two ADO calls, one per outcome, both filtered by `creatorId`;
+no hydration and no polling, because a finished pull request does not change.
 
 ### The PR review view
 

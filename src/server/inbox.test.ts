@@ -257,6 +257,9 @@ describe('partition', () => {
       isDraft: false,
       commitId: 'commit-3302',
       url: 'https://dev.azure.com/Contoso/SaaS/_git/PC.IAC.Modules/pullrequest/3302',
+      // Every inbox row is `active` by construction, so the outcome the history
+      // page renders is absent here rather than guessed at.
+      closed: null,
     })
   })
 })

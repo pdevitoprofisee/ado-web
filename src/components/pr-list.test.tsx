@@ -61,6 +61,7 @@ const row = (over: Partial<PullRequestRow> = {}): PullRequestRow => ({
   repositoryId: '22222222-2222-2222-2222-222222222222',
   conflicted: false,
   myVote: 0,
+  closed: null,
   ...over,
 })
 
@@ -258,7 +259,82 @@ describe('PullRequestSection', () => {
   })
 })
 
-/** The inbox as the keyboard sees it: two sections, one selection. */
+describe('a closed pull request', () => {
+  // Exactly 26 days before `NOW`, so the age below is not sitting on a rounding
+  // boundary.
+  const closed = (outcome: 'completed' | 'abandoned', at = '2026-07-01T12:00:00Z') =>
+    row({ closed: { at, outcome } })
+
+  const list = (rows: readonly PullRequestRow[]) =>
+    render(<PullRequestSection title="Closed" rows={rows} empty="none" />)
+
+  it('says which of the two it was, in colour as well as in words', () => {
+    // Two finished pull requests are not the same news, and a reader scanning a
+    // page of them is reading the colour before the word.
+    const { rerender } = list([closed('completed')])
+    expect(screen.getByText('completed')).toHaveClass('prof-badge--teal')
+
+    rerender(<PullRequestSection title="Closed" rows={[closed('abandoned')]} empty="none" />)
+    const abandoned = screen.getByText('abandoned')
+    expect(abandoned).toHaveClass('prof-badge--red')
+    expect(abandoned).not.toHaveClass('prof-badge--teal')
+  })
+
+  it('measures the age from when it closed, not from when it opened', () => {
+    // Otherwise the page would be sorted by one date and labelled with another.
+    const now = vi.spyOn(Date, 'now').mockReturnValue(NOW)
+    list([closed('completed')])
+
+    const link = screen.getByRole('link', { name: /disable sql auditing/ })
+    expect(link.lastElementChild).toHaveTextContent('26d ago')
+    expect(link.lastElementChild).toHaveAttribute('title', '2026-07-01T12:00:00Z')
+    now.mockRestore()
+  })
+
+  it('puts the outcome and the day in the row description, for a reader who cannot see the badge', () => {
+    list([closed('abandoned')])
+
+    expect(screen.getByRole('link', { name: /disable sql auditing/ })).toHaveAccessibleDescription(
+      /· abandoned 2026-07-01$/,
+    )
+  })
+
+  it('drops an open pull request\'s badges, which are all about work still to do', () => {
+    // The outcome takes the cell hydration would have filled — and a merge
+    // conflict on an abandoned PR is not news, it is why it was abandoned.
+    list([row({ conflicted: true, closed: { at: '2026-07-01T00:00:00Z', outcome: 'abandoned' } })])
+
+    expect(screen.queryByTitle('Merge conflicts')).toBeNull()
+    expect(screen.getByText('abandoned')).toBeVisible()
+  })
+
+  it('still opens in the app, exactly as an inbox row does', () => {
+    list([closed('completed')])
+
+    expect(screen.getByRole('link', { name: /disable sql auditing/ })).toHaveAttribute(
+      'href',
+      '/pr/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/3302',
+    )
+  })
+
+  it('still names the outcome when Azure DevOps sent no closed date', () => {
+    list([closed('completed', '')])
+
+    expect(screen.getByText('completed')).toBeVisible()
+    const link = screen.getByRole('link', { name: /disable sql auditing/ })
+    // Blank rather than "NaN ago", and no dangling date in the description.
+    expect(link.lastElementChild).toBeEmptyDOMElement()
+    expect(link).toHaveAccessibleDescription(/· completed$/)
+  })
+})
+
+/**
+ * The inbox as the keyboard sees it: two sections, one selection.
+ *
+ * "Mine" first, in both the array and the markup, because that is the order the
+ * page renders — and the tests below are the only thing that would notice the
+ * two drifting apart.
+ */
 function Sections({
   assigned,
   mine,
@@ -266,17 +342,17 @@ function Sections({
   assigned: readonly PullRequestRow[]
   mine: readonly PullRequestRow[]
 }) {
-  const selectedId = useInboxSelection([...assigned, ...mine])
+  const selectedId = useInboxSelection([...mine, ...assigned])
 
   return (
     <>
+      <PullRequestSection title="Mine" rows={mine} empty="none" selectedId={selectedId} />
       <PullRequestSection
         title="Assigned to me"
         rows={assigned}
         empty="none"
         selectedId={selectedId}
       />
-      <PullRequestSection title="Mine" rows={mine} empty="none" selectedId={selectedId} />
     </>
   )
 }
@@ -300,18 +376,21 @@ describe('useInboxSelection', () => {
 
     expect(selected()).toBeNull()
 
+    // The top of the page is the top of "Mine", so `j` from nowhere lands there.
     await user.keyboard('j')
+    expect(selected()).toBe('3')
+    await user.keyboard('j')
+    // Off the end of "Mine" and onto the top of "Assigned to me".
     expect(selected()).toBe('1')
-    await user.keyboard('jj')
-    // Off the end of "Assigned to me" and onto the top of "Mine".
-    expect(selected()).toBe('3')
     await user.keyboard('j')
-    expect(selected()).toBe('3')
+    expect(selected()).toBe('2')
+    await user.keyboard('j')
+    expect(selected()).toBe('2')
 
     await user.keyboard('kk')
-    expect(selected()).toBe('1')
+    expect(selected()).toBe('3')
     await user.keyboard('k')
-    expect(selected()).toBe('1')
+    expect(selected()).toBe('3')
   })
 
   it('starts from the bottom when the first key pressed is k', async () => {
@@ -320,7 +399,9 @@ describe('useInboxSelection', () => {
 
     await user.keyboard('k')
 
-    expect(selected()).toBe('2')
+    // The bottom of the page is the bottom of "Assigned to me", which now renders
+    // second.
+    expect(selected()).toBe('1')
   })
 
   it('focuses the selected row, so the keyboard and the screen reader agree', async () => {

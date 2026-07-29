@@ -19,9 +19,10 @@ import type { ReactNode } from 'react'
 import type { HydrationResult } from '@/server/hydrate'
 import type { PullRequestRow } from '@/server/inbox'
 
-// The inbox's two sections, and the keyboard selection that runs across both of
-// them. Split out of the route so the list can be tested on its own: the route's
-// only other job is fetching.
+// A list of pull requests as every page draws it — the inbox's two sections and
+// the history page's one — plus the keyboard selection that runs across whatever
+// sections a page put on screen. Split out of the routes so the list can be
+// tested on its own: a route's only other job is fetching.
 
 const UNITS: ReadonlyArray<[Intl.RelativeTimeFormatUnit, number]> = [
   ['year', 365 * 24 * 3600e3],
@@ -117,6 +118,37 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
   )
 }
 
+/**
+ * What a closed pull request has instead of a rich cell.
+ *
+ * It sits in `Rich`'s box, at `Rich`'s width, because a closed PR never
+ * hydrates: check state and comment counts are news about work you might still
+ * act on, and there is none here. Reserving 6rem for badges that will never
+ * arrive would leave a hole in every row of the page, so the one thing history
+ * *does* have to say goes in it.
+ *
+ * Teal for landed, red for not. On this page the only question a row answers is
+ * "did it ship", so the two answers take the two pens the eye already reads as
+ * yes and no — red here is not "something is wrong", it is "this did not land".
+ * Set to the same measurements as the `draft` pill above rather than to
+ * `.prof-badge`'s own 12px/10px, which would make a history row taller than an
+ * inbox row.
+ */
+function Outcome({ closed }: { closed: NonNullable<PullRequestRow['closed']> }) {
+  return (
+    <span className="flex w-24 shrink-0 items-center justify-end overflow-hidden">
+      <span
+        className={cn(
+          'prof-badge tracking-label px-1.5 py-0.5 text-2xs leading-none uppercase',
+          closed.outcome === 'completed' ? 'prof-badge--teal' : 'prof-badge--red',
+        )}
+      >
+        {closed.outcome}
+      </span>
+    </span>
+  )
+}
+
 /** Whether the detail route can address this PR: it is keyed by the two GUIDs. */
 function addressable(
   row: PullRequestRow,
@@ -134,8 +166,9 @@ function Row({
   isSelected?: boolean
 }) {
   // Every other column is truncated or hidden at narrow widths, so the
-  // accessible name has to carry what the eye might not get.
-  const label = `${row.project}/${row.repository} · ${row.author}${row.viaTeam ? ` · via ${row.viaTeam}` : ''}`
+  // accessible name has to carry what the eye might not get — including the
+  // outcome, which is otherwise a coloured pill and a relative date.
+  const label = `${row.project}/${row.repository} · ${row.author}${row.viaTeam ? ` · via ${row.viaTeam}` : ''}${row.closed ? ` · ${row.closed.outcome}${row.closed.at ? ` ${row.closed.at.slice(0, 10)}` : ''}` : ''}`
   // `rounded-sm` on the link, not just on the row: this is the element the
   // keyboard focuses all day, and Prof's focus ring is a box-shadow that follows
   // whatever radius it finds. On a square link it would be a square ring.
@@ -167,9 +200,16 @@ function Row({
       <span className="text-muted-foreground hidden shrink-0 truncate font-mono text-xs lg:block lg:max-w-28">
         →{row.targetBranch}
       </span>
-      <Rich row={row} result={result} />
-      <span className="text-muted-foreground w-16 shrink-0 text-right font-mono text-xs tabular-nums">
-        {age(row.createdAt)}
+      {row.closed ? <Outcome closed={row.closed} /> : <Rich row={row} result={result} />}
+      {/* The same column, measuring the thing you triage on. On an open PR that
+          is how long it has been waiting; on a closed one it is how long ago it
+          stopped, and its creation date is trivia. The exact date goes in the
+          `title`, because a history page is the one place someone asks for it. */}
+      <span
+        className="text-muted-foreground w-16 shrink-0 text-right font-mono text-xs tabular-nums"
+        title={row.closed?.at || undefined}
+      >
+        {age(row.closed ? row.closed.at : row.createdAt)}
       </span>
     </>
   )
@@ -235,10 +275,10 @@ const linkOf = (id: number): HTMLElement | null =>
   document.querySelector(`[data-pr-id="${id}"] a`)
 
 /**
- * Keyboard selection over the inbox as one list.
+ * Keyboard selection over a page's sections as one list.
  *
- * Takes both sections concatenated in visual order, because `j` off the end of
- * "Assigned to me" lands on the top of "Mine" — which neither section can know
+ * Takes them concatenated in the order they are read, because `j` off the end of
+ * "Mine" lands on the top of "Assigned to me" — which neither section can know
  * on its own. The selection is a PR id rather than an index, so a poll that
  * reorders or drops rows cannot quietly move it to a different pull request.
  */
@@ -275,7 +315,8 @@ export function useInboxSelection(rows: readonly PullRequestRow[]): number | nul
       },
     })
   })
-  // Nothing to go back to from the inbox, so Escape means "never mind" here.
+  // Escape means "never mind" in a list: there is no row-level state to back out
+  // of, so it drops the selection rather than navigating anywhere.
   useCommand('nav.back', () => {
     if (selected === null) return
     const focused = linkOf(selected)

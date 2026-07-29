@@ -10,12 +10,18 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as HistoryRouteImport } from './routes/history'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as PrProjectIdRepositoryIdPrIdRouteImport } from './routes/pr.$projectId.$repositoryId.$prId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HistoryRoute = HistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OnboardingRoute = OnboardingRouteImport.update({
@@ -32,30 +38,40 @@ const PrProjectIdRepositoryIdPrIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/history': typeof HistoryRoute
   '/onboarding': typeof OnboardingRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/history': typeof HistoryRoute
   '/onboarding': typeof OnboardingRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/history': typeof HistoryRoute
   '/onboarding': typeof OnboardingRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/onboarding' | '/pr/$projectId/$repositoryId/$prId'
+  fullPaths:
+    '/' | '/history' | '/onboarding' | '/pr/$projectId/$repositoryId/$prId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/onboarding' | '/pr/$projectId/$repositoryId/$prId'
-  id: '__root__' | '/' | '/onboarding' | '/pr/$projectId/$repositoryId/$prId'
+  to: '/' | '/history' | '/onboarding' | '/pr/$projectId/$repositoryId/$prId'
+  id:
+    | '__root__'
+    | '/'
+    | '/history'
+    | '/onboarding'
+    | '/pr/$projectId/$repositoryId/$prId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  HistoryRoute: typeof HistoryRoute
   OnboardingRoute: typeof OnboardingRoute
   PrProjectIdRepositoryIdPrIdRoute: typeof PrProjectIdRepositoryIdPrIdRoute
 }
@@ -67,6 +83,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/history': {
+      id: '/history'
+      path: '/history'
+      fullPath: '/history'
+      preLoaderRoute: typeof HistoryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/onboarding': {
@@ -88,19 +111,10 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  HistoryRoute: HistoryRoute,
   OnboardingRoute: OnboardingRoute,
   PrProjectIdRepositoryIdPrIdRoute: PrProjectIdRepositoryIdPrIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}

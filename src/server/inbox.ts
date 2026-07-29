@@ -69,7 +69,8 @@ interface AdoReviewer {
   readonly isContainer?: boolean
 }
 
-interface AdoPullRequest {
+/** Exported for `history.ts`, which lists the same shape with a different filter. */
+export interface AdoPullRequest {
   readonly pullRequestId?: number
   readonly title?: string
   readonly createdBy?: { readonly id?: string; readonly displayName?: string }
@@ -81,6 +82,8 @@ interface AdoPullRequest {
   }
   readonly targetRefName?: string
   readonly creationDate?: string
+  /** Present only once the PR is closed; `completed` and `abandoned` both carry it. */
+  readonly closedDate?: string
   readonly isDraft?: boolean
   readonly lastMergeSourceCommit?: { readonly commitId?: string }
   /** `succeeded` | `conflicts` | `queued` | `rejectedByPolicy` | `failure` | `notSet`. */
@@ -100,6 +103,13 @@ export interface Team {
   readonly id: string
   readonly name: string
 }
+
+/**
+ * The two ways a pull request stops being open. `notSet` and `active` are the
+ * other two `searchCriteria.status` values and neither is history, so they are
+ * deliberately not in here.
+ */
+export type ClosedOutcome = 'completed' | 'abandoned'
 
 export interface PullRequestRow {
   readonly id: number
@@ -130,6 +140,16 @@ export interface PullRequestRow {
   readonly conflicted: boolean
   /** My standing vote: 10 approved, 5 with suggestions, -5 waiting, -10 rejected. */
   readonly myVote: number
+  /**
+   * How and when this pull request stopped being open — `null` on the inbox,
+   * where every row is `active` by construction.
+   *
+   * Required rather than optional so that a future caller listing closed PRs
+   * cannot forget it: the whole point of the history page is that a completed
+   * pull request and an abandoned one are different news, and a missing field
+   * would render them identically rather than fail.
+   */
+  readonly closed: { readonly at: string; readonly outcome: ClosedOutcome } | null
 }
 
 export interface Inbox {
@@ -256,11 +276,23 @@ export async function listActivePullRequests(client: AdoClient): Promise<AdoPull
   return [...seen.values()]
 }
 
-function toRow(
+/**
+ * The three fields a list entry cannot tell you on its own: two are local
+ * decisions about *me*, and the third is the caller's own filter restated —
+ * `status` is what we asked ADO for, not something the row carries back.
+ */
+type RowFacts = Partial<Pick<PullRequestRow, 'viaTeam' | 'myVote' | 'closed'>>
+
+/**
+ * One ADO list entry flattened into a row. Exported so `history.ts` gets the
+ * same URL construction, the same missing-field defaults and the same two GUIDs
+ * the detail route is keyed by — a second copy of this would drift, and the
+ * failure would be a history page whose rows quietly stop linking into the app.
+ */
+export function toRow(
   pr: AdoPullRequest,
   org: string,
-  viaTeam: string | null,
-  myVote: number,
+  { viaTeam = null, myVote = 0, closed = null }: RowFacts = {},
 ): PullRequestRow {
   const project = pr.repository?.project?.name ?? ''
   const repository = pr.repository?.name ?? ''
@@ -281,6 +313,7 @@ function toRow(
     repositoryId: pr.repository?.id ?? null,
     conflicted: pr.mergeStatus === 'conflicts',
     myVote,
+    closed,
   }
 }
 
@@ -318,7 +351,7 @@ export function partition(
       // A PR cannot be both. Authoring wins: your own PR appearing under
       // "Assigned to me" is a review request you cannot act on.
       if (tooOld(pr)) hidden++
-      else mine.push(toRow(pr, org, null, 0))
+      else mine.push(toRow(pr, org))
       continue
     }
 
@@ -340,7 +373,7 @@ export function partition(
     // Counted only once it is established the PR was going to be shown, so
     // `hidden` means "yours, and stale" rather than "old, somewhere in the org".
     if (tooOld(pr)) hidden++
-    else assignedToMe.push(toRow(pr, org, direct ? null : viaTeam, myVote))
+    else assignedToMe.push(toRow(pr, org, { viaTeam: direct ? null : viaTeam, myVote }))
   }
 
   return { assignedToMe: assignedToMe.sort(byNewest), mine: mine.sort(byNewest), hidden }
@@ -352,8 +385,8 @@ interface Who {
   readonly teams: Team[]
 }
 
-async function resolveWho(client: AdoClient): Promise<Who> {
-  const identity = await resolveIdentity(client)
+async function resolveWho(client: AdoClient, fresh: boolean): Promise<Who> {
+  const identity = await identityOf(client, fresh)
 
   return { identity, teams: await resolveMyTeams(client, identity) }
 }
@@ -376,21 +409,54 @@ async function resolveWho(client: AdoClient): Promise<Who> {
  */
 const WHO_TTL_MS = 30 * 60_000
 
-const remembered = new WeakMap<AdoClient, { at: number; who: Promise<Who> }>()
+interface Memo<T> {
+  readonly at: number
+  readonly value: Promise<T>
+}
 
-function whoAmI(client: AdoClient, fresh: boolean): Promise<Who> {
-  const hit = remembered.get(client)
-  if (!fresh && hit !== undefined && Date.now() - hit.at < WHO_TTL_MS) return hit.who
+/**
+ * The in-flight promise is what gets stored, not the settled value, so two
+ * surfaces asking at once share one call rather than racing to make two.
+ */
+function memoise<T>(
+  store: WeakMap<AdoClient, Memo<T>>,
+  client: AdoClient,
+  fresh: boolean,
+  derive: () => Promise<T>,
+): Promise<T> {
+  const hit = store.get(client)
+  if (!fresh && hit !== undefined && Date.now() - hit.at < WHO_TTL_MS) return hit.value
 
-  const who = resolveWho(client)
+  const value = derive()
   // A cached rejection would be permanent, and the failure here is a network
   // blip far more often than it is a bad token.
-  who.catch(() => {
-    if (remembered.get(client)?.who === who) remembered.delete(client)
+  value.catch(() => {
+    if (store.get(client)?.value === value) store.delete(client)
   })
-  remembered.set(client, { at: Date.now(), who })
+  store.set(client, { at: Date.now(), value })
 
-  return who
+  return value
+}
+
+const rememberedIdentity = new WeakMap<AdoClient, Memo<Identity>>()
+const remembered = new WeakMap<AdoClient, Memo<Who>>()
+
+/**
+ * Who you are, and nothing else.
+ *
+ * Memoised separately from `whoAmI` because the two callers want different
+ * halves of it: the inbox needs team membership to fill "Assigned to me", and
+ * the history page needs only the GUID to filter on. Making history go through
+ * `whoAmI` would have made a page of finished pull requests cost `teams` and two
+ * `identities` calls it never reads — six instead of two. Nested rather than
+ * parallel, so `whoAmI` still buys `connectionData` exactly once.
+ */
+export function identityOf(client: AdoClient, fresh: boolean): Promise<Identity> {
+  return memoise(rememberedIdentity, client, fresh, () => resolveIdentity(client))
+}
+
+function whoAmI(client: AdoClient, fresh: boolean): Promise<Who> {
+  return memoise(remembered, client, fresh, () => resolveWho(client, fresh))
 }
 
 export async function loadInbox(client: AdoClient, fresh = false): Promise<Inbox> {
