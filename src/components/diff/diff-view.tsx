@@ -526,6 +526,7 @@ export function DiffView({
   onCompose,
   iterationContext = null,
   jumped = null,
+  arrival = 0,
 }: {
   rows: readonly DiffRow[]
   layout: DiffLayout
@@ -557,6 +558,19 @@ export function DiffView({
    * of them until somebody clicks a finding.
    */
   jumped?: number | null
+  /**
+   * How many jumps the caller has answered — see `ChangedFileDiff`.
+   *
+   * What makes a *second* click on the same finding scroll again. `jumped` cannot
+   * say that on its own: asking for the line already marked is an identity-return
+   * all the way up, so the line stays 214 and nothing here can tell a repeat click
+   * from a re-render. Counting the requests separates them.
+   *
+   * Defaults to `0` rather than to `undefined`, because the guard compares it to
+   * what it last acted on: a prop that is absent has to be *equal* to itself across
+   * renders, or every render is a new jump and the poll drags the reader back.
+   */
+  arrival?: number
 }) {
   const scroller = useRef<HTMLDivElement>(null)
 
@@ -600,17 +614,22 @@ export function DiffView({
     getItemKey: (index) => rows[index].key,
   })
 
-  // Which line this has already carried the reader to. The guard, not the deps: a
+  // Which jump this has already carried the reader to. The guard, not the deps: a
   // rebuilt `rows` is the normal state of this component — the thread poll answers
   // every thirty seconds — and an effect that scrolled whenever the rows changed
   // would haul the file back to the finding every half minute, out from under
-  // whoever had scrolled away from it. Comparing the line instead means the rows
-  // may change as often as they like, and a mark arriving on a row that did not
-  // exist yet (the bytes, a revealed gap) is still followed the moment it does.
+  // whoever had scrolled away from it. Guarding instead means the rows may change as
+  // often as they like, and a mark arriving on a row that did not exist yet (the
+  // bytes, a revealed gap) is still followed the moment it does.
+  //
+  // The request and not the line, because the line cannot tell two of them apart:
+  // clicking the same occurrence again — normal, after reading away from it — asks
+  // for a line that is already marked, and every layer between here and the model
+  // correctly answers that with the object it already had.
   const landed = useRef<number | null>(null)
 
   useEffect(() => {
-    if (jumped === null || jumped === landed.current) return
+    if (jumped === null || landed.current === arrival) return
 
     // `scrollToIndex` and not `getElementById` on the row, which cannot work here
     // and fails in the quietest possible way: the row for line 214 is in the DOM
@@ -620,12 +639,12 @@ export function DiffView({
     const index = rowIndexForLine(rows, jumped)
     if (index === -1) return
 
-    landed.current = jumped
+    landed.current = arrival
     // Centred rather than at the top, because a finding is read with the lines
     // around it: `align: 'start'` puts the one line you were sent to against the
     // edge of a 70vh window with all of its context below the fold.
     virtual.scrollToIndex(index, { align: 'center' })
-  }, [jumped, rows, virtual])
+  }, [jumped, arrival, rows, virtual])
 
   return (
     <div

@@ -786,10 +786,20 @@ plus which of the two reasons it was — in ink with an amber mark, because `--p
 collapsed context has no row at all, so a scroll asked for before the reveal lands on the nearest
 row that does exist and looks like a success. Recorded as note 13 in [the map](../map.md#the-notes).
 `DiffView` therefore grew its first effect that drives the virtualizer, on a `jumped` prop and a
-`landed` ref: the ref holds the *line*, not the rows, because the thread poll reprojects the rows
-every thirty seconds and an effect keyed on them would haul the reader back to the finding every
-half minute — while a row that only appears later (revealed gap, late bytes) is still followed.
-`align: 'center'`, since a finding is read with the lines around it.
+`landed` ref: the ref guards, rather than the effect's deps, because the thread poll reprojects the
+rows every thirty seconds and an effect keyed on them would haul the reader back to the finding
+every half minute — while a row that only appears later (revealed gap, late bytes) is still
+followed. `align: 'center'`, since a finding is read with the lines around it.
+
+What the ref holds is the *request* and not the line, and holding the line was wrong in a way worth
+writing down: clicking the same occurrence a second time — ordinary, after reading away from it —
+asks for a line that is already marked, and every layer beneath the click correctly answers that
+with the object it already had. `jumpToLine` identity-returns, so `jumped` never changes, so an
+effect comparing the line sat still. `ChangedFileDiff` counts the requests it answers instead and
+passes the count down beside `jumped`; the count is the only thing a repeat click changes. Its
+default is `0` rather than `undefined`, because an absent prop has to equal itself across renders or
+every render reads as a new jump and the poll drags the reader back after all — which is the bug the
+guard exists to prevent, reintroduced through its own default.
 
 **A seventh row-model input, `jumped`, and state would have been wrong rather than merely
 fragile.** Note 7's reason applies — the poll rebuilds the model from its inputs and erases

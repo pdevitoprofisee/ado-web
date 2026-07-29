@@ -565,8 +565,14 @@ describe('a jumped-to line', () => {
     right: line('context', `line ${at + 1}`, at + 1, at + 1),
   }))
 
-  const view = (jumped: number | null, some: readonly DiffRow[] = rows) => (
-    <DiffView rows={some} layout="unified" label="/src/app.ts" jumped={jumped} />
+  const view = (jumped: number | null, some: readonly DiffRow[] = rows, arrival = 0) => (
+    <DiffView
+      rows={some}
+      layout="unified"
+      label="/src/app.ts"
+      jumped={jumped}
+      arrival={arrival}
+    />
   )
 
   // jsdom implements no scrolling, so the `scrollTo` the virtualizer makes on the
@@ -601,7 +607,7 @@ describe('a jumped-to line', () => {
   const jumpTo = (line: number, some?: readonly DiffRow[]) => {
     const { rerender } = render(view(null, some))
     scrolled.mockClear()
-    rerender(view(line, some))
+    rerender(view(line, some, 1))
     return rerender
   }
 
@@ -634,7 +640,7 @@ describe('a jumped-to line', () => {
     const rerender = jumpTo(151)
     scrolled.mockClear()
 
-    rerender(view(151, rows.slice()))
+    rerender(view(151, rows.slice(), 1))
 
     expect(scrolled).not.toHaveBeenCalled()
   })
@@ -657,9 +663,22 @@ describe('a jumped-to line', () => {
 
     expect(scrolled).not.toHaveBeenCalled()
 
-    rerender(view(151))
+    rerender(view(151, rows, 1))
 
     expect(scrolled).toHaveBeenCalledTimes(1)
+  })
+
+  it('goes back to the line when the same finding is clicked again', () => {
+    // Clicking an occurrence you have already read away from is ordinary, and every
+    // layer under this one answers it with the model it already had: the line is
+    // still marked, so nothing about `jumped` changes. Only the count does.
+    const rerender = jumpTo(151)
+    expect(scrolled).toHaveBeenCalledTimes(1)
+    scrolled.mockClear()
+
+    rerender(view(151, rows, 2))
+
+    expect(scrolled).toHaveBeenCalledWith(expect.objectContaining({ top: 150 * 20 + 10 - 400 }))
   })
 })
 

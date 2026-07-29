@@ -375,3 +375,56 @@ describe('ChangedFileDiff', () => {
     expect(call).not.toHaveBeenCalled()
   })
 })
+
+describe('the same finding clicked twice', () => {
+  // Its own block for the `scrollTo` jsdom does not have. Counting the calls rather
+  // than asserting an offset: this file is two lines long, so every offset in it
+  // clamps to zero, and the question here is only whether the second click moved
+  // anything at all.
+  let scrolled: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    scrolled = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      value: scrolled,
+    })
+  })
+
+  afterEach(() => {
+    Reflect.deleteProperty(HTMLElement.prototype, 'scrollTo')
+  })
+
+  it('is carried back to the line the second time as well', async () => {
+    // The page dispatches a jump, clears it once the list has scrolled, and
+    // dispatches the same one again when the reader clicks the occurrence a second
+    // time. Everything under here answers that with what it already had — the line
+    // is still 2 and still marked — so a scroll guarded on the line would sit still
+    // and leave the reader wherever they had read to.
+    call.mockResolvedValue(answer(BLOBS))
+    // The client is held rather than let `draw` make one, because a re-render that
+    // swapped it would remount the panel — and a remounted panel jumps because it is
+    // new, which is the one thing this must not be able to pass on.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const show = (jumpTo: number | null) => (
+      <QueryClientProvider client={client}>{panel({ jumpTo })}</QueryClientProvider>
+    )
+    const { rerender } = render(show(2))
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Jumped to line 2.'))
+    await waitFor(() => expect(scrolled).toHaveBeenCalled())
+    scrolled.mockClear()
+
+    // Cleared, which is the shape `PullRequestDetailView` produces: it drops its own
+    // jump as soon as the page has scrolled to the file. Asserted on its own first,
+    // or the test below it proves nothing — a virtualizer that scrolled itself on
+    // every re-render would satisfy it without the jump doing anything.
+    rerender(show(null))
+    expect(scrolled).not.toHaveBeenCalled()
+
+    rerender(show(2))
+
+    await waitFor(() => expect(scrolled).toHaveBeenCalled())
+    expect(screen.getByRole('status')).toHaveTextContent('Jumped to line 2.')
+  })
+})

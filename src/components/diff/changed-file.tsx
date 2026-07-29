@@ -146,6 +146,13 @@ export function ChangedFileDiff({
   // *starts* the fetch. So the request waits here for the model it belongs to.
   const [wanted, setWanted] = useState<number | null>(null)
 
+  // How many of those requests have been answered. The model cannot carry this:
+  // asking it for the line it is already marking returns the model unchanged — the
+  // right answer, and it is also why nothing downstream can see that a reader
+  // clicked the same occurrence twice. This is the one thing that changes when they
+  // do, and `DiffView` scrolls on it rather than on the line.
+  const [arrival, setArrival] = useState(0)
+
   useEffect(() => {
     if (jumpTo !== null) setWanted(jumpTo)
   }, [jumpTo])
@@ -158,6 +165,7 @@ export function ChangedFileDiff({
     // where the answer lives from here on.
     setModel(jumpToLine(model, wanted))
     setWanted(null)
+    setArrival((n) => n + 1)
   }, [wanted, model])
 
   // What the jump came to. Both outcomes are said in words, because the second one
@@ -315,6 +323,7 @@ export function ChangedFileDiff({
         hideDone={hideDone}
         iterationContext={iterationContext}
         jumped={model?.jumped ?? null}
+        arrival={arrival}
       />
     </div>
   )
