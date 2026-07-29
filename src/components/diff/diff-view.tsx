@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useMemo, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ChevronsUpDown } from 'lucide-react'
 
@@ -45,6 +45,55 @@ import type { ThreadActions } from '@/components/comments/thread-actions'
 const ROW_HEIGHT = 20
 
 const MARK: Record<DiffLine['op'], string> = { context: ' ', add: '+', delete: '-' }
+
+/** What a `\t` renders to, and what `columnsIn` therefore counts one as. */
+const TAB = 8
+
+/** The gutter and the marker column in front of the text, in `rem`: `w-12` + `w-3`. */
+const CELL_CHROME = '3.75rem'
+
+/** How wide `text` renders, in characters — the font is monospace, so that is a width. */
+function columnsIn(text: string): number {
+  let columns = text.length
+  // A tab advances to the next 8-column stop; counted flat as 8, which overshoots
+  // by at most seven characters of scroll and never undershoots.
+  for (let at = text.indexOf('\t'); at !== -1; at = text.indexOf('\t', at + 1)) {
+    columns += TAB - 1
+  }
+  return columns
+}
+
+/**
+ * How wide one side-by-side column has to be, as a CSS length.
+ *
+ * Side-by-side needs a number here, and `flex-1` cannot supply one. Every row is
+ * its own flex container — that is what a virtualized list is — so two halves
+ * sized by `flex: 1 1 0%` inside a `w-max` row each take half of *that row's*
+ * content width. A 200-column line therefore widened its own row and nothing
+ * else: its text ran out over the pane beside it, and the right-hand column
+ * started at a different x on every long line, which is the one thing a
+ * side-by-side diff exists to do correctly.
+ *
+ * Sizing both columns to the file's widest line fixes both at once. Every row
+ * gets the same two definite widths, so the columns line up; the width is enough
+ * for the longest line in the file, so nothing overflows a pane; and the row is
+ * still `w-max`, so the panel scrolls sideways exactly as far as the file is wide.
+ *
+ * Unified needs none of this: one column of text, last in the row, growing the
+ * row it is in. That is already right.
+ */
+function columnWidth(rows: readonly DiffRow[]): string {
+  let widest = 0
+  for (const row of rows) {
+    if (row.kind !== 'line') continue
+    for (const line of [row.left, row.right]) {
+      if (line === null) continue
+      widest = Math.max(widest, columnsIn(line.text))
+    }
+  }
+
+  return `calc(${widest}ch + ${CELL_CHROME})`
+}
 
 /**
  * The sentence for a file with no diff to show, or `null` when it has one.
@@ -138,15 +187,24 @@ function Cell({
   number,
   tokens,
   className,
+  width,
 }: {
   line: DiffLine | null
   /** Which of the line's two numbers this column shows. */
   number: number | null
   tokens: readonly HighlightToken[] | null
   className?: string
+  /**
+   * The column's own width, from `columnWidth` — set in side-by-side and absent
+   * in unified, where there is one column and it is the row. It lands on
+   * `flex-basis` rather than `width` so a file narrower than the panel still has
+   * its two halves grow to fill it evenly.
+   */
+  width?: string
 }) {
   return (
     <span
+      style={width === undefined ? undefined : { flexBasis: width }}
       className={cn(
         'flex min-w-0 flex-1 items-baseline',
         line === null
@@ -186,6 +244,7 @@ function Cell({
 function Row({
   row,
   layout,
+  column,
   before,
   after,
   onExpand,
@@ -193,6 +252,8 @@ function Row({
 }: {
   row: DiffRow
   layout: DiffLayout
+  /** One side-by-side column's width. Unused in unified — see `columnWidth`. */
+  column: string
   before: HighlightedLines | null
   after: HighlightedLines | null
   onExpand?: (row: Extract<DiffRow, { kind: 'gap' }>) => void
@@ -253,11 +314,13 @@ function Row({
           number={row.left?.oldLine ?? null}
           tokens={row.left === null ? null : tokensFor(row.left, before, after)}
           className="border-border border-r"
+          width={column}
         />
         <Cell
           line={row.right}
           number={row.right?.newLine ?? null}
           tokens={row.right === null ? null : tokensFor(row.right, before, after)}
+          width={column}
         />
       </>
     )
@@ -316,6 +379,11 @@ export function DiffView({
   threadActions?: ThreadActions
 }) {
   const scroller = useRef<HTMLDivElement>(null)
+
+  // Once per file rather than once per row: it walks every line's text, and a row
+  // is rendered again every time it scrolls past. Recomputed when a gap expands,
+  // because the lines that arrive with it can be wider than anything above them.
+  const column = useMemo(() => (layout === 'split' ? columnWidth(rows) : ''), [rows, layout])
 
   const virtual = useVirtualizer({
     count: rows.length,
@@ -380,6 +448,7 @@ export function DiffView({
               <Row
                 row={rows[item.index]}
                 layout={layout}
+                column={column}
                 before={before}
                 after={after}
                 onExpand={onExpand}

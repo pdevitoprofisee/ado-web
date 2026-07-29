@@ -98,6 +98,44 @@ describe('DiffView', () => {
     expect(screen.getByRole('region', { name: '/src/app.ts' })).toHaveTextContent('was here')
   })
 
+  it('gives both side-by-side columns one width, wide enough for the longest line', () => {
+    // The bug this is about: two `flex-1` halves inside a `w-max` row each take
+    // half of *that row's* content, so the row holding the long line was wider
+    // than the rows above it — its text ran out over the pane beside it and the
+    // right-hand column started somewhere else on every long line.
+    const long = 'x'.repeat(120)
+    const rows: readonly DiffRow[] = [
+      { kind: 'line', key: 'c1', left: line('context', 'short', 1, 1), right: line('context', 'short', 1, 1) },
+      { kind: 'line', key: 'c2', left: line('context', long, 2, 2), right: line('context', long, 2, 2) },
+    ]
+
+    const { container, rerender } = render(
+      <DiffView rows={rows} layout="split" label="/src/app.ts" />,
+    )
+
+    const columns = [...container.querySelectorAll<HTMLElement>('[style*="flex-basis"]')]
+    // Four: two rows of two columns, every one of them the same width.
+    expect(columns).toHaveLength(4)
+    for (const column of columns) {
+      expect(column.style.flexBasis).toBe(`calc(120ch + 3.75rem)`)
+    }
+
+    // Unified has one column of text and it is the row, so it needs no width.
+    rerender(<DiffView rows={rows} layout="unified" label="/src/app.ts" />)
+    expect(container.querySelectorAll('[style*="flex-basis"]')).toHaveLength(0)
+  })
+
+  it('counts a tab as the eight columns it renders as', () => {
+    const rows: readonly DiffRow[] = [
+      { kind: 'line', key: 'c1', left: line('context', '\t\tif (x) {', 1, 1), right: null },
+    ]
+    render(<DiffView rows={rows} layout="split" label="/src/app.ts" />)
+
+    // `'\t\tif (x) {'.length` is 10, and it renders 24 columns wide.
+    const column = document.querySelector<HTMLElement>('[style*="flex-basis"]')
+    expect(column?.style.flexBasis).toBe(`calc(24ch + 3.75rem)`)
+  })
+
   it('offers a gap as something to click, and reports which one', () => {
     const onExpand = vi.fn()
     render(<DiffView rows={ROWS} layout="unified" label="/src/app.ts" onExpand={onExpand} />)
