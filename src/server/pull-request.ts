@@ -36,8 +36,12 @@ const POLICY_VERSION = '7.1-preview.1'
  * clamp — `$top=100000` is accepted, and the largest PR measured (1096 files)
  * came back whole in one 288 KB response — so paging buys nothing here that a
  * headroom this size does not already cover, and `truncated` covers the rest.
+ *
+ * Exported for the local branch diff, which has no `$top` and no reason of its
+ * own to stop at 5000 — it borrows this one so that both file lists truncate at
+ * the same size and the sentence the page prints about it means one thing.
  */
-const FILE_LIMIT = 5000
+export const FILE_LIMIT = 5000
 
 export interface Person {
   readonly id: string
