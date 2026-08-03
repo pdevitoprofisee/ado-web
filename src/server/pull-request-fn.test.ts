@@ -1,14 +1,16 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 
-import { reviewerRequest, voteRequest } from './pull-request-fn'
+import { mergeRequest, reviewerRequest, voteRequest } from './pull-request-fn'
 
-// The two write validators that are each other's mirror: the vote, which must not
-// carry a reviewer, and the reviewer, which must not carry a vote. Node rather
-// than jsdom for `viewed.test.ts`' reason: this module reaches `pr-cache.ts` and
-// therefore SQLite, which jsdom has no business loading.
+// The write validators whose input decides something irreversible. Two of them are
+// each other's mirror: the vote, which must not carry a reviewer, and the reviewer,
+// which must not carry a vote. The third is the merge, whose commit message is
+// written into the target branch's history for good. Node rather than jsdom for
+// `viewed.test.ts`' reason: this module reaches `pr-cache.ts` and therefore SQLite,
+// which jsdom has no business loading.
 //
-// Only this validator is covered here. The server functions around it need a
+// Only the validators are covered here. The server functions around them need a
 // connected client and an ADO to answer them, and what they do with what they are
 // given is `pull-request.test.ts`' subject.
 
@@ -124,5 +126,77 @@ describe('reviewerRequest', () => {
       'id must be a pull request number.',
     )
     expect(() => reviewerRequest(null)).toThrow('id must be a pull request number.')
+  })
+})
+
+describe('mergeRequest', () => {
+  const TIP = '4f3c9a1b2d7e5068c1a4b39f7e2d05c8a6b1f394'
+
+  it('keeps the pull request, the tip and the message, and nothing else', () => {
+    const request = mergeRequest({
+      ...ref,
+      lastMergeSourceCommit: TIP,
+      commitMessage: 'Merged PR 24698: move the logging sink\n\nwhy this exists',
+      // No completion option reaches ADO by being named here — the handler sends
+      // the strategy and the deletion itself, and a `bypassPolicy` in a request
+      // body must be a field that goes nowhere.
+      bypassPolicy: true,
+      deleteSourceBranch: false,
+      mergeStrategy: 'noFastForward',
+    })
+
+    expect(request).toEqual({
+      ...ref,
+      lastMergeSourceCommit: TIP,
+      commitMessage: 'Merged PR 24698: move the logging sink\n\nwhy this exists',
+    })
+  })
+
+  it.each([['abc'], [`${TIP}x`], [TIP.slice(1)], [''], [null], [undefined], [{}]])(
+    'refuses %o as a source tip, because the tip is the guard',
+    (lastMergeSourceCommit) => {
+      expect(() => mergeRequest({ ...ref, lastMergeSourceCommit, commitMessage: 'x' })).toThrow(
+        'lastMergeSourceCommit must be a commit sha.',
+      )
+    },
+  )
+
+  it('trims the ends of the message and keeps the middle exactly', () => {
+    // The blank line is the subject/body boundary and the indentation could be a
+    // pasted stack trace; only the ends are somebody's stray newline.
+    const request = mergeRequest({
+      ...ref,
+      lastMergeSourceCommit: TIP,
+      commitMessage: '\n  Merged PR 1: a thing\n\n  indented\n\n',
+    })
+
+    expect(request.commitMessage).toBe('Merged PR 1: a thing\n\n  indented')
+  })
+
+  it.each([[''], ['   \n\n  '], [null], [undefined], [42], [{}]])(
+    'refuses %o as a commit message',
+    (commitMessage) => {
+      // A commit whose message is whitespace is a commit nobody can find again,
+      // and the field on the page cannot produce one — which is exactly why it is
+      // checked here as well.
+      expect(() => mergeRequest({ ...ref, lastMergeSourceCommit: TIP, commitMessage })).toThrow(
+        /commitMessage must (be a string|not be empty)\./,
+      )
+    },
+  )
+
+  it('accepts a message far longer than any subject line, because ADO owns that refusal', () => {
+    const long = `${'a'.repeat(5000)}\n\n${'b'.repeat(5000)}`
+
+    expect(
+      mergeRequest({ ...ref, lastMergeSourceCommit: TIP, commitMessage: long }).commitMessage,
+    ).toBe(long)
+  })
+
+  it('refuses a request with no pull request in it, before it looks at anything else', () => {
+    expect(() => mergeRequest({ lastMergeSourceCommit: TIP, commitMessage: 'x' })).toThrow(
+      'id must be a pull request number.',
+    )
+    expect(() => mergeRequest(null)).toThrow('id must be a pull request number.')
   })
 })

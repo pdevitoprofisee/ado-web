@@ -629,13 +629,12 @@ describe('completing a pull request', () => {
   it('patches the pull request to completed, squashed, at the tip it was read at', async () => {
     const { client, writes } = capture()
 
-    await completePullRequest(client, REF, 'f'.repeat(40))
+    await completePullRequest(client, REF, 'f'.repeat(40), 'Merged PR 1: a thing\n\nwhy')
 
-    // Asserted whole rather than field by field, because what this request must
-    // *not* contain is the point: no `bypassPolicy`, no `deleteSourceBranch`, no
-    // `mergeCommitMessage`, and no `squashMerge` beside the strategy that
-    // deprecates it. Confirmed against Microsoft's "Pull Requests - Update"
-    // reference at api-version 7.1.
+    // Asserted whole rather than field by field, because both what this request
+    // contains and what it must *not* contain are the point: no `bypassPolicy`,
+    // and no `squashMerge` beside the strategy that deprecates it. Confirmed
+    // against Microsoft's "Pull Requests - Update" reference at api-version 7.1.
     expect(writes).toEqual([
       {
         method: 'PATCH',
@@ -643,7 +642,11 @@ describe('completing a pull request', () => {
         body: {
           status: 'completed',
           lastMergeSourceCommit: { commitId: 'f'.repeat(40) },
-          completionOptions: { mergeStrategy: 'squash' },
+          completionOptions: {
+            mergeStrategy: 'squash',
+            mergeCommitMessage: 'Merged PR 1: a thing\n\nwhy',
+            deleteSourceBranch: true,
+          },
         },
         // No override: 7.1 is the client's own default, and it is the version the
         // documented shape above belongs to.
@@ -658,11 +661,38 @@ describe('completing a pull request', () => {
     // refuses when they differ, so a value invented here would defeat it.
     const tip = '4f3c9a1b2d7e5068c1a4b39f7e2d05c8a6b1f394'
 
-    await completePullRequest(client, REF, tip)
+    await completePullRequest(client, REF, tip, 'Merged PR 1: a thing')
 
     expect((writes[0].body as { lastMergeSourceCommit: unknown }).lastMergeSourceCommit).toEqual({
       commitId: tip,
     })
+  })
+
+  it('sends the commit message unchanged, blank line and all', async () => {
+    const { client, writes } = capture()
+    // Composed on the page; this layer must not reflow it. The blank line is what
+    // makes the first line a subject in every tool that reads the commit.
+    const message = 'Merged PR 24698: move the logging sink\n\nwhy this exists\n\n- and a list'
+
+    await completePullRequest(client, REF, 'f'.repeat(40), message)
+
+    expect(
+      (writes[0].body as { completionOptions: { mergeCommitMessage: unknown } }).completionOptions
+        .mergeCommitMessage,
+    ).toBe(message)
+  })
+
+  it('always asks for the source branch to be deleted', async () => {
+    const { client, writes } = capture()
+
+    await completePullRequest(client, REF, 'f'.repeat(40), 'Merged PR 1: a thing')
+
+    // Not a parameter and not a preference: every merge sent from this app takes
+    // the branch with it, and the confirmation dialog says so.
+    expect(
+      (writes[0].body as { completionOptions: { deleteSourceBranch: unknown } }).completionOptions
+        .deleteSourceBranch,
+    ).toBe(true)
   })
 })
 

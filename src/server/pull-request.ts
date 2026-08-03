@@ -839,18 +839,32 @@ export async function setTitle(
  *   option. It is the guard: ADO refuses the completion when the source branch
  *   has moved past the sha we read, so a push that landed while the page was
  *   open cannot be merged unseen.
+ * - `completionOptions.mergeCommitMessage` is the *whole* message — subject, a
+ *   blank line, body — because that is what a git commit message is, and ADO
+ *   stores the string as given rather than composing anything from it. Nothing
+ *   here builds it: it arrives composed and non-empty from `mergeRequest`, so
+ *   the sentence that lands on the target branch is the one the reviewer read
+ *   in the field. Left out, ADO writes its own from the title and description,
+ *   which is the behaviour this replaced.
+ * - `completionOptions.deleteSourceBranch: true`, on every completion this app
+ *   sends. It is not a parameter, because there is no call site that wants the
+ *   branch kept.
  *
  * No `api-version` override: 7.1 is the client's default and the version the
  * doc describes, unlike the preview-only evaluations route above.
  *
- * Deliberately absent. `bypassPolicy` and `bypassReason`, because bypassing a
- * branch policy is out of this app's scope entirely (docs/map.md) and a write
- * that could do it by mistake is a write that will. `deleteSourceBranch`,
- * because deleting the branch is a second irreversible act and one confirmation
- * must not buy two — leaving it out means ADO's own default, which is to keep
- * the branch. `mergeCommitMessage`, because ADO composes the squash message
- * from the title and description the reviewer has just read; sending our own
- * would silently replace it.
+ * **The branch deletion is a second irreversible act, and one confirmation now
+ * buys both.** That is a reversal of what this function used to do, and it is
+ * deliberate rather than an oversight: a squash merge that leaves the branch
+ * behind leaves it behind on every pull request, and the reviewer asked for the
+ * branch to go every time. So the cost is paid where a cost can be read — the
+ * confirmation dialog names the deletion — instead of here, by refusing to send
+ * the field. The commits are not lost either way; they are in the squashed
+ * commit on the target branch.
+ *
+ * Still deliberately absent: `bypassPolicy` and `bypassReason`, because
+ * bypassing a branch policy is out of this app's scope entirely (docs/map.md)
+ * and a write that could do it by mistake is a write that will.
  *
  * Unproven against ADO: no write has ever been sent from this app, and the PAT
  * needs `vso.code_write`. The refreshed pull request it answers with is dropped
@@ -860,11 +874,16 @@ export async function completePullRequest(
   client: AdoClient,
   ref: PullRequestRef,
   lastMergeSourceCommit: string,
+  mergeCommitMessage: string,
 ): Promise<void> {
   await client.write('PATCH', prBase(ref), {
     status: 'completed',
     lastMergeSourceCommit: { commitId: lastMergeSourceCommit },
-    completionOptions: { mergeStrategy: 'squash' },
+    completionOptions: {
+      mergeStrategy: 'squash',
+      mergeCommitMessage,
+      deleteSourceBranch: true,
+    },
   })
 }
 

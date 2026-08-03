@@ -165,7 +165,8 @@ export interface RequeueResult {
 }
 
 /**
- * Which pull request to squash, and the tip it was read at.
+ * Which pull request to squash, the tip it was read at, and the commit message
+ * to write.
  *
  * `lastMergeSourceCommit` is not decoration and not a cache key: ADO compares it
  * to the source branch's actual tip and refuses the completion if they differ,
@@ -173,9 +174,17 @@ export interface RequeueResult {
  * comes off the page's own `PullRequestDetail`, and it is still checked here,
  * because it reaches an ADO request body and a shape check is cheap next to a
  * merge.
+ *
+ * `commitMessage` arrives already composed — subject, a blank line, body — from
+ * `lib/merge.ts`' `commitMessage`, because the page is where the two fields are
+ * and the shape of a git commit message is not a thing to reassemble twice. What
+ * this layer owes it is the same check every other written string gets: a
+ * string, trimmed, not empty. It lands in `main`'s history permanently, so it
+ * gets checked here even though the field it came from cannot be empty.
  */
 export interface MergeRequest extends PullRequestRef {
   readonly lastMergeSourceCommit: string
+  readonly commitMessage: string
 }
 
 /**
@@ -201,7 +210,17 @@ export function mergeRequest(input: unknown): MergeRequest {
     throw new Error('lastMergeSourceCommit must be a commit sha.')
   }
 
-  return { ...ref, lastMergeSourceCommit: raw.lastMergeSourceCommit }
+  if (typeof raw.commitMessage !== 'string') {
+    throw new Error('commitMessage must be a string.')
+  }
+
+  // Trimmed at the ends only. The blank line between subject and body is the
+  // structure, so nothing in the middle is touched — and no length ceiling, for
+  // `renamedTitle`'s reason: ADO documents none, so a refusal is its to make.
+  const commitMessage = raw.commitMessage.trim()
+  if (commitMessage === '') throw new Error('commitMessage must not be empty.')
+
+  return { ...ref, lastMergeSourceCommit: raw.lastMergeSourceCommit, commitMessage }
 }
 
 export function requeueRequest(input: unknown): RequeueRequest {
@@ -565,12 +584,13 @@ export const renamePullRequest = createServerFn({ method: 'POST' })
 /**
  * Squash-merge the pull request.
  *
- * The one write in this app that changes a branch, so two things about it are
- * deliberate. It sends no bypass of any kind — `completePullRequest` says why —
- * and it decides nothing: whether merging is even possible is judged where the
- * page's own state is, in `mergeBlocker`, and re-judged by ADO, which owns the
- * answer. Duplicating that judgement here would mean two rules that can drift,
- * and the one that would win is the weaker.
+ * The one write in this app that changes two branches — it squashes onto the
+ * target and deletes the source — so two things about it are deliberate. It
+ * sends no bypass of any kind — `completePullRequest` says why, and says why the
+ * deletion is unconditional — and it decides nothing: whether merging is even
+ * possible is judged where the page's own state is, in `mergeBlocker`, and
+ * re-judged by ADO, which owns the answer. Duplicating that judgement here would
+ * mean two rules that can drift, and the one that would win is the weaker.
  *
  * `ok: false` rather than a throw, like `requeuePolicy`: "not connected" and
  * "ADO refused" are both things the confirmation dialog has to say out loud, and
@@ -584,10 +604,10 @@ export const squashMerge = createServerFn({ method: 'POST' })
       return { ok: false, error: client.message, connected: false }
     }
 
-    const { lastMergeSourceCommit, ...ref } = data
+    const { lastMergeSourceCommit, commitMessage, ...ref } = data
 
     try {
-      await completePullRequest(client, ref, lastMergeSourceCommit)
+      await completePullRequest(client, ref, lastMergeSourceCommit, commitMessage)
 
       return { ok: true, error: null, connected: true }
     } catch (error) {

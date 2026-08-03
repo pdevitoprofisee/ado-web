@@ -117,6 +117,11 @@ requeue the policy, retry the build, or retry a single stage.
 Write actions: comment, resolve, vote, add reviewers (org-wide autocomplete),
 **squash merge**, abandon, reactivate.
 
+The squash merge is the only write that changes a branch, and it always does two
+things: the commit message is the reviewer's, written in fields on the page rather
+than composed by ADO, and the source branch is deleted. Both are named in the one
+confirmation in front of it.
+
 ### Notifications
 
 In-app only, while the app is open. Events: build failed · new comment on my PR ·

@@ -743,8 +743,40 @@ describe('PullRequestDetailView squash merge', () => {
     vi.mocked(squashMerge).mockResolvedValue({ ok: true, error: null, connected: true })
   })
 
-  const trigger = () => screen.getByRole('button', { name: 'Squash and merge' })
+  const section = () => screen.getByRole('region', { name: 'Merge' })
+  const trigger = () => within(section()).getByRole('button', { name: 'Squash and merge' })
   const confirm = () => within(screen.getByRole('dialog')).getByRole('button', { name: 'Squash and merge' })
+  // Scoped to the section: the page has a comment composer and a "Description"
+  // section of its own, and these two fields are the merge's.
+  const subject = () => within(section()).getByRole('textbox', { name: 'Merge commit message' })
+  const body = () => within(section()).getByRole('textbox', { name: 'Description' })
+
+  /** Replaces what a field holds, the way somebody retyping it would. */
+  const retype = async (field: HTMLElement, text: string) => {
+    await userEvent.clear(field)
+    if (text !== '') await userEvent.type(field, text)
+  }
+
+  it('offers the message Azure DevOps would have written, and lets it be changed', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    // ADO's own squash convention, so the repository's history does not change
+    // shape depending on which client did the merge.
+    expect(subject()).toHaveValue('Merged PR 24698: move the logging sink off the shared account')
+    expect(body()).toHaveValue('why this exists')
+
+    await retype(subject(), 'chore: move the logging sink')
+
+    expect(subject()).toHaveValue('chore: move the logging sink')
+  })
+
+  it('offers no message at all while the merge is blocked', () => {
+    // A field that invites a commit message on an abandoned pull request offers
+    // something that cannot happen.
+    render(<PullRequestDetailView pr={detail({ status: 'abandoned' })} />)
+
+    expect(within(section()).queryByRole('textbox')).toBeNull()
+  })
 
   it('opens a confirmation rather than merging, and names what would be merged', async () => {
     render(<PullRequestDetailView pr={detail()} />)
@@ -758,11 +790,27 @@ describe('PullRequestDetailView squash merge', () => {
     expect(dialog).toHaveTextContent('!24698 move the logging sink off the shared account')
     expect(dialog).toHaveTextContent('Every commit on feature/logging-sink becomes one commit on main')
     expect(dialog).toHaveTextContent('cannot be undone')
-    // Both promises this app is making on ADO's behalf, in writing.
-    expect(dialog).toHaveTextContent('The source branch is left in place, and no policy is bypassed.')
+    // The deletion said out loud, with where the work went and the way back.
+    expect(dialog).toHaveTextContent(
+      'feature/logging-sink is deleted — its work lives on in the squashed commit, and Azure DevOps can restore the branch afterwards. No policy is bypassed.',
+    )
   })
 
-  it('sends the pull request and the tip it was read at, once confirmed', async () => {
+  it('quotes the message it is about to commit, so the confirmation cannot disagree with the fields', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await retype(subject(), 'chore: move the logging sink')
+    await retype(body(), 'the shared account is going away')
+    await userEvent.click(trigger())
+
+    // The composed message, not the fields' contents side by side: the blank line
+    // between them is part of what gets written.
+    expect(screen.getByRole('dialog')).toHaveTextContent(
+      'chore: move the logging sink the shared account is going away',
+    )
+  })
+
+  it('sends the pull request, the tip it was read at and the message, once confirmed', async () => {
     render(<PullRequestDetailView pr={detail()} />)
 
     await userEvent.click(trigger())
@@ -771,9 +819,63 @@ describe('PullRequestDetailView squash merge', () => {
     // The sha is the guard, not decoration: without it ADO would merge whatever
     // the branch has grown since this page was drawn.
     expect(squashMerge).toHaveBeenCalledWith({
-      data: { ...REF, lastMergeSourceCommit: SOURCE_TIP },
+      data: {
+        ...REF,
+        lastMergeSourceCommit: SOURCE_TIP,
+        commitMessage:
+          'Merged PR 24698: move the logging sink off the shared account\n\nwhy this exists',
+      },
     })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('sends the message as it was edited, subject and body', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await retype(subject(), 'chore: move the logging sink')
+    await retype(body(), 'the shared account is going away')
+    await userEvent.click(trigger())
+    await userEvent.click(confirm())
+
+    expect(squashMerge).toHaveBeenCalledWith({
+      data: {
+        ...REF,
+        lastMergeSourceCommit: SOURCE_TIP,
+        commitMessage: 'chore: move the logging sink\n\nthe shared account is going away',
+      },
+    })
+  })
+
+  it('sends the subject alone when the description has been emptied', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await retype(body(), '')
+    await userEvent.click(trigger())
+    await userEvent.click(confirm())
+
+    expect(squashMerge).toHaveBeenCalledWith({
+      data: {
+        ...REF,
+        lastMergeSourceCommit: SOURCE_TIP,
+        // No trailing blank line: an empty body is no body.
+        commitMessage: 'Merged PR 24698: move the logging sink off the shared account',
+      },
+    })
+  })
+
+  it('will not merge with no commit message, and says which line is missing', async () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    await retype(subject(), '')
+
+    expect(trigger()).toBeDisabled()
+    expect(trigger()).toHaveAccessibleDescription(
+      'A commit needs a message. Write its first line above.',
+    )
+
+    await userEvent.click(trigger())
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(squashMerge).not.toHaveBeenCalled()
   })
 
   it('merges nothing when the confirmation is cancelled', async () => {
@@ -794,6 +896,10 @@ describe('PullRequestDetailView squash merge', () => {
     })
     render(<PullRequestDetailView pr={detail()} />)
 
+    // Held rather than re-queried: the modal hides the page behind it from the
+    // accessibility tree, so the field cannot be found by role while it is open.
+    const field = subject()
+    await retype(field, 'chore: move the logging sink')
     await userEvent.click(trigger())
     await userEvent.click(confirm())
 
@@ -803,6 +909,9 @@ describe('PullRequestDetailView squash merge', () => {
     )
     // Still standing, because the message is the reason the reviewer pressed it.
     expect(screen.getByRole('dialog')).toBeVisible()
+    // And the typed message is still typed. A refusal is often the moment somebody
+    // wants to reword it, and it is behind the dialog rather than gone.
+    expect(field).toHaveValue('chore: move the logging sink')
   })
 
   it('disables the button with the reason as its description', async () => {

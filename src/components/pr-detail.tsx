@@ -13,7 +13,7 @@ import {
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useEffect, useMemo, useState } from 'react'
-import { TextField } from 'react-aria-components'
+import { TextArea, TextField } from 'react-aria-components'
 
 import type { IconSvgElement } from '@hugeicons/react'
 import type { KeyboardEvent, ReactNode } from 'react'
@@ -40,12 +40,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { adoDiffSource, useWarmDiff } from '@/lib/blob-query'
 import { COMBINED, useChanges } from '@/lib/changes'
 import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
 import { lifecycleAction, useAbandon, useReactivate } from '@/lib/lifecycle'
-import { useSquashMerge } from '@/lib/merge'
+import { commitMessage, defaultDraft, useSquashMerge } from '@/lib/merge'
 import { useRename } from '@/lib/rename'
 import { useRequeue } from '@/lib/requeue'
 import { useWithdrawReviewer, withdrawBlocker } from '@/lib/reviewers'
@@ -554,18 +555,38 @@ export function mergeBlocker(
 }
 
 /**
- * The squash-merge control, and the confirmation in front of it.
+ * The squash-merge section: the commit message that will be written, and the
+ * confirmation in front of writing it.
  *
  * Under the policy checklist rather than up in the header, because it is the
  * answer to what the checklist just asked — and because the header is a place
  * the eye passes over on the way to the diff, which is the wrong place for the
  * one control on this page that changes a branch.
  *
- * The confirmation is not a formality: completing a pull request is irreversible
- * and everybody watching the repository sees it. So it names the pull request,
- * both branches, and what squashing does to the history, and it is reached by
- * pressing a button — there is deliberately no keyboard shortcut anywhere near
- * this, because no single keypress should be able to merge anything.
+ * **The fields are on the page, not in the dialog.** The dialog is dismissable
+ * by Escape and by a click outside, which is right for a confirmation and wrong
+ * for a paragraph somebody just typed — `Composer`'s "the text survives a failed
+ * submit" rule is the same rule seen from the other side. So the message is
+ * composed out here, where nothing throws it away, and the dialog *quotes* it: a
+ * confirmation that showed a different message from the one being committed
+ * would be worse than one that showed none.
+ *
+ * They are also only drawn when the merge is actually available. An editable
+ * commit message on a completed or abandoned pull request offers to do something
+ * that cannot be done; blocked, this is what it always was — a disabled button
+ * and the sentence saying why.
+ *
+ * The draft is initialised once and then owned here. React Query re-reads this
+ * pull request on every write and after a refused merge, and that hands down a
+ * new `pr` without remounting, so a typed message survives the refusal that made
+ * the reviewer want to reword it.
+ *
+ * The confirmation is not a formality: completing a pull request is irreversible,
+ * it deletes the source branch, and everybody watching the repository sees it. So
+ * it names the pull request, both branches, the message, and what squashing does
+ * to the history, and it is reached by pressing a button — there is deliberately
+ * no keyboard shortcut anywhere near this, because no single keypress should be
+ * able to merge anything.
  */
 function MergeControl({
   pr,
@@ -577,6 +598,7 @@ function MergeControl({
   failed: FailedSections
 }) {
   const [confirming, setConfirming] = useState(false)
+  const [draft, setDraft] = useState(() => defaultDraft(pr))
   // Closing on success only, which is what the hook's callback is for: a refused
   // merge has to leave the dialog standing, because ADO's refusal is the whole
   // reason the reviewer pressed the button and it is written right there.
@@ -584,22 +606,68 @@ function MergeControl({
 
   const blocker = mergeBlocker(pr, failed)
   const sha = pr.lastMergeSourceCommit
+  const message = commitMessage(draft)
+
+  // Kept out of `mergeBlocker`, which answers a question about the pull request's
+  // state and is tested without a field in sight. This one is about what is in
+  // the box. Keyed on the subject rather than on the whole message, because a
+  // body with no subject line composes to a commit whose first line is somebody's
+  // second thought.
+  const unwritten =
+    draft.subject.trim() === '' ? 'A commit needs a message. Write its first line above.' : null
+
+  // One sentence at a time, and the page's own reason first: while a merge is
+  // blocked there is nothing to say about the message.
+  const refusal = blocker ?? unwritten
 
   return (
-    <div className="flex w-full flex-col items-start gap-1.5">
+    <div className="sketch-box flex w-full flex-col items-start gap-3 px-4 py-3">
+      {blocker === null ? (
+        <>
+          {/* Subject and body as two fields, because they are two different
+              things — the first line is what every shortlog and every ADO commit
+              list shows, and a single textarea would let it silently become two
+              lines. `lib/merge.ts` puts the blank line between them. */}
+          <TextField
+            className="flex w-full flex-col gap-1.5"
+            value={draft.subject}
+            onChange={(subject) => setDraft((was) => ({ ...was, subject }))}
+          >
+            <Label>Merge commit message</Label>
+            <Input />
+          </TextField>
+
+          <TextField
+            className="flex w-full flex-col gap-1.5"
+            value={draft.body}
+            onChange={(body) => setDraft((was) => ({ ...was, body }))}
+          >
+            <Label>Description</Label>
+            {/* `Input`'s chrome — the same 1.5px pen on the same input sheet —
+                grown downward. `field-sizing-content` with a floor and a manual
+                resize handle, like `Composer`'s: a description this page copied
+                out of the pull request can be four lines or forty. */}
+            <TextArea
+              rows={4}
+              className="field-sizing-content min-h-20 w-full resize-y rounded-sm border-[1.5px] border-input bg-popover px-2.5 py-1.5 text-base outline-none md:text-sm"
+            />
+          </TextField>
+        </>
+      ) : null}
+
       <Button
-        isDisabled={blocker !== null}
+        isDisabled={refusal !== null}
         // The reason is a sentence on the page, and it is also this button's
         // description — a disabled control whose explanation is only visual is
         // still a control that will not say why.
-        aria-describedby={blocker === null ? undefined : 'merge-blocked'}
+        aria-describedby={refusal === null ? undefined : 'merge-blocked'}
         onPress={() => setConfirming(true)}
       >
         Squash and merge
       </Button>
-      {blocker === null ? null : (
+      {refusal === null ? null : (
         <p id="merge-blocked" className="text-muted-foreground text-xs">
-          {blocker}
+          {refusal}
         </p>
       )}
 
@@ -629,9 +697,26 @@ function MergeControl({
               one commit on <span className="font-mono">{branch(pr.targetBranch)}</span>. Completing
               a pull request cannot be undone.
             </p>
+            {/* Quoted verbatim, and scrollable rather than clipped, because this
+                is the last place the message can be read before it is permanent
+                and a truncated quote is not a quote. Monospaced and
+                `whitespace-pre-wrap`: the blank line between subject and body is
+                the structure, so it is shown rather than collapsed. */}
+            <span className="annotation text-ink">Commit message</span>
+            <pre className="sketch-box sketch-box--quiet max-h-40 overflow-y-auto px-2 py-1.5 font-mono text-xs whitespace-pre-wrap">
+              {message}
+            </pre>
             {/* Both stated because both are things a reviewer would otherwise
-                have to take on trust from a button labelled "merge". */}
-            <p>The source branch is left in place, and no policy is bypassed.</p>
+                have to take on trust from a button labelled "merge" — and the
+                deletion is the half that is easy to be surprised by, so it says
+                where the commits went and that the branch can be brought back.
+                Azure DevOps offers Restore branch on a completed pull request;
+                claiming otherwise here would be scarier than the truth. */}
+            <p>
+              <span className="font-mono">{branch(pr.sourceBranch)}</span> is deleted — its work
+              lives on in the squashed commit, and Azure DevOps can restore the branch afterwards.
+              No policy is bypassed.
+            </p>
           </DialogDescription>
         </DialogHeader>
 
@@ -652,7 +737,7 @@ function MergeControl({
             onPress={() => {
               // Narrowing, not defence: `mergeBlocker` refuses a null tip, so
               // the dialog cannot be open without one.
-              if (sha !== null) merge.run(sha)
+              if (sha !== null) merge.run({ lastMergeSourceCommit: sha, commitMessage: message })
             }}
           >
             {merge.isPending ? 'Merging…' : 'Squash and merge'}
@@ -2178,8 +2263,12 @@ export function PullRequestDetailView({
           </Section>
 
           {/* Directly under the checklist, because it is the answer to what the
-              checklist asks. */}
-          <MergeControl pr={pr} prRef={prRef} failed={failed} />
+              checklist asks — and a section of its own, like every other block on
+              this page, because it is no longer one button: it is where the
+              commit that lands on the target branch gets written. */}
+          <Section title="Merge">
+            <MergeControl pr={pr} prRef={prRef} failed={failed} />
+          </Section>
 
           {/* Second, and for the same reason the policies are first: a failing
               quality gate is one of the things stopping this from merging. The
