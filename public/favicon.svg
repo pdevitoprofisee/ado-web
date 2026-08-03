@@ -1,0 +1,63 @@
+<!--
+  Traced by hand from `BoardMathIcon` in @hugeicons/core-free-icons, the same
+  mark the inbox header draws, so the tab and the page agree. Hugeicons ships
+  icons as JS arrays rather than files, and a favicon has to be something the
+  browser can fetch, so this is a copy: change the icon in `routes/index.tsx`
+  and you have to change these paths too. The `d` strings below are verbatim.
+
+  Two deliberate differences from the in-app render, both about size rather than
+  shape. The viewBox is tightened from `0 0 24 24` to the mark's actual bounds
+  plus a pixel, because a 16px tab strip cannot spare the padding; and the
+  stroke goes 1.5 to 1.75, because at that size Prof's pen thins to a hairline
+  and the three chalk marks inside the board are the first thing to vanish. They
+  are what makes this a chalkboard instead of a television, so they stay.
+
+  Colour is hard-coded per scheme: `currentColor` has nothing to inherit from
+  here. Both values are pen-green from `styles.css`, which is the same pen as
+  teal-600, so the tab follows the OS the same way the app follows it.
+
+  Green is allowed here because a logo is a mark and not a word, and a mark owes
+  3:1 rather than 4.5:1. A favicon is measured against browser chrome rather
+  than the app's own sheet, so all three grounds were computed: on the active
+  tab (white / #35363A) pen-green is 4.32 light and 6.40 dark, and on the
+  inactive tab strip (#DEE1E6 / #202124), which is the worst case, 3.30 and
+  8.54. The tightest number in the set is that 3.30 and it clears.
+
+  teal-500 was the first choice and is wrong: 2.83 on the app's paper and 2.33
+  on a light tab strip, so it fails 3:1 outright. If this colour is ever
+  changed, recompute against the tab strip and not against paper-0 — the strip
+  is the darker light ground and it is what fails first.
+
+  Two rules this file has to keep, both of which cost a broken favicon rather
+  than a warning if they are dropped. An SVG is parsed as XML, so no comment
+  here may contain a double hyphen; write token names without their leading
+  dashes, as above. And the stroke below is set twice, once as an attribute and
+  once in CSS, because the paths are `fill="none"`: a renderer that ignores the
+  style block would otherwise draw eight invisible lines, which looks exactly
+  like having no favicon at all.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="1 1 22 22">
+  <style>
+    .mark { stroke: #00897a; }
+    @media (prefers-color-scheme: dark) {
+      .mark { stroke: #3dd2bc; }
+    }
+  </style>
+  <g
+    class="mark"
+    fill="none"
+    stroke="#00897a"
+    stroke-width="1.75"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M3 10C3 6.22876 3 4.34315 4.17157 3.17157C5.34315 2 7.22876 2 11 2H13C16.7712 2 18.6569 2 19.8284 3.17157C21 4.34315 21 6.22876 21 10V16H3V10Z" />
+    <path d="M2 16H22" />
+    <path d="M4 22L7 16" />
+    <path d="M20 22L17 16" />
+    <path d="M13 9H11" />
+    <path d="M8 11L8 7L7 8" />
+    <path d="M17 11L17 7L16 8" />
+    <path d="M12 20L12 16" />
+  </g>
+</svg>

@@ -41,6 +41,15 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
         rel: 'stylesheet',
         href: appCss,
       },
+      // Served from `public/` at the root, so this path is literal rather than a
+      // bundler import: the file carries hand-written CSS for its own dark
+      // variant, and putting it through the asset pipeline would only add a
+      // hash to a URL nothing links to twice.
+      {
+        rel: 'icon',
+        type: 'image/svg+xml',
+        href: '/favicon.svg',
+      },
     ],
   }),
   shellComponent: RootDocument,

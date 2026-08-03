@@ -1,6 +1,8 @@
 import { useMemo, useReducer, useRef } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
+import { BoardMathIcon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 
 import { inboxQuery } from '@/server/inbox-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
@@ -130,6 +132,37 @@ function Home() {
             page. It also costs 8px of padding-bottom, which the header's baseline
             alignment absorbs. */}
         <h1 className="text-2xl font-semibold tracking-tight">
+          {/* The app's mark, and the same one the tab draws — see
+              `public/favicon.svg`, which is a hand copy of this icon and has to
+              be edited alongside it. A chalkboard because that is what the sheet
+              under all of this is: Prof's dark mode is chalk on a deep board,
+              and in a tab strip of Azure DevOps pages the thing worth being is
+              not another git glyph. It also stays out of the way of `pr-list`,
+              where the git family is already spent on merge state.
+
+              Inside the <h1> rather than beside it, so the wordmark stays one
+              element and the header's baseline alignment keeps working: a flex
+              wrapper would hand the header an <svg> as its first item, and an
+              icon has no baseline to align the row on. `inline` because
+              Tailwind's preflight makes every svg a block, and
+              `align-text-bottom` to sit it on the descender — 24px semibold caps
+              reach ~17px above the baseline, so a 22px box left on the baseline
+              would stand a full 5px proud of the letters.
+
+              `pen-green` and not `ink`, matching the favicon so the tab and the
+              header are one mark; and not `teal-500`, which is the colour of the
+              underline beside it and would have made the lockup a single hue.
+              teal-500 is 2.83:1 on paper-0, and a mark owes 3:1 — pen-green is
+              4.01:1 and clears. The two greens sitting a step apart is the cost
+              of that; if it ever reads as two attempts at one colour, the fix is
+              to bring the underline down to pen-green, not to bring the mark up.
+              */}
+          <HugeiconsIcon
+            icon={BoardMathIcon}
+            size={22}
+            className="text-pen-green mr-2 inline align-text-bottom"
+            aria-hidden
+          />
           <span className="sketch-underline sketch-underline--teal">ado-web</span>
         </h1>
         <p className="text-muted-foreground text-xs">
