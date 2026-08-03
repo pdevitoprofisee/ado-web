@@ -4,11 +4,15 @@ import { useQuery } from '@tanstack/react-query'
 
 import { historyQuery } from '@/server/history-fn'
 import { CADENCE } from '@/lib/cadence'
+import { pageTitle } from '@/lib/page-title'
 import { PullRequestSection, useInboxSelection } from '@/components/pr-list'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 
-export const Route = createFileRoute('/history')({ component: HistoryPage })
+export const Route = createFileRoute('/history')({
+  component: HistoryPage,
+  head: () => pageTitle('History'),
+})
 
 function HistoryPage() {
   // Set by Refresh and consumed by the next run, exactly as on the inbox, so the

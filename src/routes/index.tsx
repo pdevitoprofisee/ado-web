@@ -6,6 +6,7 @@ import { HugeiconsIcon } from '@hugeicons/react'
 
 import { inboxQuery } from '@/server/inbox-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
+import { pageTitle } from '@/lib/page-title'
 import { toggleTheme, useTheme } from '@/lib/theme'
 import { PullRequestSection, useInboxSelection } from '@/components/pr-list'
 import { useHydration } from '@/components/use-hydration'
@@ -17,7 +18,12 @@ import { Kbd } from '@/components/ui/kbd'
 import type { PullRequestRow } from '@/server/inbox'
 import type { Role, WatchedPullRequest } from '@/server/notifications'
 
-export const Route = createFileRoute('/')({ component: Home })
+export const Route = createFileRoute('/')({
+  component: Home,
+  // "Inbox" and not "ado-web", which the root already says: the tab has to
+  // distinguish this page from the five others, not name the app twice.
+  head: () => pageTitle('Inbox'),
+})
 
 /** The rows of one inbox section, as much of them as detection can use. */
 function watchable(rows: readonly PullRequestRow[], role: Role): WatchedPullRequest[] {

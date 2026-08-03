@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { BranchDiff } from '@/components/branch-diff'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { pageTitle } from '@/lib/page-title'
 import { cn } from '@/lib/utils'
 import { dirtyCountQuery, localChangesQuery } from '@/server/local-git-fn'
 
@@ -57,6 +58,11 @@ export function branchDiffSearch(search: Record<string, unknown>): BranchDiffSea
 export const Route = createFileRoute('/repos_/$repo')({
   component: BranchDiffPage,
   validateSearch: branchDiffSearch,
+  // The repository, not the branch pair beside it in the header: the pair is two
+  // refs and a separator before the tab has room for either, and `?branch=` is
+  // allowed to be absent — a tab whose name depended on it would go blank on the
+  // common URL.
+  head: ({ params }) => pageTitle(params.repo),
 })
 
 function BranchDiffPage() {

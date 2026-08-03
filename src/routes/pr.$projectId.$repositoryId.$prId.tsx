@@ -7,6 +7,7 @@ import { HugeiconsIcon } from '@hugeicons/react'
 import { pullRequestQuery } from '@/server/pull-request-fn'
 import { sonarReportQuery } from '@/server/sonar-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
+import { pageTitle } from '@/lib/page-title'
 import { pullRequestKey } from '@/lib/requeue'
 import { useCommand } from '@/commands/command-provider'
 import { PullRequestDetailView } from '@/components/pr-detail'
@@ -29,6 +30,13 @@ import type { DiffLayout } from '@/lib/diff-contract'
 
 export const Route = createFileRoute('/pr/$projectId/$repositoryId/$prId')({
   component: PullRequestPage,
+  // The number, drawn the way the rest of the app draws one — `!1234`, which is
+  // ADO's own shorthand and what `pr-list` puts in its link titles. Not the pull
+  // request's *title*, which would be the better tab if it were reachable: `head`
+  // is handed params and loader data, and the paragraph above records why the
+  // fetch here is a `useQuery` in the component and not a loader. Two open review
+  // tabs are still told apart by their numbers.
+  head: ({ params }) => pageTitle(`!${params.prId}`),
 })
 
 function PullRequestPage() {

@@ -2,12 +2,16 @@ import { Link, createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 
 import { repositoriesQuery } from '@/server/local-git-fn'
+import { pageTitle } from '@/lib/page-title'
 import { RepositoryList, useRepoSelection } from '@/components/repo-list'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 
 import type { RepositoryEntry } from '@/lib/local-git-contract'
 
-export const Route = createFileRoute('/repos')({ component: RepositoriesPage })
+export const Route = createFileRoute('/repos')({
+  component: RepositoriesPage,
+  head: () => pageTitle('Repositories'),
+})
 
 /** Stable identity, so the selection's `useMemo` is not rebuilt every render. */
 const NONE: readonly RepositoryEntry[] = []

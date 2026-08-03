@@ -15,6 +15,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { pageTitle } from '@/lib/page-title'
 import logo from '@/assets/prof-logo.png'
 
 import type { ReactNode } from 'react'
@@ -27,7 +28,12 @@ import type { CredentialKind } from '@/server/credentials'
 // that `@napi-rs/keyring` is absent from `.output/public`; if a future edit
 // imports the store directly, that check is what fails.
 
-export const Route = createFileRoute('/onboarding')({ component: Onboarding })
+export const Route = createFileRoute('/onboarding')({
+  component: Onboarding,
+  // The word the inbox links it by, so the tab and the link agree — the file is
+  // named for the errand, the page is named for the thing.
+  head: () => pageTitle('Connections'),
+})
 
 const STATUS_KEY = ['credential-status'] as const
 
