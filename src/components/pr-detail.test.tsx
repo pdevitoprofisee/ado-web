@@ -697,6 +697,32 @@ const BLOCKED: ReadonlyArray<[string, Partial<PullRequestDetail>, string]> = [
     'One blocking policy is not satisfied yet.',
   ],
   [
+    'a required reviewer who has not voted',
+    { reviewers: [reviewer({ displayName: 'Patrick Mize', vote: 0 })] },
+    'Patrick Mize is a required reviewer and has not approved.',
+  ],
+  [
+    'a required reviewer waiting on the author',
+    { reviewers: [reviewer({ displayName: 'Patrick Mize', vote: -5 })] },
+    'Patrick Mize is a required reviewer and has not approved.',
+  ],
+  [
+    'a required reviewer who rejected it',
+    { reviewers: [reviewer({ displayName: 'Patrick Mize', vote: -10 })] },
+    'Patrick Mize is a required reviewer and has not approved.',
+  ],
+  // A required *group* is a requirement too, and it is the one most pull requests
+  // on this org carry — see `awaitedReviewers`.
+  [
+    'a required group nobody in it has voted for',
+    {
+      reviewers: [
+        reviewer({ displayName: '[Products]\\Contributors', isContainer: true, vote: 0 }),
+      ],
+    },
+    '[Products]\\Contributors is a required reviewer and has not approved.',
+  ],
+  [
     'a source tip ADO did not name',
     { lastMergeSourceCommit: null },
     'Azure DevOps did not say which commit the source branch is on, so merging from here could merge work this page never showed.',
@@ -730,6 +756,61 @@ describe('mergeBlocker', () => {
     expect(mergeBlocker(detail(), { policies: true })).toBe(
       'The branch policies could not be loaded, so whether this may merge is unknown.',
     )
+  })
+
+  // The shape of PR 24949, which is what sent us here: seven policies, every one
+  // of them `approved`, and Azure DevOps still refusing to complete it because a
+  // reviewer marked required on the pull request had not voted. A required
+  // reviewer is not a policy evaluation, so the checklist cannot see this one.
+  it('refuses a required reviewer even when every policy passed', () => {
+    expect(
+      mergeBlocker(
+        detail({
+          policies: [
+            policy({ id: '1', name: 'Build', status: 'approved', blocking: false }),
+            policy({ id: '2', name: 'Required reviewers', status: 'approved', blocking: false }),
+          ],
+          reviewers: [
+            reviewer({ id: 'rev-1', displayName: 'Chuck Thompson', vote: 10 }),
+            reviewer({ id: 'rev-2', displayName: 'Patrick Mize', vote: 0 }),
+          ],
+        }),
+        {},
+      ),
+    ).toBe('Patrick Mize is a required reviewer and has not approved.')
+  })
+
+  it('names two and counts three', () => {
+    const waiting = (count: number) =>
+      mergeBlocker(
+        detail({
+          reviewers: Array.from({ length: count }, (_unused, index) =>
+            reviewer({ id: `rev-${index}`, displayName: `Reviewer ${index}`, vote: 0 }),
+          ),
+        }),
+        {},
+      )
+
+    expect(waiting(2)).toBe('Reviewer 0 and Reviewer 1 are required reviewers and have not approved.')
+    expect(waiting(3)).toBe('3 required reviewers have not approved.')
+  })
+
+  it('takes both approvals as approval, and ignores an optional reviewer', () => {
+    // "Approved with suggestions" satisfies the requirement — that is the whole
+    // difference between it and "waiting for author". And an optional reviewer who
+    // never voted is the state most pull requests on this org are in.
+    expect(
+      mergeBlocker(
+        detail({
+          reviewers: [
+            reviewer({ id: 'rev-1', vote: 10 }),
+            reviewer({ id: 'rev-2', vote: 5 }),
+            reviewer({ id: 'rev-3', vote: 0, isRequired: false }),
+          ],
+        }),
+        {},
+      ),
+    ).toBeNull()
   })
 
   it('allows it when nothing we can see is in the way', () => {

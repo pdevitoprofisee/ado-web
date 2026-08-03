@@ -485,6 +485,50 @@ function MergeBanner({ merge, conflictsError }: { merge: MergeState; conflictsEr
 }
 
 /**
+ * A vote that counts as an approval.
+ *
+ * Both of ADO's approvals do — "approved with suggestions" satisfies a reviewer
+ * requirement, which is the whole difference between it and "waiting for author".
+ * So the test is `>=` against the lower of the two rather than a set of the
+ * values that pass, and a sixth positive integer on the scale would count.
+ */
+const APPROVES = 5
+
+/**
+ * The required reviewers standing between this branch and its target, as a
+ * sentence — or `null` when none are.
+ *
+ * **This is not in the policy list, and that is the bug it exists to fix.** On
+ * PR 24949 all seven policy evaluations read `approved` while Azure DevOps' own
+ * header said "Patrick Mize must approve": a reviewer marked required *on the
+ * pull request* produces no evaluation at all, so a page that reads only
+ * `policies` sees an entirely green checklist and offers a merge ADO will not
+ * take. ADO's Complete button gates on policies **and** on these; so does this.
+ *
+ * Containers are counted the same way people are, because ADO rolls a member's
+ * vote up onto the group: measured on the same pull request, `[Products]\
+ * Contributors` carried `vote: 10` of its own once Chuck Thompson approved on its
+ * behalf. Skipping groups would drop the requirement that a team look at this.
+ *
+ * Named while there are one or two, counted after that. "One required reviewer
+ * has not approved" sends the reader off to find out who, and the payload already
+ * knows; past two the names stop being a sentence.
+ */
+function awaitedReviewers(reviewers: readonly Reviewer[]): string | null {
+  const names = reviewers
+    .filter((reviewer) => reviewer.isRequired && reviewer.vote < APPROVES)
+    .map((reviewer) => reviewer.displayName)
+
+  if (names.length === 0) return null
+  if (names.length === 1) return `${names[0]} is a required reviewer and has not approved.`
+  if (names.length === 2) {
+    return `${names[0]} and ${names[1]} are required reviewers and have not approved.`
+  }
+
+  return `${names.length} required reviewers have not approved.`
+}
+
+/**
  * Why this pull request cannot be squash-merged from this page, or `null` when it
  * can be.
  *
@@ -499,12 +543,13 @@ function MergeBanner({ merge, conflictsError }: { merge: MergeState; conflictsEr
  *
  * The order is the order the question is actually asked in — is this open, is it
  * still a draft, does it merge at all, do we know about the policies, do the
- * policies allow it, and do we know what we would be merging.
+ * policies allow it, have the people who must approve approved, and do we know
+ * what we would be merging.
  */
 export function mergeBlocker(
   pr: Pick<
     PullRequestDetail,
-    'status' | 'isDraft' | 'merge' | 'policies' | 'lastMergeSourceCommit'
+    'status' | 'isDraft' | 'merge' | 'policies' | 'reviewers' | 'lastMergeSourceCommit'
   >,
   failed: FailedSections,
 ): string | null {
@@ -546,6 +591,14 @@ export function mergeBlocker(
       ? 'One blocking policy is not satisfied yet.'
       : `${blocking} blocking policies are not satisfied yet.`
   }
+
+  // After the policies, because a required reviewer is the same class of question
+  // and the policy rows are the ones with a build behind them; before the source
+  // tip, because "somebody still has to look at this" is the more useful sentence
+  // of the two. The reviewers come from the detail call, which is this page's one
+  // hard dependency, so there is no "did the list load" case to answer here.
+  const awaited = awaitedReviewers(pr.reviewers)
+  if (awaited !== null) return awaited
 
   if (pr.lastMergeSourceCommit === null) {
     return 'Azure DevOps did not say which commit the source branch is on, so merging from here could merge work this page never showed.'
