@@ -174,6 +174,13 @@ function Home() {
             history
           </Link>
           {' · '}
+          {/* Beside history and not in the `?` sheet: a page you open once a
+              session from a link already on screen has no wording worth printing
+              there, and every key it would want is one the list itself claims. */}
+          <Link to="/repos" className="text-ink hover:text-teal-600 underline underline-offset-4">
+            repositories
+          </Link>
+          {' · '}
           <Link
             to="/onboarding"
             className="text-ink hover:text-teal-600 underline underline-offset-4"

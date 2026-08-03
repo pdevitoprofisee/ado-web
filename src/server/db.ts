@@ -177,6 +177,36 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
            updated_at    INTEGER NOT NULL
          ) STRICT`,
   },
+  {
+    version: 7,
+    name: 'local-viewed-files',
+    // `viewed_file`'s twin for a repository on this disk, and not a cache either
+    // — so the `DELETE FROM` licence does not extend here for the same reason it
+    // does not extend to migration 3: a mark is a fact about the person reading,
+    // and dropping the table loses work rather than a copy of something a server
+    // still has.
+    //
+    // A second table rather than nullable columns on the first. The two are
+    // addressed by things that have nothing to do with each other — a repository
+    // GUID and a pull request id there, a directory basename and a branch name
+    // here — and a shared table would mean a key where half the columns are NULL
+    // in every row, which a STRICT table's implicitly NOT NULL primary key will
+    // not hold anyway (see migration 3).
+    //
+    // `branch` is in the key because a mark is about reading *this* diff: the
+    // same file at the same sha, read on a feature branch, is not something you
+    // have read on the branch beside it. `object_id` carries the same meaning it
+    // does above — the mark is on the content, so a rebase writes a new sha and
+    // the old row stops matching. See src/server/viewed.ts.
+    up: `CREATE TABLE local_viewed_file (
+           slug      TEXT    NOT NULL,
+           branch    TEXT    NOT NULL,
+           path      TEXT    NOT NULL,
+           object_id TEXT    NOT NULL,
+           viewed_at INTEGER NOT NULL,
+           PRIMARY KEY (slug, branch, path, object_id)
+         ) STRICT`,
+  },
 ]
 
 /**

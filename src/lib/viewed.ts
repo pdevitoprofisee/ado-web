@@ -1,9 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fileViewedKey } from './viewed-key'
-import { markViewed, viewedQuery } from '@/server/viewed-fn'
+import {
+  localViewedQuery,
+  markLocalViewed,
+  markViewed,
+  viewedQuery,
+} from '@/server/viewed-fn'
 
-import type { ViewedListResult } from '@/server/viewed-fn'
+import type { MarkViewedResult, ViewedListResult } from '@/server/viewed-fn'
 import type { ChangedFile, PullRequestRef } from '@/server/pull-request'
 
 // The file list's half of T-021. `@/server/viewed` is the store; this is the
@@ -33,16 +38,25 @@ export interface ViewedFiles {
   readonly setViewed: (file: ChangedFile, viewed: boolean) => void
 }
 
-export function useViewedFiles(ref: PullRequestRef): ViewedFiles {
+/**
+ * The whole of the above, for either store.
+ *
+ * Two pages read marks — a pull request and a local branch — and only the
+ * *address* differs between them: both server-function pairs answer
+ * `ViewedListResult` and `MarkViewedResult`, so everything from the cache write
+ * to the optimistic overlay is the same code twice if it is not this. The two
+ * hooks below supply a key namespace, a loader and a marker, and nothing else.
+ */
+function useMarks(
+  key: readonly unknown[],
+  load: () => Promise<ViewedListResult>,
+  mark: (file: ChangedFile, viewed: boolean) => Promise<MarkViewedResult>,
+): ViewedFiles {
   const client = useQueryClient()
-
-  // No `projectId`: the server function does not take one, so putting it in the
-  // key would only invalidate the same answer twice.
-  const key = ['viewed', ref.repositoryId, ref.id] as const
 
   const query = useQuery({
     queryKey: key,
-    queryFn: () => viewedQuery({ data: { repositoryId: ref.repositoryId, id: ref.id } }),
+    queryFn: load,
     // Nothing else writes this table, and the mutation below already updates the
     // cache, so a refetch could only ever return what is already here. The pull
     // request page polls; without this it would poll this too.
@@ -51,16 +65,7 @@ export function useViewedFiles(ref: PullRequestRef): ViewedFiles {
 
   const mutation = useMutation({
     mutationFn: (input: { file: ChangedFile; viewed: boolean }) =>
-      markViewed({
-        data: {
-          repositoryId: ref.repositoryId,
-          id: ref.id,
-          path: input.file.path,
-          objectId: input.file.objectId,
-          originalObjectId: input.file.originalObjectId,
-          viewed: input.viewed,
-        },
-      }),
+      mark(input.file, input.viewed),
     // Nothing on error. A failed mark leaves the box ticked and the row missing,
     // which is wrong — but silently un-ticking a box the reviewer just ticked is
     // worse, and the honest fix is a message this page has nowhere to put yet.
@@ -104,4 +109,49 @@ export function useViewedFiles(ref: PullRequestRef): ViewedFiles {
       mutation.mutate({ file, viewed })
     },
   }
+}
+
+export function useViewedFiles(ref: PullRequestRef): ViewedFiles {
+  // No `projectId`: the server function does not take one, so putting it in the
+  // key would only invalidate the same answer twice.
+  return useMarks(
+    ['viewed', ref.repositoryId, ref.id],
+    () => viewedQuery({ data: { repositoryId: ref.repositoryId, id: ref.id } }),
+    (file, viewed) =>
+      markViewed({
+        data: {
+          repositoryId: ref.repositoryId,
+          id: ref.id,
+          path: file.path,
+          objectId: file.objectId,
+          originalObjectId: file.originalObjectId,
+          viewed,
+        },
+      }),
+  )
+}
+
+/**
+ * The marks for one branch of one local repository.
+ *
+ * A namespace of its own under the same first segment, so the two stores cannot
+ * collide on a slug that happens to look like a GUID — and so that clearing
+ * either is still one prefix.
+ */
+export function useLocalViewedFiles(slug: string, branch: string): ViewedFiles {
+  return useMarks(
+    ['viewed', 'local', slug, branch],
+    () => localViewedQuery({ data: { slug, branch } }),
+    (file, viewed) =>
+      markLocalViewed({
+        data: {
+          slug,
+          branch,
+          path: file.path,
+          objectId: file.objectId,
+          originalObjectId: file.originalObjectId,
+          viewed,
+        },
+      }),
+  )
 }

@@ -12,6 +12,8 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
+import { Route as ReposRouteImport } from './routes/repos'
+import { Route as ReposRepoRouteImport } from './routes/repos_.$repo'
 import { Route as PrProjectIdRepositoryIdPrIdRouteImport } from './routes/pr.$projectId.$repositoryId.$prId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -29,6 +31,16 @@ const OnboardingRoute = OnboardingRouteImport.update({
   path: '/onboarding',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ReposRoute = ReposRouteImport.update({
+  id: '/repos',
+  path: '/repos',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ReposRepoRoute = ReposRepoRouteImport.update({
+  id: '/repos_/$repo',
+  path: '/repos/$repo',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PrProjectIdRepositoryIdPrIdRoute =
   PrProjectIdRepositoryIdPrIdRouteImport.update({
     id: '/pr/$projectId/$repositoryId/$prId',
@@ -40,12 +52,16 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/history': typeof HistoryRoute
   '/onboarding': typeof OnboardingRoute
+  '/repos': typeof ReposRoute
+  '/repos/$repo': typeof ReposRepoRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/history': typeof HistoryRoute
   '/onboarding': typeof OnboardingRoute
+  '/repos': typeof ReposRoute
+  '/repos/$repo': typeof ReposRepoRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
 }
 export interface FileRoutesById {
@@ -53,19 +69,34 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/history': typeof HistoryRoute
   '/onboarding': typeof OnboardingRoute
+  '/repos': typeof ReposRoute
+  '/repos_/$repo': typeof ReposRepoRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/history' | '/onboarding' | '/pr/$projectId/$repositoryId/$prId'
+    | '/'
+    | '/history'
+    | '/onboarding'
+    | '/repos'
+    | '/repos/$repo'
+    | '/pr/$projectId/$repositoryId/$prId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/history' | '/onboarding' | '/pr/$projectId/$repositoryId/$prId'
+  to:
+    | '/'
+    | '/history'
+    | '/onboarding'
+    | '/repos'
+    | '/repos/$repo'
+    | '/pr/$projectId/$repositoryId/$prId'
   id:
     | '__root__'
     | '/'
     | '/history'
     | '/onboarding'
+    | '/repos'
+    | '/repos_/$repo'
     | '/pr/$projectId/$repositoryId/$prId'
   fileRoutesById: FileRoutesById
 }
@@ -73,6 +104,8 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   HistoryRoute: typeof HistoryRoute
   OnboardingRoute: typeof OnboardingRoute
+  ReposRoute: typeof ReposRoute
+  ReposRepoRoute: typeof ReposRepoRoute
   PrProjectIdRepositoryIdPrIdRoute: typeof PrProjectIdRepositoryIdPrIdRoute
 }
 
@@ -99,6 +132,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OnboardingRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/repos': {
+      id: '/repos'
+      path: '/repos'
+      fullPath: '/repos'
+      preLoaderRoute: typeof ReposRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/repos_/$repo': {
+      id: '/repos_/$repo'
+      path: '/repos/$repo'
+      fullPath: '/repos/$repo'
+      preLoaderRoute: typeof ReposRepoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/pr/$projectId/$repositoryId/$prId': {
       id: '/pr/$projectId/$repositoryId/$prId'
       path: '/pr/$projectId/$repositoryId/$prId'
@@ -113,6 +160,8 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   HistoryRoute: HistoryRoute,
   OnboardingRoute: OnboardingRoute,
+  ReposRoute: ReposRoute,
+  ReposRepoRoute: ReposRepoRoute,
   PrProjectIdRepositoryIdPrIdRoute: PrProjectIdRepositoryIdPrIdRoute,
 }
 export const routeTree = rootRouteImport

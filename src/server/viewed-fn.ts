@@ -1,6 +1,13 @@
 import { createServerFn } from '@tanstack/react-start'
 
-import { contentId, listViewed, setViewed, viewedKey } from './viewed'
+import {
+  contentId,
+  listLocalViewed,
+  listViewed,
+  setLocalViewed,
+  setViewed,
+  viewedKey,
+} from './viewed'
 
 // The file list's read/unread state. The one server function pair in this
 // project that makes no Azure DevOps call at all — everything here is local
@@ -128,6 +135,89 @@ export const markViewed = createServerFn({ method: 'POST' })
 
     setViewed(
       { repositoryId: data.repositoryId, pullRequestId: data.id, path: data.path, objectId },
+      data.viewed,
+    )
+
+    return { key: viewedKey(objectId, data.path), viewed: data.viewed }
+  })
+
+// ---------------------------------------------------------------------------
+// The same pair, addressed by slug and branch.
+// ---------------------------------------------------------------------------
+//
+// Both results above are reused rather than twinned: only the address differs,
+// and one `useMarks` hook in `lib/viewed.ts` drives both pairs because of it.
+//
+// The validators are the loosest in the app and that is correct here. A slug and
+// a branch reaching this module are **key labels and never argv** — they are
+// stored in two TEXT columns and compared against two TEXT columns, and nothing
+// below opens a repository, so the whitelist rule `local-git-fn.ts` enforces has
+// nothing to enforce against. What is still worth rejecting is the empty string,
+// which would write a row under an address no page can ever ask for again.
+
+export interface LocalViewedListRequest {
+  readonly slug: string
+  readonly branch: string
+}
+
+export interface MarkLocalViewedRequest extends LocalViewedListRequest {
+  readonly path: string
+  readonly objectId: string | null
+  readonly originalObjectId: string | null
+  readonly viewed: boolean
+}
+
+function label(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value === '') {
+    throw new Error(`${field} must not be empty.`)
+  }
+
+  return value
+}
+
+export function localViewedListRequest(input: unknown): LocalViewedListRequest {
+  const raw = (input ?? {}) as Record<string, unknown>
+
+  return { slug: label(raw.slug, 'slug'), branch: label(raw.branch, 'branch') }
+}
+
+export function markLocalViewedRequest(input: unknown): MarkLocalViewedRequest {
+  const raw = (input ?? {}) as Record<string, unknown>
+  const { slug, branch } = localViewedListRequest(raw)
+
+  if (typeof raw.path !== 'string' || raw.path === '') {
+    throw new Error('path must be a file path.')
+  }
+  if (typeof raw.viewed !== 'boolean') {
+    throw new Error('viewed must be a boolean.')
+  }
+
+  return {
+    slug,
+    branch,
+    path: raw.path,
+    objectId: sha(raw.objectId, 'objectId'),
+    originalObjectId: sha(raw.originalObjectId, 'originalObjectId'),
+    viewed: raw.viewed,
+  }
+}
+
+export const localViewedQuery = createServerFn({ method: 'GET' })
+  .validator(localViewedListRequest)
+  .handler(async ({ data }): Promise<ViewedListResult> => ({
+    keys: [...listLocalViewed(data.slug, data.branch)],
+  }))
+
+export const markLocalViewed = createServerFn({ method: 'POST' })
+  .validator(markLocalViewedRequest)
+  .handler(async ({ data }): Promise<MarkViewedResult> => {
+    const objectId = contentId(data)
+    if (objectId === null) {
+      throw new Error('objectId or originalObjectId is required.')
+    }
+
+    setLocalViewed(
+      { slug: data.slug, branch: data.branch, path: data.path, objectId },
       data.viewed,
     )
 

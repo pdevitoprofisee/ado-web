@@ -46,6 +46,7 @@ describe('migrations', () => {
     // are guesses; the phase that needs one adds it.
     expect(tables).toEqual([
       'blob_cache',
+      'local_viewed_file',
       'notification',
       'pr_cache',
       'pr_signal',
@@ -59,6 +60,7 @@ describe('migrations', () => {
       { version: 4, name: 'pr-cache-ready' },
       { version: 5, name: 'notification-log' },
       { version: 6, name: 'pr-signal' },
+      { version: 7, name: 'local-viewed-files' },
     ])
 
     db.close()
@@ -110,7 +112,7 @@ describe('migrations', () => {
     const second = openDatabase(path)
     migrate(second) // and again, in-process, for good measure
 
-    expect(second.prepare('SELECT count(*) c FROM schema_migrations').get()?.c).toBe(6)
+    expect(second.prepare('SELECT count(*) c FROM schema_migrations').get()?.c).toBe(7)
     expect(readPrCache(7, 'a'.repeat(40), second)).toEqual({ checks: 'green' })
 
     second.close()

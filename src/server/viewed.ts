@@ -103,3 +103,78 @@ export function setViewed(
        viewed_at = excluded.viewed_at`,
   ).run(...key, Date.now())
 }
+
+// ---------------------------------------------------------------------------
+// The same thing, for a repository on this disk.
+// ---------------------------------------------------------------------------
+//
+// Everything above holds here — the mark hangs on a blob sha, unviewing deletes
+// the row, and the table is not a cache — and only the address changes: a
+// directory basename and a branch name in place of a repository GUID and a pull
+// request id. `viewedKey` is shared verbatim, because it names no vendor and the
+// two pages have to agree on what a key looks like or the file list's lookups
+// silently miss.
+
+/** One mark on a local branch diff, fully addressed. */
+export interface LocalViewedRef {
+  readonly slug: string
+  /**
+   * In the key for the reason `pullRequestId` is above: reading a file on this
+   * branch is not reading it on the branch beside it, even at the same sha.
+   *
+   * The branch and not the target. A diff whose base moved is a different diff,
+   * but it is the *same reading pass* — re-marking every file because someone
+   * fetched would make the marks worthless on exactly the branch that is being
+   * worked on hardest.
+   */
+  readonly branch: string
+  readonly path: string
+  /** Already resolved through `contentId` — never the raw `objectId` of a delete. */
+  readonly objectId: string
+}
+
+/** Every mark for one branch of one repository. See `listViewed`. */
+export function listLocalViewed(
+  slug: string,
+  branch: string,
+  db: DatabaseSync = getDatabase(),
+): ReadonlySet<string> {
+  const rows = db
+    .prepare(
+      `SELECT object_id, path FROM local_viewed_file
+       WHERE slug = ? AND branch = ?`,
+    )
+    .all(slug, branch)
+
+  return new Set(rows.map((row) => viewedKey(row.object_id as string, row.path as string)))
+}
+
+/**
+ * See `setViewed`. Neither the slug nor the branch is lower-cased on the way in:
+ * a repository GUID is a GUID however it is spelled, and `Feature/X` and
+ * `feature/x` are two different branches on the case-sensitive half of the
+ * machines this runs on.
+ */
+export function setLocalViewed(
+  ref: LocalViewedRef,
+  viewed: boolean,
+  db: DatabaseSync = getDatabase(),
+): void {
+  const key = [ref.slug, ref.branch, ref.path, ref.objectId.toLowerCase()] as const
+
+  if (!viewed) {
+    db.prepare(
+      `DELETE FROM local_viewed_file
+       WHERE slug = ? AND branch = ? AND path = ? AND object_id = ?`,
+    ).run(...key)
+
+    return
+  }
+
+  db.prepare(
+    `INSERT INTO local_viewed_file (slug, branch, path, object_id, viewed_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(slug, branch, path, object_id) DO UPDATE SET
+       viewed_at = excluded.viewed_at`,
+  ).run(...key, Date.now())
+}
