@@ -683,6 +683,8 @@ describe('a jumped-to line', () => {
 })
 
 describe('blobNotice', () => {
+  /** Who the bytes were asked of. Only the failure branch below reads it. */
+  const SOURCE = 'Azure DevOps'
   const text: BlobSide = { kind: 'text', lines: ['a'], bytes: 1, noFinalNewline: false }
   const blobs = (partial: Partial<FileBlobs>): FileBlobs => ({
     path: '/src/app.ts',
@@ -693,12 +695,12 @@ describe('blobNotice', () => {
   })
 
   it('says nothing when there is a diff to show', () => {
-    expect(blobNotice(blobs({}))).toBeNull()
+    expect(blobNotice(blobs({}), SOURCE)).toBeNull()
   })
 
   it('says nothing for an add or a delete — a missing side is still a diff', () => {
-    expect(blobNotice(blobs({ before: { kind: 'absent' } }))).toBeNull()
-    expect(blobNotice(blobs({ after: { kind: 'absent' } }))).toBeNull()
+    expect(blobNotice(blobs({ before: { kind: 'absent' } }), SOURCE)).toBeNull()
+    expect(blobNotice(blobs({ after: { kind: 'absent' } }), SOURCE)).toBeNull()
   })
 
   it('tells a rename apart from an empty diff', () => {
@@ -706,19 +708,20 @@ describe('blobNotice', () => {
     // read as a bug rather than as the answer.
     const notice = blobNotice(
       blobs({ before: { kind: 'absent' }, after: { kind: 'absent' }, renamedOnly: true }),
+      SOURCE,
     )
 
     expect(notice).toBe('Renamed. The contents did not change.')
   })
 
   it('names a binary file rather than rendering it as replacement characters', () => {
-    expect(blobNotice(blobs({ after: { kind: 'binary', bytes: 588 } }))).toBe(
+    expect(blobNotice(blobs({ after: { kind: 'binary', bytes: 588 } }), SOURCE)).toBe(
       'Binary file. There is nothing to show as text.',
     )
   })
 
   it('says how large the file it refused was', () => {
-    expect(blobNotice(blobs({ after: { kind: 'too-large', bytes: 2_400_000 } }))).toMatch(
+    expect(blobNotice(blobs({ after: { kind: 'too-large', bytes: 2_400_000 } }), SOURCE)).toMatch(
       /Too large to diff — 2,400,000 bytes\./,
     )
   })
@@ -731,14 +734,15 @@ describe('blobNotice', () => {
         before: { kind: 'failed', message: 'Azure DevOps answered 400.' },
         after: { kind: 'too-large', bytes: 9_000_000 },
       }),
+      SOURCE,
     )
 
     expect(notice).toBe('Azure DevOps did not return this file: Azure DevOps answered 400.')
   })
 
   it('has a sentence for the file with nothing on either side', () => {
-    expect(blobNotice(blobs({ before: { kind: 'absent' }, after: { kind: 'absent' } }))).toBe(
-      'Nothing to show for this file.',
-    )
+    expect(
+      blobNotice(blobs({ before: { kind: 'absent' }, after: { kind: 'absent' } }), SOURCE),
+    ).toBe('Nothing to show for this file.')
   })
 })

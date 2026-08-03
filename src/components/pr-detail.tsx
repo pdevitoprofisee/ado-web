@@ -39,7 +39,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { useWarmDiff } from '@/lib/blob-query'
+import { adoDiffSource, useWarmDiff } from '@/lib/blob-query'
 import { COMBINED, useChanges } from '@/lib/changes'
 import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
@@ -1761,9 +1761,7 @@ function ChangedFiles({
           {ordered.map((file) => (
             <li key={file.path}>
               <ChangedFileDiff
-                projectId={ref.projectId}
-                repositoryId={ref.repositoryId}
-                id={ref.id}
+                diffSource={adoDiffSource(ref)}
                 file={file}
                 layout={layout}
                 conflicted={conflicted.has(file.path)}

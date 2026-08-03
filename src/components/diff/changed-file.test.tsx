@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChangedFileDiff } from './changed-file'
-import { useWarmDiff } from '@/lib/blob-query'
+import { adoDiffSource, useWarmDiff } from '@/lib/blob-query'
 import { fileAnchor } from '@/lib/file-anchor'
 
 import type { ReactElement } from 'react'
@@ -110,9 +110,10 @@ function draw(ui: ReactElement) {
 function panel(props: Partial<Parameters<typeof ChangedFileDiff>[0]> = {}) {
   return (
     <ChangedFileDiff
-      projectId={REF.projectId}
-      repositoryId={REF.repositoryId}
-      id={REF.id}
+      // The real Azure DevOps source over the same `REF`, not a stub: the key it
+      // builds is the one the mocked server function is asked through, and the
+      // name it carries is the one the failure sentences below expect.
+      diffSource={adoDiffSource(REF)}
       file={FILE}
       layout="unified"
       {...props}

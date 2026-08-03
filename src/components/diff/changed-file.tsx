@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query'
 
 import { FileDiffPanel } from './file-diff'
 import { changeKind } from './file-tree'
-import { fileBlobsOptions } from '@/lib/blob-query'
 import { diffFile } from '@/lib/diff'
 import {
   buildRows,
@@ -24,7 +23,13 @@ import { cn } from '@/lib/utils'
 import type { ThreadActions } from '@/components/comments/thread-actions'
 import type { RowModel } from '@/lib/diff-rows'
 import type { FileThreads, IterationContext } from '@/lib/comment-contract'
-import type { DiffLayout, FileBlobs, HighlightedLines } from '@/lib/diff-contract'
+import type {
+  DiffLayout,
+  FileBlobs,
+  HighlightedLines,
+  NotedBlobs,
+} from '@/lib/diff-contract'
+import type { DiffSource } from '@/lib/diff-source'
 import type { ChangedFile } from '@/server/pull-request'
 
 // Where the four phase-3 pieces meet: fetch the two blobs, diff them, flatten
@@ -45,9 +50,7 @@ function linesOf(blobs: FileBlobs, side: 'before' | 'after'): readonly string[] 
 }
 
 export function ChangedFileDiff({
-  projectId,
-  repositoryId,
-  id,
+  diffSource,
   file,
   layout,
   conflicted = false,
@@ -59,9 +62,12 @@ export function ChangedFileDiff({
   iterationContext = null,
   jumpTo = null,
 }: {
-  projectId: string
-  repositoryId: string
-  id: number
+  /**
+   * Where this file's two blobs come from, and what to call it when they do not
+   * arrive. Named `diffSource` and not `source` only because a local `source`
+   * below already means "the blobs the current row model was built from".
+   */
+  diffSource: DiffSource
   file: ChangedFile
   layout: DiffLayout
   conflicted?: boolean
@@ -95,12 +101,13 @@ export function ChangedFileDiff({
   const [wrapper, near] = useNearViewport<HTMLDivElement>()
 
   const query = useQuery({
-    // Key, fetcher and cache policy from `fileBlobsOptions`, never written out
-    // here: the page warms the first few files of the list off idle while you are
-    // on the details tab, and a key spelled in two places is two cache entries and
-    // twice the calls for one file. `enabled` is the panel's own half of that
-    // bargain — the warmer fetches regardless, this fetches when it is being read.
-    ...fileBlobsOptions({ projectId, repositoryId, id }, file),
+    // Key, fetcher and cache policy from the source, never written out here: the
+    // page warms the first few files of the list off idle while you are on the
+    // details tab, and a key spelled in two places is two cache entries and twice
+    // the calls for one file. `enabled` is the panel's own half of that bargain —
+    // the warmer fetches regardless, this fetches when it is being read, and it
+    // is the only thing about the query this component decides.
+    ...diffSource.blobsOptions(file),
     enabled: opened || near,
   })
 
@@ -112,7 +119,7 @@ export function ChangedFileDiff({
   // first render after new blobs already has its rows, with no flash of the
   // previous file's diff.
   const [model, setModel] = useState<RowModel | null>(null)
-  const [source, setSource] = useState<FileBlobs | null>(null)
+  const [source, setSource] = useState<NotedBlobs | null>(null)
 
   if (blobs !== source) {
     setSource(blobs)
@@ -222,7 +229,7 @@ export function ChangedFileDiff({
     query.error !== null
       ? query.error.message
       : query.data !== undefined && query.data.blobs === null
-        ? (query.data.error ?? 'Azure DevOps did not answer.')
+        ? (query.data.error ?? `${diffSource.name} did not answer.`)
         : null
 
   return (
@@ -277,6 +284,10 @@ export function ChangedFileDiff({
         // that has. Both are "the bytes are on their way", and the alternative
         // is `blobNotice` calling an unfetched file empty.
         pending={query.isPending}
+        // The panel's own default is nobody in particular, which is right for a
+        // panel handed its blobs and wrong here: this one fetched them, so it
+        // knows who to name.
+        sourceName={diffSource.name}
         failure={failure}
         before={tokens.before}
         after={tokens.after}

@@ -76,6 +76,18 @@ export interface FileBlobs {
   readonly renamedOnly: boolean
 }
 
+/**
+ * `FileBlobs`, plus the sentence a source may already know to print instead of
+ * bytes — `LocalFileBlobs.note`, today.
+ *
+ * Optional and structural rather than a union with `LocalFileBlobs`, so that this
+ * file stays innocent of who the sources are: everything from `BlobAnswer` down
+ * to `blobNotice` is typed as this, an Azure DevOps answer satisfies it by simply
+ * not having the field, and the note survives the trip instead of being widened
+ * away at the seam and read back out by accident.
+ */
+export type NotedBlobs = FileBlobs & { readonly note?: string | null }
+
 export type DiffOp = 'context' | 'add' | 'delete'
 
 /**

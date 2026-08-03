@@ -15,9 +15,9 @@ import type {
   DiffLayout,
   DiffLine,
   DiffRow,
-  FileBlobs,
   HighlightToken,
   HighlightedLines,
+  NotedBlobs,
 } from '@/lib/diff-contract'
 import type { IterationContext } from '@/lib/comment-contract'
 import type { ThreadActions } from '@/components/comments/thread-actions'
@@ -124,15 +124,28 @@ function columnWidth(rows: readonly DiffRow[]): string {
  * has to name which: an empty diff pane looks identical whether the file is a
  * PNG, a 40 MB bundle, a rename that moved no bytes, or a fetch that lost. Only
  * the last of those is something going wrong.
+ *
+ * `source` is who the bytes were asked of — "Azure DevOps", or a repository on
+ * this disk. Required, and not defaulted to the service that happened to be
+ * first: the one sentence that reads it is an accusation, and a wrong name in it
+ * sends someone to check a network they never used.
  */
-export function blobNotice(blobs: FileBlobs): string | null {
+export function blobNotice(blobs: NotedBlobs, source: string): string | null {
+  // A source that already knows why there are no bytes wins, per the sentence on
+  // `LocalFileBlobs.note`: it can say "Submodule at abc1234" or "Mode changed,
+  // 100644 → 100755", and everything computed below can only say "nothing to
+  // show". The precedence over `failed` costs nothing live — a gitlink never
+  // reaches `cat-file` at all, and a mode flip has the same sha on both sides,
+  // so the two of them succeed or fail together and never disagree with a note.
+  if (blobs.note != null) return blobs.note
+
   const sides = [blobs.before, blobs.after]
 
   // Ahead of the rest deliberately: a side that failed is the only one of these
   // worth acting on, so it should not be hidden behind a quieter explanation.
   const failed = sides.find((side) => side.kind === 'failed')
   if (failed?.kind === 'failed') {
-    return `Azure DevOps did not return this file: ${failed.message}`
+    return `${source} did not return this file: ${failed.message}`
   }
 
   // Before the size and binary checks: on a pure rename both sides are absent,

@@ -15,6 +15,7 @@ import type {
   FileBlobs,
   FileDiff,
   HighlightedLines,
+  NotedBlobs,
 } from '@/lib/diff-contract'
 
 // One file's worth of diff, with the chrome around it: what it is called, how
@@ -88,6 +89,7 @@ export function FileDiffPanel({
   onOpenChange,
   pending = false,
   failure = null,
+  sourceName = 'The diff source',
   before = null,
   after = null,
   onExpand,
@@ -99,7 +101,11 @@ export function FileDiffPanel({
   jumped = null,
   arrival = 0,
 }: {
-  blobs: FileBlobs
+  /**
+   * `NotedBlobs` rather than `FileBlobs` only so that a source's own sentence
+   * reaches `blobNotice` below. Nothing else in this panel reads `note`.
+   */
+  blobs: NotedBlobs
   diff: FileDiff
   /** T-018's flattening of `diff`, passed in rather than recomputed here. */
   rows: readonly DiffRow[]
@@ -142,6 +148,15 @@ export function FileDiffPanel({
    * one side of an answer that did arrive.
    */
   failure?: string | null
+  /**
+   * Who the bytes were asked of, for `blobNotice`'s one accusing sentence.
+   * Optional for the same reason `kind` is: a panel handed raw blobs (a test, a
+   * single-file view) did not fetch them from anywhere and should not have to
+   * name a service to say a side is missing. The default is deliberately nobody
+   * — a panel that *did* fetch passes the real name, and one that did not says
+   * so in the vaguest terms available rather than blaming whoever is nearest.
+   */
+  sourceName?: string
   before?: HighlightedLines | null
   after?: HighlightedLines | null
   onExpand?: (row: Extract<DiffRow, { kind: 'gap' }>) => void
@@ -196,7 +211,7 @@ export function FileDiffPanel({
         ? 'Loading…'
         : diff.gaveUp
           ? 'This file was too large or too tangled to diff in reasonable time.'
-          : blobNotice(blobs)
+          : blobNotice(blobs, sourceName)
 
   const noNewline = notice === null ? noNewlineNotice(blobs) : null
 

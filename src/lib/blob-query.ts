@@ -4,8 +4,11 @@ import { queryOptions, useQueryClient } from '@tanstack/react-query'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
 import { onIdle } from '@/lib/idle'
 import { fileBlobsQuery } from '@/server/blob-fn'
+import { localBlobsQuery } from '@/server/local-git-fn'
 
 import type { QueryClient } from '@tanstack/react-query'
+import type { DiffSource } from './diff-source'
+import type { LocalChangedFile } from './local-git-contract'
 import type { ChangedFile, PullRequestRef } from '@/server/pull-request'
 
 // One file's two blobs, asked for from two places: the panel that renders the
@@ -50,6 +53,107 @@ export function fileBlobsOptions(ref: PullRequestRef, file: ChangedFile) {
     staleTime: Infinity,
     gcTime: Infinity,
   })
+}
+
+/**
+ * The pull request view's diff source: this key, and the name of the service it
+ * came from.
+ *
+ * A wrapper and nothing more — `fileBlobsOptions` above stays the only speller of
+ * the key, and this hands it to the panel without repeating a word of it. Built
+ * inline on each render, which is free: the panel spreads the options into
+ * `useQuery`, which compares the key and not the object it arrived in.
+ *
+ * The name is what the two failure sentences say. It is hard-coded here rather
+ * than passed in because there is only one of it: everything reachable through
+ * `fileBlobsOptions` is Azure DevOps by construction.
+ */
+export function adoDiffSource(ref: PullRequestRef): DiffSource {
+  return {
+    name: 'Azure DevOps',
+    blobsOptions: (file) => fileBlobsOptions(ref, file),
+  }
+}
+
+/**
+ * The same query for a file on this disk.
+ *
+ * The key namespace is its own — `local-file-blobs` and a slug, not
+ * `file-blobs` and a repository GUID — because the two stores answer different
+ * shapes for the same path and sha. A local answer carries `note`, and a slug is
+ * a directory basename that could perfectly well be spelled like one of the
+ * GUIDs above.
+ *
+ * `LocalChangedFile` and not `ChangedFile`, because the two modes are what keeps
+ * a `160000` gitlink away from `cat-file` — the whole reason `LocalBlobRequest`
+ * asks for them. The six fields are spread out rather than the row passed whole:
+ * the validator on the other end reads exactly these, and a `changeType` on the
+ * wire is bytes nobody unpacks.
+ */
+export function localBlobsOptions(slug: string, file: LocalChangedFile) {
+  return queryOptions({
+    queryKey: ['local-file-blobs', slug, file.path, file.objectId, file.originalObjectId],
+    queryFn: () =>
+      localBlobsQuery({
+        data: {
+          slug,
+          file: {
+            path: file.path,
+            originalPath: file.originalPath,
+            objectId: file.objectId,
+            originalObjectId: file.originalObjectId,
+            beforeMode: file.beforeMode,
+            afterMode: file.afterMode,
+          },
+        },
+      }),
+    staleTime: Infinity,
+    gcTime: Infinity,
+  })
+}
+
+/**
+ * The branch diff's source: this repository's files, by path.
+ *
+ * **The file list is a parameter and that is not incidental.**
+ * `DiffSource.blobsOptions` is handed a `ChangedFile`, which is what the panel
+ * has and all the panel should need — but a local fetch needs `beforeMode` and
+ * `afterMode`, which live on the `LocalChangedFile` the change set answered with
+ * and nowhere else. So the source closes over the list and looks the row back up
+ * rather than widening the seam for one vendor's two extra fields.
+ *
+ * A miss is a caller error — a panel rendering a file this change set does not
+ * contain — and it answers with a sentence rather than a request with two null
+ * modes, which would send a submodule to `cat-file` and report `missing` as a
+ * fetch failure. The name is the slug, per `DiffSource.name`: "`platform` did not
+ * answer" is true, where "Azure DevOps did not answer" would name a service
+ * nobody asked.
+ *
+ * The `Map` costs one pass over the list, so callers build this in a `useMemo`
+ * — unlike `adoDiffSource`, which is free to be inline.
+ */
+export function localDiffSource(slug: string, files: readonly LocalChangedFile[]): DiffSource {
+  const byPath = new Map(files.map((file) => [file.path, file]))
+
+  return {
+    name: slug,
+    blobsOptions: (file) => {
+      const local = byPath.get(file.path)
+      if (local !== undefined) return localBlobsOptions(slug, local)
+
+      return {
+        // A namespace of its own under the same prefix, so this cannot land on
+        // top of a real answer for the same path if the list arrives later.
+        queryKey: ['local-file-blobs', slug, file.path, 'not-in-change-set'],
+        queryFn: () => ({
+          blobs: null,
+          error: `\`${file.path}\` is not in this change set.`,
+        }),
+        staleTime: Infinity,
+        gcTime: Infinity,
+      }
+    },
+  }
 }
 
 /**
