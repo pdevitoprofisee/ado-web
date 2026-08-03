@@ -130,6 +130,31 @@ badge, plus **sounds differentiated per event type** and a mute toggle.
 Deliberately minimal: a searchable flat list across the org — name, project, default
 branch, last updated — with copy-clone-URL and open-in-web. No in-app file browser.
 
+**This is the org-wide list, and it does not exist yet.** `/repos` is the *local* page
+(see below), shipped first because it needs no credential. The two are the same subject
+seen from two sides and they converge later, on the `origin` URL: a clone whose remote
+matches an ADO repository is that repository. Until that join is built, treat them as
+two lists — and do not add a second local-repository concept to this one.
+
+### Local repositories
+
+The thing Azure DevOps cannot give you at all: **the whole-branch diff of a local branch
+against the branch it will merge into, with no pull request open.** Read-only by
+construction — no fetch, no checkout, no stash, no index write.
+
+`/repos` lists every repository under `ADO_WEB_REPOS_ROOT` (default `~/repos`, one level
+deep, never cached) with its current branch and the branch a diff would be taken
+against; `/repos/$repo` renders that diff in the same view a pull request uses, keyed
+entirely off the URL. The target is resolved down a ladder — `origin/HEAD`, then
+`origin/main`, then `origin/master`, then a local branch — because 2 of the 19
+repositories here have no remote at all, and the page states which rung answered and how
+old the base commit is, since the app never fetches.
+
+What it deliberately is not: no comments, no Sonar, no checks, no votes, no policies —
+there is nothing local to read them from. No working-tree diff (see *Deferred, not
+refused*); committed history only, with the dirty file count stated so its absence is
+visible. Branch browsing, commit browsing and per-commit diffs stay in the fog.
+
 ### Standing assumptions
 
 Stated so they aren't silent. Dark theme default, light available, compact density.
@@ -241,6 +266,43 @@ rewrite. Evidence in [`docs/research/`](./research/).
    file with an insertion above it, and in jsdom every offset a virtualizer computes is clamped
    to `scrollHeight - clientHeight`, which is `0` for every element — so a test that asserts
    *which* offset was scrolled to has to define both.
+14. **`git diff --raw` abbreviates object ids to 7 characters.** Without `--abbrev=40`
+   every sha in the change set is a *prefix*, so a blob cache keyed on it is keyed on luck
+   rather than on content — and the failure is a wrong file's contents under the right
+   file's name, which no error path catches. `-z` is the same class of mistake one field
+   over: without it paths are C-quoted, and **only the paths that need quoting are
+   quoted**, so a naive parser is correct on every file in the repository until somebody
+   commits one with a space or a non-ASCII character in its name. Both defaults were
+   believed to be otherwise until they were looked at, and neither would have been caught
+   by a hand-written fixture — which is why the local git tests run real `git`.
+15. **`-M` stops detecting renames past `diff.renameLimit` (1000) and exits 0.** The
+   warning goes to **stderr**, and the exit code says success. Every rename in a large
+   refactor then arrives as an add plus a delete, and the page has nothing to say about
+   it — a silently *worse* diff, not a broken one. stderr is captured on every invocation
+   for this reason and the condition is surfaced in words. `-C` is deliberately not
+   passed: `ChangedFile.changeType` has no word for a copy.
+16. **`objectId === originalObjectId` does not mean "renamed".** A `100644 → 100755` mode
+   flip arrives as `M` with identical shas **and identical paths**, which is exactly the
+   condition `blob.ts`'s `renamedOnly` derivation tests — so the page would claim a rename
+   that never happened, on a file whose name did not change. The paths must differ too.
+   Not reachable through Azure DevOps, and not authorable on this machine either
+   (`core.fileMode=false` in every repository), only pulled from a filesystem with an
+   executable bit — so it is a case that must render and cannot be produced locally to
+   look at.
+17. **Reading the worktree with `fs` under `core.autocrlf=true` makes every line
+   changed.** `ls-files --eol` reports `i/lf w/crlf attr/text=auto` here and
+   `core.autocrlf` is `true` *globally* on this machine: the committed bytes and the
+   on-disk bytes differ by design. Anything comparing a blob against a file read around
+   git — the deferred working-tree arm, most obviously — must read through git's own
+   filters. The same setting makes a test fixture pass or fail depending on whose machine
+   ran it, so fixtures set `core.autocrlf` and `core.fileMode` explicitly, per repository.
+18. **`git status` writes to `.git/index` unless told not to.** Refreshing stat
+   information is a normal part of the read, and it takes a lock — so a "read-only"
+   feature can stall or race the terminal the user is working in, which is the one thing a
+   tool that watches your repositories must never do. `--no-optional-locks` goes on
+   **every** invocation, as a construction rule and not a review note: it is cheap
+   everywhere and load-bearing in one place, and remembering which place is how it gets
+   left off.
 
 ### Structural facts about the ADO API
 
@@ -291,6 +353,50 @@ rewrite. Evidence in [`docs/research/`](./research/).
   name — `__default` when the pipeline declares no stages.
 - Prefer a hand-rolled fetch client over `azure-devops-node-api`, which does not
   surface response headers at all (issue #661) — that would blind us to note 2 and 3.
+
+### Local git
+
+The costs, as opposed to the traps. Measured on this machine against
+`C:\Users\PaulDe\repos` — 19 repositories, 14,000+ tracked entries, git
+`2.55.0.windows.3`. Full note: [`docs/research/local-git.md`](./research/local-git.md).
+
+- **A `git` spawn costs ~52 ms on Windows and the cost is linear** (10 spawns 0.523 s,
+  20 spawns 1.085 s) — so essentially all of it is process start and none of it is the
+  work. That makes the unit of cost the *invocation*, not the byte, and it is the fact
+  every other decision here falls out of. A file needs two blobs, so a spawn per side is
+  ~105 ms per file — **~31 s on a 294-file change** (the largest this app has measured).
+- **`cat-file --batch` is ~10 ms a blob** — 200 blobs through one process in 2.09 s, so
+  the same 294-file change is **~6 s batched against ~31 s spawned**. Shas go in on stdin
+  and the framing coming back is `<sha> SP <type> SP <size> LF`, then exactly *size*
+  bytes, then `LF`; a sha the object database does not hold answers `<sha> SP missing LF`.
+  Two consequences: the **size is declared before the bytes**, which is what finally gives
+  `BlobSide`'s `too-large` arm a live domain (ADO goes chunked above ~256 KiB and declares
+  nothing, so the check is dead there) — and an over-limit blob's bytes must still be
+  **drained**, because the stream is one sequence of framed records with nothing to
+  resynchronise on and every file after a half-read one parses garbage.
+- **`status --porcelain=v2` is 107–216 ms per repository, and parallelism barely helps** —
+  19 sequentially is 2.7 s, 19 fully parallel is 2.16 s. Nineteen processes against one
+  disk is **disk-bound, not concurrency-bound**, so "fan it out" does not rescue it. Which
+  is why the repository list reads refs and not status: a list that waited for the dirty
+  count would take two and a half seconds to draw nineteen rows. `--branch` makes the same
+  call answer the current branch, so branch-and-dirty is one invocation when both are
+  wanted.
+- **Ref enumeration is not uniformly cheap.** On `platform`, `refs/heads` is **3 refs in
+  57 ms** and `refs/remotes/origin` is **1,264 refs in 308 ms**. Two operations at two
+  prices: locals eagerly, remotes only when something asks for them.
+- **`origin/HEAD` resolves on 17 of 19** (`main` ×11, `master` ×6) and **fatals on the
+  other 2**, which have no remote at all — it does not come back empty. So the target
+  ladder (`origin/HEAD` → `origin/main` → `origin/master` → a local branch) must be driven
+  by **exit codes**; a ladder testing for empty output reads a crash as a blank and falls
+  through by accident. `refs/remotes/*` is also just a namespace — one repository here
+  carries a stray `refs/remotes/local-main` under no remote.
+- **Minimum git is 2.30**, because `diff --merge-base` needs it. Verified against 2.55.0,
+  as was `--no-optional-locks`.
+- **Every one of the 14,000+ tracked entries is `100644`**, and **0 of 19 repositories has
+  a gitlink or a `.gitmodules`**. Absences counted, not assumed: a `160000` gitlink is
+  worth recognising by its mode so it never reaches `cat-file` (it names a commit this
+  object database does not hold, and the answer is `missing`), and it is not worth a fifth
+  `BlobSide` arm.
 
 ### The diff pipeline
 
@@ -401,8 +507,20 @@ line text — useful only to make our hunk boundaries match theirs. It's preview
 - Read `Host` from the **raw header**, never from `request.url`: srvx falls back to the
   socket's local address when `Host` is absent, so a header-less request presents a
   perfectly innocent `http://127.0.0.1:7331/…` URL.
+- **Refs, object ids and repository names reaching `git` are values the server
+  enumerated from the repository — never strings the request supplied.** This is a
+  whitelist, not a validator: a slug is looked up in the set the scan just produced, a ref
+  in the set `for-each-ref` just listed, a sha in the change set just parsed, and what
+  goes into argv is the *enumerated* value, not the request's copy of it. A request naming
+  something not in the set **fails closed with words** — "no branch named `x`" — and never
+  falls back to the default, because a silent fallback shows the diff of something other
+  than what was asked for and looks like it worked. Shape validation (40 hex for a sha), a
+  leading-`-` rejection and `--end-of-options` are the belt, not the braces: they are
+  there for the day somebody adds a call that forgets the lookup. `spawn` with an argv
+  array, never a shell and never `exec`.
 - `simple-git` must be `>=3.36.0` (three 2026 option-injection RCEs) and request data
-  must never reach its options array.
+  must never reach its options array. Round 6 satisfies this by **not having it** — the
+  local git layer is `node:child_process` and nothing else.
 - `@napi-rs/keyring`, never `keytar` — archived and deprecated.
 
 ---
@@ -462,23 +580,31 @@ detail. Nothing is restated here; this is an index, not a store.
 
 Not on the route. Listed so it stays a decision rather than becoming a surprise.
 
-### Phase 2: local repositories
+### Phase 2: local repositories — the rest of it
 
-Browse local branches and commits, per-commit diffs, and the thing you actually can't
-get today: **the whole-branch squashed diff without opening a PR.**
-
-It shapes exactly one decision now — **the diff renderer takes an abstract diff
-source, not an ADO-shaped one** — so local git can feed the same view later. Nothing
-else about it is designed.
+The whole-branch diff shipped in [round 6](./tickets/round-6.md) and is in the
+destination now, under *Local repositories*. What stays here is the other half:
+**browsing local branches and commits, and per-commit diffs.** Round 6 renders one diff
+between two refs; walking a history and diffing a single commit against its parent are a
+different page and are not designed.
 
 Known: browser-only local git is dead (File System Access is Chromium-only and ~100×
 slower than native), so this shells out to real `git` server-side. isomorphic-git has
-no diff command.
+no diff command. The shelling-out is built — see *Local git* under *Structural facts*
+for what it costs.
 
 ### Deferred, not refused
 
 **Auto-complete** on merge. The user's words: "we may want to bring it in at some
 point. I just don't need it for the initial setup."
+
+**The working-tree diff** — a toggle on the local diff that adds uncommitted changes to
+what a branch is compared against. Wanted, and explicitly not now: the round-6 diff is
+committed history only. The room is left rather than the feature built — the page states
+the dirty file count, so "6 uncommitted files" is on screen and the absence of their
+contents is visible rather than silent, and note 17 is already written for the day
+somebody builds it. *(The user's exact wording for this one is not in the record, unlike
+auto-complete's above; the deferral is theirs, the phrasing is not.)*
 
 ### Out of scope
 
