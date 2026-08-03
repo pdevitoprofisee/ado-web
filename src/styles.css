@@ -300,12 +300,22 @@
   /* A diff is where Prof's coloured pens earn their keep: added is
      the brand teal rather than a generic green, removed is the red
      pen. Row tints stay pale enough for syntax colour to survive
-     on top; word tints are the same pen two steps stronger, so an
-     intra-line edit reads against its own row, not the page. */
+     on top, and **so must the word tints** — a word tint is a
+     background with code on it, not a swatch. `--teal-300` was the
+     first word tint and it was a step too far: vitesse-light draws
+     a comment in `#A0ADA0`, already only 1.96:1 on the row tint,
+     and teal-300 took it to 1.23:1 — a changed comment you cannot
+     read. These sit roughly a third of the way from the row tint
+     toward the pen, which holds 1.65–1.71:1 under that same
+     comment: a plain step darker than their row, and not so much
+     darker that the palest token on them disappears. Bespoke
+     hexes rather than scale entries because no rung of the teal
+     scale lands between `--teal-100` and `--teal-300`, and the
+     brand scale is not ours to re-space for a diff. */
   --diff-add: var(--pen-green-tint);
-  --diff-add-word: var(--teal-300);
+  --diff-add-word: #b9e5dd;
   --diff-delete: var(--pen-red-tint);
-  --diff-delete-word: #e8b4a2;
+  --diff-delete-word: #f2d2c6;
   --diff-word: transparent;
   /* Not the word tints reused. Those are backgrounds and sit near
      the page's lightness by design; the same colours as text would
@@ -381,10 +391,12 @@
      wants the brightened pen. */
   --muted: var(--paper-2);
 
+  /* Same rule on the board, measured against vitesse-dark's `#758575`
+     comment: teal-300 sat at 1.21:1 here too, these at 2.09–2.55:1. */
   --diff-add: var(--pen-green-tint);
-  --diff-add-word: var(--teal-300);
+  --diff-add-word: #135950;
   --diff-delete: var(--pen-red-tint);
-  --diff-delete-word: #6b3e32;
+  --diff-delete-word: #5c3a30;
   --diff-word: transparent;
 }
 

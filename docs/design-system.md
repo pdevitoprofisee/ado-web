@@ -233,6 +233,13 @@ inside an added row and red inside a removed one without knowing which it's in.
 **Don't break that indirection** — it's what lets `line-text.tsx` stay ignorant
 of row polarity.
 
+A word tint is a background with code on it. If you retune one, check it against
+the *palest* token the syntax themes emit — vitesse's comment grey, `#A0ADA0`
+light and `#758575` dark — and not against body ink. The first pair were the
+pens two steps stronger (`--teal-300` and a matching salmon), which put a
+changed comment at 1.23:1 and made it unreadable; the pair in `styles.css` today
+sit about a third of the way from the row tint toward the pen instead.
+
 Syntax highlighting is the `vitesse-light` / `vitesse-dark` pair
 (`THEME_NAMES` in `src/lib/highlight/bundle.ts`), chosen for warmth against
 `--paper-0` and for a board that isn't pure black. The theme is a **parameter**
