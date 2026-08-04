@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { AdoError, createAdoClient } from './ado-client'
+import { AdoError, ThrottledError, createAdoClient } from './ado-client'
 
 const PAT = 'p'.repeat(52)
 const CREDENTIAL = { org: 'Contoso', pat: PAT }
@@ -151,6 +151,46 @@ describe('throttling — note 2', () => {
     expect(calls).toHaveLength(3)
   })
 
+  it('gives up rather than holding a request past the wait budget', async () => {
+    vi.useFakeTimers()
+    const calls = stubFetch(() => json({ count: 1 }, { headers: { 'Retry-After': '60' } }))
+    const client = createAdoClient(CREDENTIAL)
+
+    await client.get('_apis/git/pullrequests')
+
+    // A minute parked here is a minute of one of the browser's six connections
+    // to this host, shared by every open tab. Failing frees it, and the page
+    // keeps the answer it already has.
+    await expect(client.get('_apis/git/pullrequests')).rejects.toBeInstanceOf(ThrottledError)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('says when Azure DevOps will listen again', async () => {
+    vi.useFakeTimers()
+    stubFetch(() => json({ count: 1 }, { headers: { 'Retry-After': '45' } }))
+    const client = createAdoClient(CREDENTIAL)
+    await client.get('_apis/git/pullrequests')
+
+    // The one useful thing to put on a page: not "it failed", but for how long.
+    await expect(client.get('_apis/git/pullrequests')).rejects.toThrow(/about 45 seconds/)
+  })
+
+  it('spends one wait across all three attempts, not one each', async () => {
+    vi.useFakeTimers()
+    const calls = stubFetch(() => new Response('', { status: 429, headers: { 'Retry-After': '8' } }))
+    const client = createAdoClient(CREDENTIAL)
+
+    const result = client.get('_apis/git/pullrequests')
+    const settled = expect(result).rejects.toBeInstanceOf(ThrottledError)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await settled
+
+    // Two attempts and one 8s wait, then the budget is gone. The gate used to be
+    // checked per attempt, so this same pair of headers bought three waits of up
+    // to a minute apiece — which is the stall this test exists to keep out.
+    expect(calls).toHaveLength(2)
+  })
+
   it('exposes the rate-limit headers the banner needs', async () => {
     stubFetch(() =>
       json(
@@ -176,6 +216,63 @@ describe('throttling — note 2', () => {
       resetAt: 1_700_000_000_000,
       throttled: false,
     })
+  })
+})
+
+describe('reads in flight', () => {
+  it('joins an identical read instead of asking Azure DevOps twice', async () => {
+    const calls = stubFetch(ok)
+    const client = createAdoClient(CREDENTIAL)
+
+    // Started together, the way two open tabs on one pull request start them:
+    // one client per credential, one 30-second cadence, the same five questions.
+    const [first, second] = await Promise.all([
+      client.get('_apis/git/pullrequests'),
+      client.get('_apis/git/pullrequests'),
+    ])
+
+    expect(first).toEqual({ count: 0 })
+    expect(second).toEqual({ count: 0 })
+    expect(calls).toHaveLength(1)
+    expect(client.rateLimit().calls).toBe(1)
+  })
+
+  it('keeps different questions apart', async () => {
+    const calls = stubFetch(ok)
+    const client = createAdoClient(CREDENTIAL)
+
+    await Promise.all([
+      client.get('_apis/git/pullrequests'),
+      client.get('_apis/git/pullrequests', { $top: 10 }),
+      // Same path, other host. `vssps` is a different service answering.
+      client.get('_apis/identities', {}, 'vssps'),
+    ])
+
+    expect(calls).toHaveLength(3)
+  })
+
+  it('asks again once the first read has landed', async () => {
+    const calls = stubFetch(ok)
+    const client = createAdoClient(CREDENTIAL)
+
+    await client.get('_apis/git/pullrequests')
+    await client.get('_apis/git/pullrequests')
+
+    // In flight only, no TTL. How long an answer stays good is the query cache's
+    // business, and this map must never be a second one with its own opinion.
+    expect(calls).toHaveLength(2)
+  })
+
+  it('does not remember a failure', async () => {
+    const calls = stubFetch((call) =>
+      call === 0 ? json({ message: 'nope' }, { status: 500 }) : json({ count: 9 }),
+    )
+    const client = createAdoClient(CREDENTIAL)
+
+    await expect(client.get('_apis/git/pullrequests')).rejects.toBeInstanceOf(AdoError)
+    // A cached rejection would turn one bad answer into a page that stays broken.
+    expect(await client.get('_apis/git/pullrequests')).toEqual({ count: 9 })
+    expect(calls).toHaveLength(2)
   })
 })
 

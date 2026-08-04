@@ -35,8 +35,25 @@ const API_VERSION = '7.1'
 
 const TIMEOUT_MS = 30_000
 const MAX_ATTEMPTS = 3
-/** A single gate wait is bounded, so one slow call cannot hang a request forever. */
-const MAX_WAIT_MS = 60_000
+/**
+ * How long one request will wait for the throttle gate, counted across all of
+ * its attempts rather than per attempt.
+ *
+ * It was 60s and it was per attempt, and those two together stalled the app.
+ * `send` calls `gate()` inside the retry loop, so one read could wait three
+ * times: 180s of sleeping on top of 90s of timeouts. A pull request page is five
+ * such reads, and every open tab re-polls three of them every 30 seconds.
+ *
+ * A browser opens six connections to one host, shared by every tab on it. Park
+ * six server-function calls on the gate and the seventh request queues — and
+ * that request is as easily the page you just opened as it is a poll. That is
+ * how one `Retry-After` became "every tab is stuck loading".
+ *
+ * So the budget is small, and one request spends it once. A read that cannot go
+ * out inside it gives up instead — see `ThrottledError`, which frees the
+ * connection and leaves the last good answer on screen.
+ */
+const MAX_WAIT_MS = 10_000
 
 /**
  * A guess, deliberately low, and it must keep being labelled one.
@@ -98,6 +115,35 @@ export class AdoError extends Error {
 }
 
 /**
+ * The gate would have held this request past `MAX_WAIT_MS`, so it never went out.
+ *
+ * Deliberately not an `AdoError`: nothing was sent, so there is no status to
+ * report and no service explanation to repeat. What it carries instead is when
+ * ADO will listen again, because that is the one useful thing to put on screen.
+ *
+ * Every server function already turns a thrown error into its `error` field, so
+ * this reaches the page as a sentence without a single call site changing. An
+ * optional section keeps its `failed` flag, which is the difference between "no
+ * policies" and "we do not know" that `pull-request.ts` is built around.
+ *
+ * Failing frees the connection, and that is the point. A browser opens six to one
+ * host and shares them across every tab, so a request that parks holds one of the
+ * six against pages that have not loaded yet.
+ */
+export class ThrottledError extends Error {
+  /** Epoch ms, the gate's own `throttledUntil`. */
+  readonly retryAt: number
+
+  constructor(retryAt: number, now: number = Date.now()) {
+    super(
+      `Azure DevOps is throttling this app. It will take requests again in about ${Math.ceil((retryAt - now) / 1000)} seconds.`,
+    )
+    this.name = 'ThrottledError'
+    this.retryAt = retryAt
+  }
+}
+
+/**
  * A response body that is not JSON. Blobs are the only such body we ask for.
  *
  * `size` is `Content-Length`, and on blobs it is exact — measured against
@@ -129,7 +175,12 @@ export type AdoWriteMethod = 'POST' | 'PATCH' | 'PUT' | 'DELETE'
 export interface AdoClient {
   /** Not a secret, and callers that build `dev.azure.com` links need it. */
   readonly org: string
-  /** `path` is org-relative: `_apis/git/pullrequests`, `Products/_apis/…`. */
+  /**
+   * `path` is org-relative: `_apis/git/pullrequests`, `Products/_apis/…`.
+   *
+   * A read that is already in flight is joined rather than repeated. Two tabs on
+   * one pull request therefore cost one page's calls, not two.
+   */
   get<T>(path: string, params?: Record<string, QueryValue>, host?: AdoHost): Promise<T>
   /**
    * The same request, kept as bytes. For blobs, which have no JSON form worth
@@ -294,20 +345,34 @@ export function createAdoClient(
     }
   }
 
-  async function gate(): Promise<void> {
-    const wait = (state.throttledUntil ?? 0) - Date.now()
-    if (wait > 0) await sleep(Math.min(wait, MAX_WAIT_MS))
+  /**
+   * Waits for the gate to open, or refuses to wait at all.
+   *
+   * `deadline` is the whole request's budget rather than this attempt's, which is
+   * the correction `MAX_WAIT_MS` describes: three attempts share one wait. The
+   * refusal is measured against when the gate *opens*, not against how long is
+   * left, so a request never sleeps up to the deadline only to give up at it.
+   */
+  async function gate(deadline: number): Promise<void> {
+    const until = state.throttledUntil ?? 0
+    if (until <= Date.now()) return
+    if (until > deadline) throw new ThrottledError(until)
+
+    await sleep(until - Date.now())
   }
 
   async function send(url: string, options: SendOptions = {}): Promise<Response> {
     const { method = 'GET', body, retry = true } = options
+    // One budget for the request. Fixed here, before the first attempt, so a
+    // retry cannot buy itself a fresh one.
+    const deadline = Date.now() + MAX_WAIT_MS
     const headers =
       body === undefined
         ? adoAuthHeaders(credential.pat)
         : { ...adoAuthHeaders(credential.pat), 'Content-Type': 'application/json' }
 
     for (let attempt = 1; ; attempt++) {
-      await gate()
+      await gate(deadline)
 
       let response: Response
       try {
@@ -364,14 +429,46 @@ export function createAdoClient(
     return response
   }
 
+  /**
+   * The reads that are in flight right now, keyed by their built URL.
+   *
+   * There is one client per credential for the life of the process, and every
+   * open tab on a pull request asks the same five questions on the same 30-second
+   * cadence. Without this, N tabs spend N times the calls out of one
+   * 200-TSTU window — which is what drove the window to the point where ADO
+   * started delaying answers and `MAX_WAIT_MS` had anything to do.
+   *
+   * In flight only, with no TTL. The entry goes as soon as the call settles, so
+   * nothing here is ever stale and no rejection is remembered. How long an answer
+   * stays good is the query cache's `staleTime`, not this map's business.
+   *
+   * Joined callers share the parsed body, so a caller must not sort or otherwise
+   * edit what `get` answers in place. Nothing in this app does — every reader
+   * maps an ADO payload into its own shape first — and that is now a rule rather
+   * than a habit.
+   *
+   * Reads only. Coalescing `getBytes` would hand one `Uint8Array` to several
+   * callers to share, and blobs are already fronted by the content-addressed
+   * `blob_cache`.
+   */
+  const reads = new Map<string, Promise<unknown>>()
+
   async function get<T>(
     path: string,
     params: Record<string, QueryValue> = {},
     host: AdoHost = 'core',
   ): Promise<T> {
-    const response = await demand(await send(buildUrl(credential.org, path, params, host)))
+    const url = buildUrl(credential.org, path, params, host)
+    const inFlight = reads.get(url)
+    if (inFlight !== undefined) return (await inFlight) as T
 
-    return (await response.json()) as T
+    // Set before the first await, or two callers in the same tick both miss.
+    const read = (async () => (await demand(await send(url))).json())().finally(() => {
+      reads.delete(url)
+    })
+    reads.set(url, read)
+
+    return (await read) as T
   }
 
   async function getBytes(
