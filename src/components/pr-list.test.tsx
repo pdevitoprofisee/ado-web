@@ -48,6 +48,7 @@ function render(ui: ReactNode) {
 const row = (over: Partial<PullRequestRow> = {}): PullRequestRow => ({
   id: 3302,
   title: 'disable sql auditing',
+  description: 'Turns off the auditing policy on the shared server.',
   project: 'SaaS',
   repository: 'PC.IAC.Modules',
   author: 'Naveen Angali',
@@ -304,6 +305,95 @@ describe('PullRequestSection', () => {
 
     expect(screen.getByText('You have no open pull requests.')).toBeVisible()
     expect(screen.queryByRole('list')).toBeNull()
+  })
+
+  // Filtered to fewer than it holds, the heading has to say so — a section that
+  // silently shrinks reads as pull requests having gone away.
+  it('says how many of the section it is showing when a filter has narrowed it', () => {
+    render(<PullRequestSection title="Mine" rows={[row({ id: 1 })]} total={9} empty="none" />)
+
+    expect(screen.getByRole('heading')).toHaveAccessibleName('Mine, 1 of 9 pull requests')
+    expect(screen.getByText('1 of 9')).toBeVisible()
+  })
+
+  it('leaves the count alone when nothing has been filtered out', () => {
+    render(<PullRequestSection title="Mine" rows={[row({ id: 1 })]} total={1} empty="none" />)
+
+    expect(screen.getByRole('heading')).toHaveAccessibleName('Mine, 1 pull requests')
+  })
+})
+
+describe('a grouped section', () => {
+  const grouped = (rows: readonly PullRequestRow[]) =>
+    render(<PullRequestSection title="Mine" rows={rows} grouped empty="none" />)
+
+  // The repository name and nothing else: the project is a word every heading in
+  // a project would repeat.
+  it('draws one headed list per repository, alphabetically, named without the project', () => {
+    grouped([
+      row({ id: 1, project: 'SaaS', repository: 'PC.IAC.Modules' }),
+      row({ id: 2, project: 'Products', repository: 'zzz-service' }),
+      row({ id: 3, project: 'SaaS', repository: 'PC.IAC.Modules' }),
+    ])
+
+    expect(screen.getAllByRole('heading', { level: 3 }).map((one) => one.textContent)).toEqual([
+      'PC.IAC.Modules2',
+      'zzz-service1',
+    ])
+    expect(screen.getAllByRole('list')).toHaveLength(2)
+  })
+
+  it('counts each repository beside its heading, for a reader who cannot see the sheet', () => {
+    grouped([
+      row({ id: 1, project: 'Products', repository: 'platform' }),
+      row({ id: 2, project: 'Products', repository: 'platform' }),
+    ])
+
+    expect(screen.getByRole('heading', { level: 3 })).toHaveAccessibleName(
+      'platform, 2 pull requests',
+    )
+  })
+
+  // The one place the project is still reachable, for the inbox that holds two
+  // repositories of the same name.
+  it('keeps the project on the heading as a hover', () => {
+    grouped([row({ id: 1, project: 'Products', repository: 'platform' })])
+
+    expect(screen.getByRole('heading', { level: 3 })).toHaveAttribute(
+      'title',
+      'Products/platform',
+    )
+  })
+
+  // The section heading is still the section's, not the sum of the groups shown.
+  it('keeps the section heading and its count', () => {
+    grouped([
+      row({ id: 1, project: 'SaaS', repository: 'a' }),
+      row({ id: 2, project: 'SaaS', repository: 'b' }),
+    ])
+
+    expect(screen.getByRole('heading', { level: 2 })).toHaveAccessibleName('Mine, 2 pull requests')
+  })
+
+  it('draws every row exactly once', () => {
+    grouped([
+      row({ id: 1, project: 'SaaS', repository: 'a' }),
+      row({ id: 2, project: 'Products', repository: 'b' }),
+      row({ id: 3, project: 'SaaS', repository: 'a' }),
+    ])
+
+    expect(screen.getAllByRole('listitem').map((one) => one.dataset.prId)).toEqual([
+      '1',
+      '3',
+      '2',
+    ])
+  })
+
+  it('says why it is empty rather than drawing a heading with no repositories', () => {
+    render(<PullRequestSection title="Mine" rows={[]} grouped empty="Nothing here." />)
+
+    expect(screen.getByText('Nothing here.')).toBeVisible()
+    expect(screen.queryByRole('heading', { level: 3 })).toBeNull()
   })
 })
 

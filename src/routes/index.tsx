@@ -1,20 +1,26 @@
-import { useMemo, useReducer, useRef } from 'react'
+import { useId, useMemo, useReducer, useRef, useState } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
+import { TextField, ToggleButton } from 'react-aria-components'
 import { BoardMathIcon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 
 import { inboxQuery } from '@/server/inbox-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
 import { pageTitle } from '@/lib/page-title'
+import { inReadingOrder, useGroupByRepository } from '@/lib/pr-grouping'
+import { SEARCHES, filterPullRequests } from '@/lib/pr-search'
 import { toggleTheme, useTheme } from '@/lib/theme'
+import { cn } from '@/lib/utils'
 import { PullRequestSection, useInboxSelection } from '@/components/pr-list'
 import { useHydration } from '@/components/use-hydration'
 import { useObserve } from '@/components/notifications/use-notifications'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Kbd } from '@/components/ui/kbd'
 
+import type { KeyboardEvent, ReactNode } from 'react'
 import type { PullRequestRow } from '@/server/inbox'
 import type { Role, WatchedPullRequest } from '@/server/notifications'
 
@@ -73,6 +79,89 @@ function ThemeToggle() {
   )
 }
 
+/**
+ * The two controls that decide what the sections below show: what has been typed
+ * and how the rows are arranged.
+ *
+ * One row, above both sections, because both controls act on both sections — a
+ * search box per section would be two boxes asking the same question, and a
+ * grouping toggle per section would let the page hold two answers to "how is
+ * this arranged".
+ */
+function InboxControls({
+  query,
+  onQuery,
+  grouped,
+  onGrouped,
+  listId,
+}: {
+  query: string
+  onQuery: (next: string) => void
+  grouped: boolean
+  onGrouped: (next: boolean) => void
+  /** What the box controls, for anyone who cannot see the sections move. */
+  listId: string
+}) {
+  // Escape is handled here rather than through `nav.back`, because the command
+  // layer deliberately ignores keys typed into a text field (`isTextEntry`). In
+  // the box, "never mind" means the search rather than the selection — and it
+  // takes two presses to leave, which is the right order: clearing the filter is
+  // the more common intent and the more destructive one to get wrong.
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Escape') return
+    if (query === '') {
+      event.currentTarget.blur()
+      return
+    }
+    onQuery('')
+  }
+
+  return (
+    <div className="flex w-full items-center gap-3">
+      {/* **Not autofocused**, the same deliberate choice `org-repo-list.tsx`
+          records: the command layer ignores every key typed into a text field,
+          so a focused box would take `j`, `k` and Enter away from the list for
+          as long as it held focus. It is the first focusable thing in the main
+          content, so it is one Tab away. */}
+      <TextField
+        aria-label={`Search pull requests by ${SEARCHES}`}
+        value={query}
+        onChange={onQuery}
+        className="max-w-sm flex-1"
+      >
+        <Input
+          type="search"
+          placeholder="Title, repository or description"
+          aria-controls={listId}
+          onKeyDown={onKeyDown}
+        />
+      </TextField>
+
+      {/* A toggle button rather than the header's `dark mode` link, and the
+          difference is on purpose: that one names where a press *goes*, because
+          a theme has no state to show — the sheet you are on already tells you.
+          This one has state worth showing, so it names the arrangement and holds
+          `aria-pressed`. Naming the destination here would give the same control
+          two labels for one setting.
+
+          `data-selected` is React Aria's, and it is styled up to the filled
+          `default` variant rather than left as an outline with a wash: this is
+          the one control on the page that stays switched on across sessions, and
+          it has to be legible as "on" at a glance the next morning. */}
+      <ToggleButton
+        isSelected={grouped}
+        onChange={onGrouped}
+        className={cn(
+          buttonVariants({ variant: 'outline', size: 'sm' }),
+          'ml-auto data-[selected]:border-primary data-[selected]:bg-primary data-[selected]:text-primary-foreground data-[selected]:hover:border-ink-900 data-[selected]:hover:bg-ink-900',
+        )}
+      >
+        Group by repository
+      </ToggleButton>
+    </div>
+  )
+}
+
 function Home() {
   const refetchInterval = useCadence(CADENCE.inbox)
   // Set by Refresh and consumed by the next run, so the button and the poll can
@@ -98,22 +187,62 @@ function Home() {
   const result = query.data
   const inbox = result?.inbox ?? null
 
-  // Both sections as one list, in the order they are read — "Mine" first,
-  // matching the order they are rendered in below. Hydration wants it because
-  // "visible first" is a property of the page, not of a list: the top of
-  // "Assigned to me" is above the fold long before the bottom of "Mine" is, and
-  // `j`/`k` want it for the same reason. Reordering the sections without
-  // reordering this array is the one edit that breaks both silently.
-  const rows = useMemo(
-    () => [...(inbox?.mine ?? []), ...(inbox?.assignedToMe ?? [])],
-    [inbox],
+  const [search, setSearch] = useState('')
+  const [grouped, setGrouped] = useGroupByRepository()
+  const searched = useId()
+
+  // What each section actually draws. The unfiltered arrays stay reachable as
+  // `inbox.mine` / `inbox.assignedToMe`, and the headings below use them to say
+  // "3 of 9" — a section that silently shrinks under a search reads as pull
+  // requests having gone away.
+  const mine = useMemo(() => filterPullRequests(inbox?.mine ?? [], search), [inbox, search])
+  const assigned = useMemo(
+    () => filterPullRequests(inbox?.assignedToMe ?? [], search),
+    [inbox, search],
   )
+
+  // Both sections as one list, in the order they are read — "Mine" first,
+  // matching the order they are rendered in below, and through `inReadingOrder`
+  // so that grouping moves this in step with the page. `j`/`k` want exactly
+  // this: reordering the sections, or grouping them, without reordering this
+  // array is the one edit that breaks the keyboard silently.
+  const selectable = useMemo(
+    () => [...inReadingOrder(mine, grouped), ...inReadingOrder(assigned, grouped)],
+    [mine, assigned, grouped],
+  )
+  const selectedId = useInboxSelection(selectable)
+
+  // Hydration gets the *unfiltered* rows, and that difference is the point.
+  // `useHydration` keys on the content of what it is handed, so filtering here
+  // would make every keystroke a new set of targets and a fresh round trip — and
+  // it would leave a row you just revealed by clearing the box wearing no
+  // badges. A search narrows what is on screen; finding out what these pull
+  // requests are doing is the same work either way. Ungrouped too, and for the
+  // same reason: the visible-first ordering this list feeds is only the
+  // tiebreak, and the hook settles it by measuring the DOM — where a
+  // filtered-out row is simply not present and a grouped one is already in the
+  // order the page drew it.
+  //
   // `dataUpdatedAt` is the poll's tick, and hydration rides it for the same
   // reason the notification panel below does: the inbox is the only clock in the
   // app, and badges that only ever redraw on a push are badges that go stale
   // quietly.
+  const rows = useMemo(
+    () => [...(inbox?.mine ?? []), ...(inbox?.assignedToMe ?? [])],
+    [inbox],
+  )
   const { hydrationOf, registerList } = useHydration(rows, generation, query.dataUpdatedAt)
-  const selectedId = useInboxSelection(rows)
+
+  /**
+   * Said the same way in both sections: what was searched, and what it was
+   * searched in. Without the second half a missing row reads as the app being
+   * wrong rather than as the description having been cut off at 400 characters.
+   */
+  const noMatch = (subject: string): ReactNode => (
+    <>
+      No {subject} matches <code className="font-mono">{search}</code>. Searching {SEARCHES}.
+    </>
+  )
 
   // What the notification panel is allowed to notice. Built from the two
   // sections separately because which one a row came from is the only place the
@@ -249,26 +378,51 @@ function Home() {
 
       {inbox ? (
         <>
-          {/* "Mine" first: the pull requests you are shepherding are the ones
-              you came to check on, and a review request you have not been asked
-              about twice can wait until after them. `rows` above must stay in
-              this order — it is what hydration and `j`/`k` read the page as. */}
-          <PullRequestSection
-            title="Mine"
-            rows={inbox.mine}
-            empty="You have no open pull requests."
-            hydration={hydrationOf}
-            listRef={registerList}
-            selectedId={selectedId}
+          <InboxControls
+            query={search}
+            onQuery={setSearch}
+            grouped={grouped}
+            onGrouped={setGrouped}
+            listId={searched}
           />
-          <PullRequestSection
-            title="Assigned to me"
-            rows={inbox.assignedToMe}
-            empty="Nothing waiting on you."
-            hydration={hydrationOf}
-            listRef={registerList}
-            selectedId={selectedId}
-          />
+
+          {/* One id over both sections, because the box narrows both and
+              `aria-controls` naming only the first would be a lie about the
+              second. */}
+          <div id={searched} className="flex w-full flex-col gap-5">
+            {/* "Mine" first: the pull requests you are shepherding are the ones
+                you came to check on, and a review request you have not been asked
+                about twice can wait until after them. `selectable` above must
+                stay in this order — it is what `j`/`k` read the page as. */}
+            <PullRequestSection
+              title="Mine"
+              rows={mine}
+              total={inbox.mine.length}
+              grouped={grouped}
+              empty={
+                inbox.mine.length === 0
+                  ? 'You have no open pull requests.'
+                  : noMatch('pull request of yours')
+              }
+              hydration={hydrationOf}
+              listRef={registerList}
+              selectedId={selectedId}
+            />
+            <PullRequestSection
+              title="Assigned to me"
+              rows={assigned}
+              total={inbox.assignedToMe.length}
+              grouped={grouped}
+              empty={
+                inbox.assignedToMe.length === 0
+                  ? 'Nothing waiting on you.'
+                  : noMatch('pull request waiting on you')
+              }
+              hydration={hydrationOf}
+              listRef={registerList}
+              selectedId={selectedId}
+            />
+          </div>
 
           {/* The metadata under the inbox is divided from it by a drawn rule; a
               1px border here would be the one printed line on the page. */}

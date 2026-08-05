@@ -15,6 +15,7 @@ import {
 import { HugeiconsIcon } from '@hugeicons/react'
 
 import { useCommand } from '@/commands/command-provider'
+import { groupByRepository } from '@/lib/pr-grouping'
 import { cn } from '@/lib/utils'
 
 import type { ReactNode } from 'react'
@@ -381,19 +382,46 @@ export function PullRequestSection({
   title,
   rows,
   empty,
+  total,
+  grouped = false,
   hydration,
   listRef,
   selectedId,
 }: {
   title: string
   rows: readonly PullRequestRow[]
-  empty: string
+  /** A node, not a string, so a filtered-to-zero section can set the query in mono. */
+  empty: ReactNode
+  /**
+   * How many rows there were before a search narrowed them. Omitted when nothing
+   * is filtering, which is not the same as passing `rows.length` — the heading
+   * says "3 of 9" only when the two genuinely differ.
+   */
+  total?: number
+  /** Whether to break the section into one sheet per repository. */
+  grouped?: boolean
   /** All optional so a section still renders standalone, plain, in a test. */
   hydration?: (row: PullRequestRow) => HydrationResult | undefined
   listRef?: (element: HTMLUListElement | null) => (() => void) | undefined
   /** The inbox-wide selection; at most one section holds it at a time. */
   selectedId?: number | null
 }) {
+  const of = total !== undefined && total !== rows.length ? total : null
+  const list = (subset: readonly PullRequestRow[]) => (
+    // The list is a sheet raised off the desk. `p-1` is the gutter that keeps a
+    // washed row's organic corners — and its focus ring — off the box's own
+    // edge, which `overflow-hidden` would have clipped instead.
+    //
+    // `listRef` is a ref callback that adds to a set, so grouping handing it N
+    // lists instead of one costs nothing: hydration measures rows across all of
+    // them exactly as it measured them across the page's two sections.
+    <ul ref={listRef} className="sketch-box sketch-box--quiet p-1">
+      {subset.map((row) => (
+        <Row key={row.id} row={row} result={hydration?.(row)} isSelected={row.id === selectedId} />
+      ))}
+    </ul>
+  )
+
   return (
     <section className="w-full" aria-label={title}>
       {/* Labelled because the flex gap is whitespace only to the eye — the
@@ -401,11 +429,13 @@ export function PullRequestSection({
           then carries the whole visual style, so the section names read as the
           labels on a drawing rather than as headings competing with the title. */}
       <h2
-        aria-label={`${title}, ${rows.length} pull requests`}
+        aria-label={`${title}, ${rows.length}${of === null ? '' : ` of ${of}`} pull requests`}
         className="annotation flex items-baseline gap-2"
       >
         {title}
-        <span className="tabular-nums">{rows.length}</span>
+        <span className="tabular-nums">
+          {of === null ? rows.length : `${rows.length} of ${of}`}
+        </span>
       </h2>
       {/* A drawn rule instead of the list's top border. It is 6px tall, which is
           where the margins went: a 1px line needed none. */}
@@ -416,20 +446,35 @@ export function PullRequestSection({
         <p className="sketch-box sketch-box--quiet text-muted-foreground px-3 py-2 text-sm">
           {empty}
         </p>
-      ) : (
-        // The list is a sheet raised off the desk. `p-1` is the gutter that keeps
-        // a washed row's organic corners — and its focus ring — off the box's own
-        // edge, which `overflow-hidden` would have clipped instead.
-        <ul ref={listRef} className="sketch-box sketch-box--quiet p-1">
-          {rows.map((row) => (
-            <Row
-              key={row.id}
-              row={row}
-              result={hydration?.(row)}
-              isSelected={row.id === selectedId}
-            />
+      ) : grouped ? (
+        <div className="flex flex-col gap-3">
+          {groupByRepository(rows).map((group) => (
+            <div key={group.key}>
+              {/* A step below the section label and set in mono, because the
+                  section names a part of your day and this names an identifier —
+                  the same distinction the row makes between its title and its
+                  repository column. Labelled for the same reason the section
+                  heading is: the gap before the count is whitespace only to the
+                  eye.
+
+                  The repository name alone, with the project kept on the `title`
+                  for the one case that needs it — two projects holding a
+                  repository of the same name. The rows below say which project
+                  they are in either way. */}
+              <h3
+                aria-label={`${group.label}, ${group.rows.length} pull requests`}
+                className="annotation mb-1 flex items-baseline gap-2 font-mono normal-case"
+                title={group.key}
+              >
+                {group.label}
+                <span className="tabular-nums">{group.rows.length}</span>
+              </h3>
+              {list(group.rows)}
+            </div>
           ))}
-        </ul>
+        </div>
+      ) : (
+        list(rows)
       )}
     </section>
   )

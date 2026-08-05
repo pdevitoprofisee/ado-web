@@ -73,6 +73,8 @@ interface AdoReviewer {
 export interface AdoPullRequest {
   readonly pullRequestId?: number
   readonly title?: string
+  /** Truncated by the list endpoint; see `PullRequestRow.description`. */
+  readonly description?: string
   readonly createdBy?: { readonly id?: string; readonly displayName?: string }
   readonly reviewers?: ReadonlyArray<AdoReviewer>
   readonly repository?: {
@@ -114,6 +116,21 @@ export type ClosedOutcome = 'completed' | 'abandoned'
 export interface PullRequestRow {
   readonly id: number
   readonly title: string
+  /**
+   * The opening of the description, and `''` when there is none.
+   *
+   * **The list endpoint truncates this at 400 characters, mid-word, with no flag
+   * to say it did.** Measured against the live org: of 49 active pull requests,
+   * 43 carried a description and 21 of those came back at exactly 400–403 —
+   * !25033's is 2283 characters long and arrives here as its first 400. The full
+   * text costs one detail call per pull request, which is the whole reason
+   * hydration exists and is not a price an inbox poll can pay.
+   *
+   * So it is carried for what it is worth — searching (`pr-search.ts`) — and the
+   * page says out loud that it is searching 400 characters, rather than letting
+   * somebody conclude the term they typed is nowhere in the description.
+   */
+  readonly description: string
   readonly project: string
   readonly repository: string
   readonly author: string
@@ -300,6 +317,7 @@ export function toRow(
   return {
     id: pr.pullRequestId as number,
     title: pr.title ?? '(untitled)',
+    description: pr.description ?? '',
     project,
     repository,
     author: pr.createdBy?.displayName ?? 'unknown',
