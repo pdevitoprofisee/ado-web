@@ -1,6 +1,8 @@
 import { createServerFn } from '@tanstack/react-start'
 
 import {
+  loadCommitChanges,
+  loadCommitPage,
   loadDirtyCount,
   loadLocalBlobs,
   loadLocalChanges,
@@ -11,6 +13,8 @@ import {
 
 import type { LocalBlobRequest } from './local-git'
 import type {
+  CommitChangeSet,
+  CommitPage,
   GitRef,
   LocalChangeSet,
   LocalFileBlobs,
@@ -18,7 +22,7 @@ import type {
   RepositoryScan,
 } from '../lib/local-git-contract'
 
-// The local repositories, as six calls a route can await.
+// The local repositories, as eight calls a route can await.
 //
 // Failures are **returned, not thrown**, for the reason rounds 3–5 return them:
 // a page that renders a sentence about what went wrong is a page, and a thrown
@@ -80,6 +84,16 @@ export interface DirtyCountResult {
   readonly error: string | null
 }
 
+export interface CommitPageResult {
+  readonly page: CommitPage | null
+  readonly error: string | null
+}
+
+export interface CommitChangesResult {
+  readonly changes: CommitChangeSet | null
+  readonly error: string | null
+}
+
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 /**
@@ -131,6 +145,43 @@ function mode(value: unknown, field: string): string | null {
   if (value === null || value === undefined) return null
   if (typeof value !== 'string' || !MODE.test(value)) {
     throw new Error(`${field} must be a six-digit file mode.`)
+  }
+
+  return value
+}
+
+/** Absent is the first page. A history is paged by offset, so this is a count of commits. */
+function offset(value: unknown): number {
+  if (value === null || value === undefined) return 0
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error('skip must be a whole number of commits.')
+  }
+
+  return value
+}
+
+/**
+ * A commit id, checked for being a string and **deliberately not for being 40
+ * hex**.
+ *
+ * The hex check lives in `local-git.ts`, where failing it produces the words
+ * `COMMIT_LOOKUP_MESSAGE` holds — "That is not a commit id." A rejection here
+ * would be a thrown validator instead of a page that says what is wrong, and this
+ * is the one field a person can arrive with by editing a URL.
+ */
+function commitSha(value: unknown): string {
+  if (typeof value !== 'string' || value === '') {
+    throw new Error('sha must name a commit.')
+  }
+
+  return value
+}
+
+/** `null` takes the first parent. 1-based, the way `<sha>^1` reads. */
+function parentIndex(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error('parent must be a parent number, counting from 1.')
   }
 
   return value
@@ -245,6 +296,45 @@ export const localBlobsQuery = createServerFn({ method: 'GET' })
       // `loadLocalBlobs` turns a refused blob into a `failed` side rather than a
       // throw, so reaching here is the repository or the process, not the file.
       return { blobs: null, error: message(error) }
+    }
+  })
+
+/** One page of a ref's history. `ref` is `null` for the branch HEAD is on. */
+export const commitsQuery = createServerFn({ method: 'GET' })
+  .validator((input: unknown) => {
+    const raw = (input ?? {}) as Record<string, unknown>
+
+    return { slug: slug(raw.slug), ref: refName(raw.ref, 'ref'), skip: offset(raw.skip) }
+  })
+  .handler(async ({ data }): Promise<CommitPageResult> => {
+    try {
+      return { page: await loadCommitPage(data.slug, data.ref, data.skip), error: null }
+    } catch (error) {
+      return { page: null, error: message(error) }
+    }
+  })
+
+/**
+ * The files in one commit, against one of its parents.
+ *
+ * A commit that has gone — the branch rewritten in a terminal after the page
+ * loaded — comes back as words here and **never as a fallback to HEAD**, for the
+ * reason a missing ref does: showing the diff of something other than what was
+ * asked for is worse than an error.
+ */
+export const commitChangesQuery = createServerFn({ method: 'GET' })
+  .validator((input: unknown) => {
+    const raw = (input ?? {}) as Record<string, unknown>
+
+    return { slug: slug(raw.slug), sha: commitSha(raw.sha), parent: parentIndex(raw.parent) }
+  })
+  .handler(async ({ data }): Promise<CommitChangesResult> => {
+    try {
+      const changes = await loadCommitChanges(data.slug, data.sha, data.parent)
+
+      return { changes, error: null }
+    } catch (error) {
+      return { changes: null, error: message(error) }
     }
   })
 

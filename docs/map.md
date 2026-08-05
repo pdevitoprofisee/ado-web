@@ -166,7 +166,13 @@ construction — no fetch, no checkout, no stash, no index write.
 `/repos` lists every repository under `ADO_WEB_REPOS_ROOT` (default `~/repos`, one level
 deep, never cached) with its current branch and the branch a diff would be taken
 against; `/repos/$repo` renders that diff in the same view a pull request uses, keyed
-entirely off the URL. The target is resolved down a ladder — `origin/HEAD`, then
+entirely off the URL. `/repos/$repo/commits` walks one branch's history 50 commits at a
+time — two links and no page numbers, because totalling a 90,000-commit history is a
+second walk of all of it — and `/repos/$repo/commit/$sha` renders one commit's diff in
+that same view. A merge is the ordinary case rather than the edge (26.4% of the sampled
+history), so the commit page states **which parent** its diff is against and links the
+others; a root commit says *first commit* instead of failing. The target is resolved down a
+ladder — `origin/HEAD`, then
 `origin/main`, then `origin/master`, then a local branch — because 2 of the 19
 repositories here have no remote at all, and the page states which rung answered and how
 old the base commit is, since the app never fetches.
@@ -174,7 +180,9 @@ old the base commit is, since the app never fetches.
 What it deliberately is not: no comments, no Sonar, no checks, no votes, no policies —
 there is nothing local to read them from. No working-tree diff (see *Deferred, not
 refused*); committed history only, with the dirty file count stated so its absence is
-visible. Branch browsing, commit browsing and per-commit diffs stay in the fog.
+visible. No commit graph — a history is a list. **No viewed marks on a commit**, unlike the
+branch diff: a mark keyed on a commit a rebase will replace is a mark that rots. Branch
+browsing stays in the fog.
 
 ### Standing assumptions
 
@@ -324,6 +332,48 @@ rewrite. Evidence in [`docs/research/`](./research/).
    **every** invocation, as a construction rule and not a review note: it is cheap
    everywhere and load-bearing in one place, and remembering which place is how it gets
    left off.
+19. **A tab-separated `git log` format shatters, and `%s` is not one line.** `%s` folds the
+   whole first *paragraph* of a message: newlines become spaces and **tabs survive**.
+   `platform` holds a commit whose subject is 46,490 characters containing 1,079 tabs, so a
+   tab-separated 7-field format yields **1,086 fields** for it. 2 of 90,788 commits do
+   this — a rate at which every fixture, every spot check and every day of real use looks
+   fine. The separator is `%x1f` (US), which no commit in the sample contains. Note that
+   `REF_FORMAT` in `local-git.ts` **does** use tabs and is correct to: a ref name cannot
+   contain one. The idiom does not transfer from `for-each-ref` to `log`.
+20. **`rev-parse --verify` is not a validator, and `--end-of-options` prints itself.** A
+   well-formed 40-hex sha absent from the object database comes back **exit 0 with the
+   input echoed**, and so does a *tree* sha; `--quiet` changes neither. The load-bearing
+   part is the **`^{commit}` suffix**, which with `--quiet` fails as **exit 1 with
+   completely empty stderr** — so the check reads the exit code and never the message.
+   Separately, `git rev-parse --end-of-options HEAD` prints `--end-of-options` as its own
+   first stdout line and exits 0; `--verify` suppresses it. That one corrupted a batch of
+   T-050's own measurements before it was caught. And the shape check has to come first,
+   because the revision grammar is a **query language**: `:/fix` searches messages and
+   `HEAD@{1}` reads the reflog, both resolving exit 0 to real commits.
+21. **Five of the nine ways to diff a merge return empty output with exit 0**, on a commit
+   that changed 795 files. `diff-tree -r <merge>`; `diff-tree -r --first-parent <merge>`,
+   where the flag is a **silent no-op** though it works on `show`; `diff-tree -r --cc` on a
+   clean two-parent merge, which emits **41 bytes** — the sha token alone — so an
+   "is there output" check reads success; `show --raw <merge>`, whose default *is* `--cc`;
+   and `show --raw --cc`. Two more in the same family: `show --raw -m` concatenates
+   per-parent diffs **with no delimiter at all**, so a naive parser emits the same path
+   twice, and `--cc` on an octopus emits the `:::` combined format, which passes a
+   `startsWith(':')` guard and then throws on the mode letter. **An annotated tag's sha
+   diffs to nothing, silently** — 40 of `platform`'s 41 tags are `tag` objects, and
+   `diff-tree --root -r <tag sha>` is 0 bytes, exit 0, empty stderr, so an unpeeled sha
+   draws a blank page with no evidence anywhere. 26.4% of the sampled history is a merge,
+   which makes this the ordinary case and not the edge.
+22. **`%(ahead-behind:<deleted ref>)` fatals the whole enumeration.** Exit 128, zero
+   rows — so one branch whose upstream was deleted on the server takes away **every**
+   branch in the picker rather than one column of one row, and `[gone]` upstreams are
+   ordinary. It is also 8.6× the cost of the enumeration it rides on (613.5 ms against
+   71.0 on 1,211 refs) where a single `rev-list --left-right --count` is 40.9 ms. Per
+   branch on request, never as a column. In the same format string,
+   **`%(upstream:track)` is empty both for "in sync" and for "no upstream configured"** —
+   13 of 41 branches have none — and what it does print is pre-formatted English
+   (`[behind 167]`, `[gone]`); **`%(HEAD)` is `*` or a single space, never empty**; and
+   `%(committerdate:iso-strict)` is in each committer's own offset, un-normalised and mixed
+   within one repository.
 
 ### Structural facts about the ADO API
 
@@ -415,6 +465,22 @@ The costs, as opposed to the traps. Measured on this machine against
   count would take two and a half seconds to draw nineteen rows. `--branch` makes the same
   call answer the current branch, so branch-and-dirty is one invocation when both are
   wanted.
+- **Walking a history is free; the process is the price.** Re-measured at 21 repositories /
+  90,792 commits: a 50-commit page off `platform` is **40.9 ms against a 40.1 ms empty
+  spawn on the same run**, 1,000 commits is 64.7 ms, and `--all` adds +7 ms at `-n 1000`
+  over 1,211 refs. **`--skip` is near-flat** — 41.4 ms at 0, 61.8 ms at 50,000 — so a
+  history pages by offset and needs no cursor. Enumerating refs is expensive and walking
+  from them is not, which is the same lesson one level up.
+- **A commit's diff is one spawn**: `diff-tree --root -r --raw --abbrev=40 -z -M` at
+  38.6–44.0 ms, against 52.5 ms for `diff --raw <sha>^ <sha>`, and `--root` is what makes a
+  root commit answer instead of exiting **128** with `fatal: ambiguous argument`. 37 root
+  commits exist in the sample. `diff-tree` prepends the commit sha as its own
+  NUL-terminated token before the first record, and one per parent under `-m`.
+- **A correction to the figure above**: `platform`'s `refs/remotes` re-measures at **1,211
+  refs in 71.0 ms**, not the 1,264 in 308 ms recorded from the design session. The
+  conclusion that enumeration is two operations at two prices stands; the 308 ms does not
+  reproduce, and `RefSet` still fetches `remote` lazily on the shape rather than the
+  number.
 - **Ref enumeration is not uniformly cheap.** On `platform`, `refs/heads` is **3 refs in
   57 ms** and `refs/remotes/origin` is **1,264 refs in 308 ms**. Two operations at two
   prices: locals eagerly, remotes only when something asks for them.
@@ -616,11 +682,14 @@ Not on the route. Listed so it stays a decision rather than becoming a surprise.
 
 ### Phase 2: local repositories — the rest of it
 
-The whole-branch diff shipped in [round 6](./tickets/round-6.md) and is in the
-destination now, under *Local repositories*. What stays here is the other half:
-**browsing local branches and commits, and per-commit diffs.** Round 6 renders one diff
-between two refs; walking a history and diffing a single commit against its parent are a
-different page and are not designed.
+The whole-branch diff shipped in [round 6](./tickets/round-6.md) and history and
+per-commit diffs in [round 7](./tickets/round-7.md). Both are in the destination now,
+under *Local repositories*. What stays here is **the branch picker**: `BranchRow` and
+`AheadBehind` are in the contract and nothing implements them, so a history is reached by
+typing `?ref=` rather than by choosing from a list. §15 of the note has already measured
+that list — never more than four local branches, up to 1,211 remote-tracking ones, and an
+`ahead-behind` field that costs 8.6× over the wide namespace — so it is undesigned rather
+than unknown.
 
 Known: browser-only local git is dead (File System Access is Chromium-only and ~100×
 slower than native), so this shells out to real `git` server-side. isomorphic-git has

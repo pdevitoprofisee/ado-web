@@ -127,7 +127,24 @@ function BranchDiffPage() {
             that a test pins to exactly what the two lists and the pull request
             page claim, and a whole-branch diff was not asked to grow it. The
             link is the way out. */}
-        <p className="text-muted-foreground text-xs">
+        <p className="text-muted-foreground flex gap-3 text-xs">
+          {/* "commits" and not "history", because `/history` is already a route
+              and means something else entirely — the pull requests you have
+              looked at.
+
+              `?branch=` becomes `?ref=` rather than being dropped, because the
+              branch is the subject of this page and not an option on it: the
+              diff's left side is that branch's tip, so its history is what
+              "commits" means here. Absent stays absent, which both pages read as
+              "resolve `HEAD` now". */}
+          <Link
+            to="/repos/$repo/commits"
+            params={{ repo }}
+            search={{ ref: branch }}
+            className="text-ink hover:text-teal-600 underline underline-offset-4"
+          >
+            commits
+          </Link>
           <Link to="/repos" className="text-ink hover:text-teal-600 underline underline-offset-4">
             repositories
           </Link>

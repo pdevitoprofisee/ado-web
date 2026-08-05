@@ -376,3 +376,254 @@ export interface LocalChangeSet extends ChangeSet {
 export interface LocalFileBlobs extends FileBlobs {
   readonly note: string | null
 }
+
+// ---------------------------------------------------------------------------
+// History: a page of commits, and the diff of one of them. Added by T-050,
+// frozen before T-051 and T-052, for the reason the top of this file gives.
+//
+// Evidence: `docs/research/local-git.md` §10–§17 — 21 repositories, 90,792
+// commits, 23,999 merges, 37 root commits, 41 local branches, 2,267
+// remote-tracking refs, 216 tags. Unlike §1–§9 this half **is** the output of a
+// script, so every figure below is a measurement.
+//
+// **The rule that governs all of it: read the exit code, and treat empty output
+// as data rather than as a signal.** Two of the failures §14 and §17 record are
+// invisible to the exit code — a tree sha printing `error: … is a tree, not a
+// commit` to stderr while exiting 0 — and five ways of diffing a merge are
+// invisible to the output, returning nothing at all with exit 0 for a commit
+// that changed 795 files. Neither channel alone is sufficient.
+// ---------------------------------------------------------------------------
+
+/**
+ * One commit, as the history list draws it.
+ *
+ * **`subject` is not a single line, and it can contain tabs.** `%s` folds the
+ * whole first *paragraph* of the message, not the first line: newlines become
+ * spaces and **tabs survive verbatim**. `platform` holds a commit whose subject
+ * is 46,490 characters with 1,079 tabs in it. So the record separator is `0x1f`
+ * (US), not the tab that `REF_FORMAT` uses in `local-git.ts` — with a tab
+ * separator that one commit parses as **1,086 fields where 7 were expected**,
+ * and the `0x1f` format yields exactly 7. 2 of 90,788 commits do this, which is
+ * the rate at which this class of bug reaches production undetected.
+ *
+ * There is no `isMerge` and no `isRoot`: `parents.length` already says both, and
+ * a derived boolean beside the thing it is derived from is a second thing to
+ * keep in agreement.
+ */
+export interface LocalCommit {
+  /** 40 hex, as git printed it. */
+  readonly sha: string
+  /** `%h` — git's own abbreviation, whose length git chooses per repository. */
+  readonly abbreviated: string
+  readonly authorName: string
+  readonly authorEmail: string
+  /**
+   * `%cI` — ISO-8601, **in the committer's own UTC offset**, un-normalised, and
+   * mixed within a single repository. Anything that sorts or groups these has to
+   * parse them rather than compare the strings.
+   */
+  readonly committedAt: string
+  /** 40 hex each. Empty for a root commit, 2+ for a merge. 26.4% of the sample is a merge. */
+  readonly parents: readonly string[]
+  readonly subject: string
+}
+
+/**
+ * One page of a history.
+ *
+ * **Paged by offset, with no cursor**, because `--skip` turns out to be nearly
+ * flat: `platform` answers in 41.4 ms at `--skip=0` and 61.8 ms at
+ * `--skip=50000`. A 50-commit page costs 40.9 ms against a 40.1 ms empty spawn
+ * on the same run — the page is free and the process is the price.
+ *
+ * `more` is the n+1 probe: ask for one more than the page holds, and drop it.
+ * There is **no total**, deliberately. `rev-list --count` on a 90,000-commit
+ * history was not measured, and it is not needed to tell the two emptinesses
+ * apart: `--skip` past the end and `-n0` are both empty output with exit 0, but
+ * an empty page at `skip: 0` is a repository with no commits, and an empty page
+ * at `skip > 0` is the end of a history somebody scrolled off. A count would buy
+ * a page number, which nothing has asked for.
+ */
+export interface CommitPage {
+  /** The ref this history was walked from, as the server resolved it. */
+  readonly ref: GitRef
+  readonly commits: readonly LocalCommit[]
+  readonly skip: number
+  readonly more: boolean
+}
+
+/**
+ * How many commits one page holds.
+ *
+ * Here rather than private to `local-git.ts`, which is where it started, because
+ * **the walker and the paging control have to agree on the step**. "Older"
+ * advances by exactly what the walk asked for and "newer" goes back by it, and
+ * neither can be derived from `commits.length` — the last page of a history is
+ * short, so a step taken from its length walks back to a page overlapping the one
+ * before it. A page size spelled in two files is two page sizes.
+ *
+ * 50 because that is where the cost was measured: a 50-commit walk off
+ * `platform`'s 51,888 commits is **40.9 ms against a 40.1 ms empty spawn** on the
+ * same run, so the process is the price and the walk is free. `-n1000` is 64.7
+ * ms, so a bigger page would also be affordable — the reader decides this number
+ * and git does not.
+ */
+export const COMMIT_PAGE_SIZE = 50
+
+/**
+ * Which parent a commit's diff was taken against.
+ *
+ * A named union rather than an index or a boolean, because two of the three arms
+ * are not "a parent" at all and each is a different sentence in the header. **A
+ * diff silently taken against the first parent is a diff that omits everything
+ * the merge brought in from the other side**, and 26.4% of this sample is a
+ * merge, so the page has to be able to say which side it is showing.
+ *
+ * - `root` — no parent. `<sha>^` on a root commit is **exit 128** with `fatal:
+ *   ambiguous argument`, not an empty diff, so this is a case the server layer
+ *   handles rather than an error the page reports. 37 root commits exist in the
+ *   sample; `utilities` alone has 13. The diff is against the empty tree and the
+ *   page says "first commit".
+ * - `only` — exactly one parent. The ordinary case, and the only one where the
+ *   header needs to say nothing.
+ * - `nth` — one side of a merge, numbered from 1 so it reads the way git's own
+ *   `^1` does. `of` is on the arm because "parent 2" means nothing without it.
+ */
+export type DiffedAgainst =
+  | { readonly kind: 'root' }
+  | { readonly kind: 'only'; readonly parent: string }
+  | {
+      readonly kind: 'nth'
+      readonly parent: string
+      /** 1-based, matching `<sha>^1`. */
+      readonly index: number
+      readonly of: number
+    }
+
+/**
+ * The files in one commit, and which parent that is relative to.
+ *
+ * `ChangeSet`, `LocalChangedFile`, `truncated`, `FILE_LIMIT` and
+ * `renameDetectionSkipped` are all reused exactly as `LocalChangeSet` uses
+ * them — the change vocabulary is not re-invented here either. What is new is
+ * only `commit` and `against`, and neither has anywhere to live on `DiffPair`,
+ * which describes a branch against a base and not a commit against a parent.
+ *
+ * The invocation is **one spawn**: `diff-tree --root -r --raw --abbrev=40 -z -M`
+ * at 38.6–44.0 ms, against 52.5 ms for `diff --raw <sha>^ <sha>` — and `--root`
+ * is what makes the root commit answer instead of fatal. Two consequences of
+ * choosing `diff-tree` that the parser must already know:
+ *
+ * - **It prepends the commit sha as its own NUL-terminated token** before the
+ *   first record (947 bytes versus 906 through `diff` for the same diff), and
+ *   emits one such token per parent under `-m`.
+ * - **`--first-parent` is a silent no-op on `diff-tree`.** It works on `show`.
+ *   Passing it here produces empty output with exit 0 on a merge, which is one
+ *   of the five ways §14 records of getting nothing back for a commit that
+ *   changed 795 files.
+ */
+export interface CommitChangeSet extends ChangeSet {
+  readonly files: readonly LocalChangedFile[]
+  readonly commit: LocalCommit
+  readonly against: DiffedAgainst
+  /** See `LocalChangeSet.renameDetectionSkipped` — same flag, same stderr, same exit 0. */
+  readonly renameDetectionSkipped: boolean
+}
+
+/**
+ * One branch as a picker draws it, and the two fields that are not free.
+ *
+ * `%(HEAD)`, `%(refname)`, `%(objectname)`, `%(committerdate)` and
+ * `%(upstream)` cost nothing: the 8-field `for-each-ref` format measures 71.0 ms
+ * against round 6's 4-field 72.2 ms on `platform`'s 1,211 remote refs. Two
+ * traps in that set:
+ *
+ * - **`%(HEAD)` is `*` or a single space, never empty**, so `current` is a
+ *   comparison against `'*'` and not a truthiness test.
+ * - **`%(upstream:track)` is empty both for "in sync" and for "no upstream
+ *   configured"** — 13 of 41 local branches have no upstream — and what it does
+ *   print is pre-formatted English (`[behind 167]`, `[gone]`). It is therefore
+ *   not on this type at all: `upstream` being `null` is the configured-ness, and
+ *   the counts are their own field.
+ */
+export interface BranchRow {
+  readonly ref: GitRef
+  /** From `%(HEAD)` being `*`. */
+  readonly current: boolean
+  /** The tracking branch's short name, or `null` when none is configured. */
+  readonly upstream: string | null
+  /** `%(committerdate:iso-strict)` — the committer's own offset, as on `LocalCommit`. */
+  readonly committedAt: string
+}
+
+/**
+ * How far one branch is from another. **Fetched per branch, on request** — never
+ * as a column on the list.
+ *
+ * `%(ahead-behind:HEAD)` in the enumeration format is **8.6× the whole
+ * enumeration**: 613.5 ms against 71.0 on `platform`, 232.5 against 49.5 on
+ * `matching`. A single `rev-list --left-right --count` is 40.9 ms, so asking
+ * once for the branch somebody clicked beats asking for all 1,211 up front, and
+ * keeps winning until a picker is showing more than about fifteen at a time.
+ *
+ * The worse reason is not the cost. **`%(ahead-behind:<deleted ref>)` fatals the
+ * entire enumeration** — exit 128, zero rows — so a branch whose upstream has
+ * been deleted on the server takes away every branch in the picker rather than
+ * one column of one row. `[gone]` upstreams are ordinary; that failure is not
+ * survivable in a format string, and is survivable in a per-branch call.
+ */
+export interface AheadBehind {
+  readonly ahead: number
+  readonly behind: number
+}
+
+/**
+ * Why a commit a request named cannot be shown, or `null` when it can.
+ *
+ * **This is the one place the enumeration doctrine at the top of `local-git.ts`
+ * cannot be satisfied as written.** A slug is checked against what `readdir`
+ * returned and a ref against what `for-each-ref` returned, but there is no
+ * finite set of commits to check a sha against — enumerating a 90,000-commit
+ * history to validate one member of it is the walk the paging was built to
+ * avoid. So the rule becomes: **shape-check first, resolve, then use git's
+ * output and never the request's copy of the string.** Four measured reasons the
+ * middle step is not optional and not sufficient on its own:
+ *
+ * - **`rev-parse --verify` is not a validator.** A well-formed 40-hex sha that
+ *   is absent from the object database comes back **exit 0 with the input
+ *   echoed**, and so does a *tree* sha. `--quiet` does not change either.
+ * - **`^{commit}` is the load-bearing suffix**, and with `--quiet` it fails as
+ *   **exit 1 with completely empty stderr** — so the ladder reads the code, not
+ *   the words.
+ * - **`rev-parse --end-of-options HEAD` prints `--end-of-options` as its own
+ *   first stdout line and exits 0.** `--verify` suppresses it. This corrupted a
+ *   batch of the measurements before it was noticed, which is a fair prediction
+ *   of what it will do to a parser.
+ * - **An annotated tag's sha diffs to nothing, silently.** 40 of `platform`'s 41
+ *   tags are `tag` objects. `rev-parse --verify` hands back the tag object's
+ *   sha, `^{commit}` peels it to a *different* sha, `git log` peels and walks
+ *   correctly — but `diff-tree --root -r <tag sha>` is **0 bytes, exit 0, empty
+ *   stderr**. Using the unpeeled sha produces a blank page with no evidence
+ *   anywhere that anything went wrong.
+ *
+ * And the shape check comes first because **the revision grammar is a query
+ * language**, not a name: `:/fix` searches commit messages and `HEAD@{1}` reads
+ * the reflog, both resolving exit 0 to real commits. `/^[0-9a-f]{40}$/i` before
+ * git sees it, then `^{commit}`, then the 40 hex git printed.
+ */
+export type CommitLookupFailure = 'not-hex' | 'unknown' | 'not-a-commit'
+
+/**
+ * How each lookup failure reads. Here rather than in the route, because T-051
+ * and T-052 both state it.
+ *
+ * All three fail closed with words. **None of them falls back to `HEAD`**, for
+ * `GitRef`'s reason: showing the diff of something other than what was asked for
+ * is worse than an error, and worse still when the thing asked for was a tag
+ * that quietly resolved to no diff at all.
+ */
+export const COMMIT_LOOKUP_MESSAGE: Record<CommitLookupFailure, string> = {
+  'not-hex': 'That is not a commit id.',
+  unknown: 'This repository has no commit with that id.',
+  'not-a-commit': 'That id names something other than a commit.',
+}

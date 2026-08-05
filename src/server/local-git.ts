@@ -5,13 +5,18 @@ import { delimiter, join, resolve } from 'node:path'
 
 import { MAX_BLOB_BYTES, readBlob } from './blob'
 import { FILE_LIMIT } from './pull-request'
+import { COMMIT_LOOKUP_MESSAGE, COMMIT_PAGE_SIZE } from '../lib/local-git-contract'
 
 import type { BlobSide } from '../lib/diff-contract'
 import type {
+  CommitChangeSet,
+  CommitPage,
   DiffPair,
+  DiffedAgainst,
   GitRef,
   LocalChangeSet,
   LocalChangedFile,
+  LocalCommit,
   LocalFileBlobs,
   LocalRepository,
   RepoHead,
@@ -665,6 +670,11 @@ function parseRaw(out: string): LocalChangedFile[] {
     const header = tokens[at++]
     // The trailing NUL of the last record leaves one empty token behind it.
     if (header === '') continue
+    // `diff-tree` prepends the commit sha as its own NUL-terminated token, and
+    // one per parent under `-m`. `diff` never does. It is skipped here rather
+    // than sliced off by the caller because it is part of what git prints, and a
+    // raw record always begins with `:`, so 40 hex digits can be nothing else.
+    if (SHA.test(header)) continue
     if (!header.startsWith(':')) {
       throw new Error(`Could not read git's diff output: expected a record, got \`${header}\`.`)
     }
@@ -799,6 +809,252 @@ export async function loadDirtyCount(slug: string): Promise<number> {
   const out = await ok({ repo: path, args: ['status', '--porcelain=v2'] })
 
   return out.split('\n').filter((line) => line.trim() !== '').length
+}
+
+// ---------------------------------------------------------------------------
+// A page of history, and the diff of one commit in it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Seven fields, separated by ASCII US (`0x1f`) and **not by the tab
+ * `REF_FORMAT` uses**.
+ *
+ * `%s` folds the whole first *paragraph* of a message rather than its first
+ * line: newlines become spaces and **tabs survive verbatim**. `platform` holds a
+ * commit whose subject is 46,490 characters carrying 1,079 tabs, which a
+ * tab-separated spelling of this format reads as **1,086 fields where 7 were
+ * expected**. 2 of 90,788 commits in the sample do it, so a tab here works
+ * everywhere except in production. US works because **0 of those 90,788 commits
+ * contain US or RS anywhere**, in a field or in a raw body — confirmed by
+ * absence, which is why the field count is checked rather than trusted.
+ *
+ * The records are NUL-terminated (`-z`), which is safe by construction: a commit
+ * object cannot hold a NUL byte. `-z` **terminates rather than separates**, so
+ * the last record carries a trailing NUL and a split leaves an empty token
+ * behind it.
+ */
+const COMMIT_FORMAT = '%H%x1f%h%x1f%an%x1f%ae%x1f%cI%x1f%P%x1f%s'
+
+const COMMIT_FIELDS = 7
+
+function parseCommits(out: string): LocalCommit[] {
+  return out
+    .split('\0')
+    .filter((record) => record !== '')
+    .map((record) => {
+      const fields = record.split('\x1f')
+
+      // Unreachable while no commit message contains US. It is checked because
+      // the alternative to checking is a subject silently becoming an author
+      // name, and because 0 of 90,788 is an absence rather than a guarantee.
+      if (fields.length !== COMMIT_FIELDS) {
+        throw new Error(
+          `Could not read git's commit output: ${fields.length} fields where ${COMMIT_FIELDS} were expected.`,
+        )
+      }
+
+      const [sha, abbreviated, authorName, authorEmail, committedAt, parents, subject] = fields
+
+      return {
+        sha,
+        abbreviated,
+        authorName,
+        authorEmail,
+        committedAt,
+        // Space-separated, and empty on a root commit.
+        parents: parents === '' ? [] : parents.split(' '),
+        subject,
+      }
+    })
+}
+
+/**
+ * A page of commits on one ref, paged by offset.
+ *
+ * **`--skip` is near-flat**, so there is no cursor: `platform` answers in 41.4 ms
+ * at `--skip=0` and 61.8 ms at `--skip=50000`. `more` is the n+1 probe — ask for
+ * one more than the page holds and drop it — because **`--skip` past the end of a
+ * history is 0 bytes with exit 0**, indistinguishable by output from a repository
+ * with no commits, and a total costs a second spawn that buys a page number
+ * nobody asked for.
+ *
+ * `ref` is `null` for "the branch HEAD is on", as it is on `loadLocalChanges`. A
+ * name that *is* given is selected out of the set enumerated a line above and
+ * **fails closed** if it is not there: a branch deleted in a terminal after the
+ * page loaded says so rather than quietly walking something else.
+ */
+export async function loadCommitPage(
+  slug: string,
+  ref: string | null,
+  skip: number,
+): Promise<CommitPage> {
+  // `--skip=` is a flag rather than an operand, so `gitArgs`'s leading-dash
+  // refusal cannot see it. A negative offset would reach git as its own flag.
+  if (!Number.isSafeInteger(skip) || skip < 0) {
+    throw new Error(`\`${skip}\` is not a place in a history.`)
+  }
+
+  const path = await locate(slug)
+  const locals = (await refRows(path, SCAN_PATTERNS)).filter(isLocal)
+  const named = ref ?? (await currentBranch(slug, path, locals))
+  const selected = toGitRef(await selectRow(path, locals, named))
+
+  const out = await ok({
+    repo: path,
+    args: ['log', '-z', `--format=${COMMIT_FORMAT}`, `-n${COMMIT_PAGE_SIZE + 1}`, `--skip=${skip}`],
+    values: [selected.fullName],
+  })
+
+  const commits = parseCommits(out)
+
+  return {
+    ref: selected,
+    commits: commits.slice(0, COMMIT_PAGE_SIZE),
+    skip,
+    more: commits.length > COMMIT_PAGE_SIZE,
+  }
+}
+
+/**
+ * A request's sha to the 40 hex **git printed**, or the words for why it cannot
+ * be one.
+ *
+ * There is no set of commits to look a sha up in — enumerating a 90,000-commit
+ * history to validate one member of it is the walk the paging avoids — so this is
+ * the one place the whitelist is satisfied by resolution instead. Four measured
+ * reasons for the shape of it:
+ *
+ * - **The shape check comes first, because the revision grammar is a query
+ *   language.** `:/fix` searches commit messages and `HEAD@{1}` reads the reflog;
+ *   both resolve exit 0 to a real commit. Only 40 hex digits get past here.
+ * - **`^{commit}` is the load-bearing part, not `--verify`.** Without it a
+ *   well-formed 40-hex sha absent from the object database comes back **exit 0
+ *   with the input echoed**, and so does a *tree* sha. `--quiet` changes neither.
+ * - **`--verify` is also what suppresses the echo.** `rev-parse
+ *   --end-of-options HEAD` prints `--end-of-options` as its own first line of
+ *   stdout and exits 0, which corrupted a batch of T-050's measurements before it
+ *   was noticed.
+ * - **The resolved sha is used and the request's copy is not.** An annotated
+ *   tag's sha is the case that proves it: `^{commit}` peels it to a *different*
+ *   sha, and `diff-tree --root -r <tag sha>` is 0 bytes, exit 0, empty stderr, so
+ *   the unpeeled string draws a blank page with no evidence anywhere.
+ *
+ * The two failures are told apart by matching stderr, which `LC_ALL=C` is what
+ * makes safe: a tree adds `error: … expected commit type, but the object
+ * dereferences to tree type` above the `fatal: Needed a single revision` that
+ * both cases print. The alternative is a second spawn asking `cat-file -t`.
+ */
+async function resolveCommit(path: string, sha: string): Promise<string> {
+  if (!SHA.test(sha)) throw new Error(COMMIT_LOOKUP_MESSAGE['not-hex'])
+
+  const result = await git({ repo: path, args: ['rev-parse', '--verify'], values: [`${sha}^{commit}`] })
+  if (result.code === 0) return result.stdout.trim()
+
+  const failure = /expected commit type/.test(result.stderr) ? 'not-a-commit' : 'unknown'
+
+  throw new Error(COMMIT_LOOKUP_MESSAGE[failure])
+}
+
+/** One commit's record, read with the same format and parser as a page of them. */
+async function readCommit(path: string, sha: string): Promise<LocalCommit> {
+  const out = await ok({
+    repo: path,
+    args: ['log', '-z', `--format=${COMMIT_FORMAT}`, '-n1'],
+    values: [sha],
+  })
+
+  const [commit] = parseCommits(out)
+  // Unreachable after `^{commit}`, and guarded because `git log <tree sha>` is
+  // the one call that answers 0 bytes with exit 0 and nothing on stderr at all.
+  if (commit === undefined) throw new Error(COMMIT_LOOKUP_MESSAGE.unknown)
+
+  return commit
+}
+
+/**
+ * Which parent this diff is against, **named on the response** so the header can
+ * say it.
+ *
+ * 26.4% of the sampled history is a merge, and on one real merge the first
+ * parent shows 795 files where the second shows 3. So a merge diff taken
+ * silently is a page that shows less than the truth. The first parent is the
+ * default because "what did this merge bring in" is what a reader means, and
+ * `--cc` — the honest answer to the different question of what the resolution
+ * itself changed — is 133.6 ms against 49.8 and a second raw format to parse.
+ *
+ * A parent number out of range fails closed with words. Falling back to the
+ * first parent would answer a question nobody asked.
+ */
+function chooseParent(commit: LocalCommit, parent: number | null): DiffedAgainst {
+  const of = commit.parents.length
+
+  if (parent !== null && (parent < 1 || parent > of)) {
+    throw new Error(`This commit has no parent ${parent} — it has ${of}.`)
+  }
+  if (of === 0) return { kind: 'root' }
+  if (of === 1) return { kind: 'only', parent: commit.parents[0] }
+
+  const index = parent ?? 1
+
+  return { kind: 'nth', parent: commit.parents[index - 1], index, of }
+}
+
+/**
+ * The files in one commit, and which parent that is relative to.
+ *
+ * Two spellings, because no single one answers all three cases:
+ *
+ * - **`diff-tree --root -r` for a root or a single parent.** `--root` is what
+ *   makes a root commit answer at all: `<sha>^` on one is **exit 128** with
+ *   `fatal: ambiguous argument`, not an empty diff, and 37 root commits exist in
+ *   the sample. The same argv serves both, at 38.6–44.0 ms against 52.5 ms for
+ *   `diff --raw <sha>^ <sha>`, with no probe to find out which kind it is.
+ * - **`diff <parent> <commit>` for a merge**, with both shas as git printed
+ *   them. `diff-tree` on a merge prints **nothing at all with exit 0** — and so
+ *   does `diff-tree --first-parent`, where the flag is a silent no-op that works
+ *   on `show`. Five of the nine measured spellings return an empty diff for a
+ *   commit that changed 795 files, so "we got no output" is not evidence here.
+ *
+ * `sha` is the request's; nothing but its 40 hex digits survives `resolveCommit`,
+ * and what reaches this argv is `commit.sha` and `commit.parents` — both `git
+ * log`'s own output.
+ */
+export async function loadCommitChanges(
+  slug: string,
+  sha: string,
+  parent: number | null,
+): Promise<CommitChangeSet> {
+  const path = await locate(slug)
+  const commit = await readCommit(path, await resolveCommit(path, sha))
+  const against = chooseParent(commit, parent)
+
+  const run: GitRun =
+    against.kind === 'nth'
+      ? {
+          repo: path,
+          args: ['diff', '--raw', '-M', '--abbrev=40', '-z'],
+          values: [against.parent, commit.sha],
+        }
+      : {
+          repo: path,
+          args: ['diff-tree', '--root', '-r', '--raw', '-M', '--abbrev=40', '-z'],
+          values: [commit.sha],
+        }
+
+  const diff = await git(run)
+  if (diff.code !== 0) throw new Error(failureText(run, diff))
+
+  // An empty commit is 0 bytes here — no records and not even the sha token
+  // `diff-tree` prepends when there is a record to prepend it to.
+  const files = parseRaw(diff.stdout)
+
+  return {
+    files: files.slice(0, FILE_LIMIT),
+    truncated: files.length > FILE_LIMIT,
+    renameDetectionSkipped: RENAME_LIMIT.test(diff.stderr),
+    commit,
+    against,
+  }
 }
 
 // ---------------------------------------------------------------------------

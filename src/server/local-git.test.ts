@@ -6,6 +6,8 @@ import { delimiter, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {
+  loadCommitChanges,
+  loadCommitPage,
   loadDirtyCount,
   loadLocalBlobs,
   loadLocalChanges,
@@ -14,7 +16,9 @@ import {
   scanRepositories,
 } from './local-git'
 
-import type { LocalChangedFile } from '../lib/local-git-contract'
+import { COMMIT_LOOKUP_MESSAGE } from '../lib/local-git-contract'
+
+import type { LocalChangedFile, LocalCommit } from '../lib/local-git-contract'
 
 // Real repositories, built by real `git`, under a real temporary directory.
 //
@@ -81,6 +85,23 @@ const lines = (count: number, prefix: string): string =>
 const HUGE = `${'x'.repeat(1_200_000)}\n`
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03])
+
+/**
+ * Empty commits, enough to push the `history` fixture past one 50-commit page.
+ *
+ * Empty rather than authored, because a page of history is a walk and the walk
+ * does not care what the tree holds — and 48 `commit --allow-empty` calls are 48
+ * process starts where 48 authored commits would be 96.
+ */
+const FILLER = 48
+
+/** The six named commits below, plus the filler. */
+const HISTORY_COMMITS = 6 + FILLER
+
+const shaOf = (dir: string, rev: string): string => run(dir, ['rev-parse', rev]).trim()
+
+/** The awkward set a per-commit diff is about, by subject. */
+let named: Record<'first' | 'ordinary' | 'mode' | 'empty' | 'side' | 'merge', string>
 
 beforeAll(() => {
   // `realpath` because `mkdtemp` can hand back an 8.3 short path on Windows and
@@ -161,16 +182,45 @@ beforeAll(() => {
   }
   commit(renames, 'move everything')
 
+  // A root commit, an ordinary one, a mode-only one, an empty one and a merge —
+  // then filler, because a second page needs a history longer than one page.
+  const past = init(join(root, 'history'))
+  put(past, 'a.txt', 'one\n')
+  commit(past, 'the first commit')
+  const first = shaOf(past, 'HEAD')
+  put(past, 'a.txt', 'one\ntwo\n')
+  commit(past, 'an ordinary commit')
+  const ordinary = shaOf(past, 'HEAD')
+  // `add -A` would re-stage at the filesystem mode, and `core.fileMode` is off.
+  run(past, ['update-index', '--chmod=+x', 'a.txt'])
+  run(past, ['commit', '-m', 'make it executable'])
+  const mode = shaOf(past, 'HEAD')
+  run(past, ['commit', '--allow-empty', '-m', 'nothing at all'])
+  const empty = shaOf(past, 'HEAD')
+  // Off the ordinary commit, so the merge's second parent is behind the mode
+  // change and its second-parent diff is that flip and nothing else.
+  run(past, ['checkout', '-b', 'side', ordinary])
+  put(past, 's.txt', 'from the side\n')
+  commit(past, 'on the side')
+  const side = shaOf(past, 'HEAD')
+  run(past, ['checkout', 'main'])
+  run(past, ['merge', '--no-ff', 'side', '-m', 'merge the side in'])
+  const merge = shaOf(past, 'HEAD')
+  for (let at = 1; at <= FILLER; at += 1) {
+    run(past, ['commit', '--allow-empty', '-m', `filler ${at}`])
+  }
+  named = { first, ordinary, mode, empty, side, merge }
+
   // The same basename under a second root.
   const twin = init(join(other, 'fixture'))
   put(twin, 'only.txt', 'alone\n')
   commit(twin, 'only')
 
   process.env.ADO_WEB_REPOS_ROOT = root
-  // Roughly 90 synchronous `git` processes, which is about 11 seconds on Windows
-  // on its own and more when the rest of the suite is running beside it. The
-  // default 10 second hook budget fails the whole file with a timeout, so the
-  // budget is stated here rather than raised for every hook in the suite.
+  // Around 160 synchronous `git` processes, half of them the history fixture's,
+  // which is well past Vitest's 10 second hook default on Windows and further
+  // past it with the rest of the suite running beside this file. The budget is
+  // stated here rather than raised for every hook in the suite.
 }, 120_000)
 
 afterAll(() => {
@@ -188,6 +238,7 @@ describe('discovery', () => {
     expect(scan.repositories.map((entry) => entry.slug).sort()).toEqual([
       'detached',
       'fixture',
+      'history',
       'noremote',
       'orphan',
       'renames',
@@ -568,6 +619,172 @@ describe('blobs', () => {
         afterMode: '100644',
       }),
     ).rejects.toThrow(/is not an object id/)
+  })
+})
+
+describe('a page of history', () => {
+  const subject = (commits: readonly LocalCommit[], text: string): LocalCommit =>
+    commits.find((entry) => entry.subject === text)!
+
+  it('walks a named ref one page at a time, newest first', async () => {
+    const page = await loadCommitPage('history', 'main', 0)
+
+    expect(page.ref).toEqual({
+      name: 'main',
+      fullName: 'refs/heads/main',
+      commit: expect.stringMatching(/^[0-9a-f]{40}$/),
+    })
+    expect(page.commits).toHaveLength(50)
+    expect(page.skip).toBe(0)
+    // The n+1 probe: 51 were asked for, 51 came back, 50 are served.
+    expect(page.more).toBe(true)
+    expect(page.commits[0].subject).toBe(`filler ${FILLER}`)
+  })
+
+  it('reads all seven fields, including a merge’s two parents', async () => {
+    const page = await loadCommitPage('history', 'main', 0)
+
+    expect(subject(page.commits, 'merge the side in')).toEqual({
+      sha: named.merge,
+      abbreviated: expect.stringMatching(/^[0-9a-f]{7,40}$/),
+      authorName: 'Fixture',
+      authorEmail: 'fixture@example.com',
+      committedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      parents: [named.empty, named.side],
+      subject: 'merge the side in',
+    })
+  })
+
+  it('gives the next page, says when there is no page after it, and repeats nothing', async () => {
+    const first = await loadCommitPage('history', 'main', 0)
+    const second = await loadCommitPage('history', 'main', 50)
+
+    expect(second.skip).toBe(50)
+    expect(second.commits).toHaveLength(HISTORY_COMMITS - 50)
+    expect(second.more).toBe(false)
+    // The root is every other commit's ancestor, so the walk emits it last.
+    expect(second.commits.at(-1)).toMatchObject({ sha: named.first, parents: [] })
+    expect(
+      new Set([...first.commits, ...second.commits].map((entry) => entry.sha)).size,
+    ).toBe(HISTORY_COMMITS)
+  })
+
+  it('walks the branch HEAD is on when nothing named a ref', async () => {
+    const page = await loadCommitPage('history', null, 0)
+
+    expect(page.ref.fullName).toBe('refs/heads/main')
+  })
+
+  it('fails closed on a ref that is not in the repository, and walks nothing instead', async () => {
+    // A branch deleted in a terminal after the page loaded. Falling back to HEAD
+    // would show a history other than the one the link asked for.
+    await expect(loadCommitPage('history', 'nope', 0)).rejects.toThrow(/No branch named `nope`/)
+  })
+
+  it('refuses an offset that would reach git as a flag', async () => {
+    // `--skip=` is a flag and not an operand, so `gitArgs`’s leading-dash
+    // refusal cannot see `--skip=-1`. This is the check that can.
+    await expect(loadCommitPage('history', 'main', -1)).rejects.toThrow(/not a place in a history/)
+  })
+})
+
+describe('the diff of one commit', () => {
+  it('diffs a root commit against nothing, rather than failing on `<sha>^`', async () => {
+    const changes = await loadCommitChanges('history', named.first, null)
+
+    expect(changes.against).toEqual({ kind: 'root' })
+    expect(changes.commit.parents).toEqual([])
+    expect(changes.files.map((file) => file.path)).toEqual(['a.txt'])
+    expect(changes.files[0].changeType).toEqual(['add'])
+    expect(changes.truncated).toBe(false)
+    expect(changes.renameDetectionSkipped).toBe(false)
+  })
+
+  it('names the one parent of an ordinary commit', async () => {
+    const changes = await loadCommitChanges('history', named.ordinary, null)
+
+    expect(changes.against).toEqual({ kind: 'only', parent: named.first })
+    expect(changes.commit.subject).toBe('an ordinary commit')
+    expect(changes.files.map((file) => file.path)).toEqual(['a.txt'])
+    expect(changes.files[0].changeType).toEqual(['edit'])
+  })
+
+  it('reads a commit that changed only a mode', async () => {
+    const changes = await loadCommitChanges('history', named.mode, null)
+    const [file] = changes.files
+
+    expect(file).toMatchObject({ path: 'a.txt', beforeMode: '100644', afterMode: '100755' })
+    // The whole of what distinguishes a flip from a file that did not change:
+    // the letter is `M` and both shas are the same object.
+    expect(file.changeType).toEqual(['edit'])
+    expect(file.objectId).toBe(file.originalObjectId)
+  })
+
+  it('reads an empty commit as no files rather than as a failure', async () => {
+    const changes = await loadCommitChanges('history', named.empty, null)
+
+    expect(changes.files).toEqual([])
+    expect(changes.against).toEqual({ kind: 'only', parent: named.mode })
+    expect(changes.commit.subject).toBe('nothing at all')
+  })
+
+  it('diffs a merge against its first parent and says so', async () => {
+    const changes = await loadCommitChanges('history', named.merge, null)
+
+    expect(changes.against).toEqual({ kind: 'nth', parent: named.empty, index: 1, of: 2 })
+    expect(changes.files.map((file) => file.path)).toEqual(['s.txt'])
+  })
+
+  it('diffs a merge against the parent it was asked for', async () => {
+    const changes = await loadCommitChanges('history', named.merge, 2)
+
+    expect(changes.against).toEqual({ kind: 'nth', parent: named.side, index: 2, of: 2 })
+    // The mode flip is on the first parent’s side of the merge, so this is
+    // exactly the file a silent first-parent diff omits.
+    expect(changes.files.map((file) => file.path)).toEqual(['a.txt'])
+    expect(changes.files[0]).toMatchObject({ beforeMode: '100644', afterMode: '100755' })
+  })
+
+  it('fails closed on a parent the commit does not have', async () => {
+    await expect(loadCommitChanges('history', named.ordinary, 2)).rejects.toThrow(
+      /no parent 2 — it has 1/,
+    )
+  })
+
+  it('refuses an id that is not forty hex digits, whatever git would make of it', async () => {
+    // Three of these resolve, and none of them is a sha: `HEAD` is a ref,
+    // `:/first` searches commit messages and seven hex digits are an
+    // abbreviation. The shape check is what stops them reaching `rev-parse`.
+    for (const value of ['--help', 'HEAD', ':/first', named.first.slice(0, 7)]) {
+      await expect(loadCommitChanges('history', value, null)).rejects.toThrow(
+        COMMIT_LOOKUP_MESSAGE['not-hex'],
+      )
+    }
+  })
+
+  it('refuses a well-formed id the object database does not hold', async () => {
+    // `rev-parse --verify` on its own answers **exit 0 and echoes this back**.
+    // `^{commit}` is what turns it into a refusal.
+    await expect(loadCommitChanges('history', `${'0'.repeat(39)}1`, null)).rejects.toThrow(
+      COMMIT_LOOKUP_MESSAGE.unknown,
+    )
+  })
+
+  it('refuses an id that names a tree rather than a commit', async () => {
+    const tree = shaOf(join(root, 'history'), 'HEAD^{tree}')
+
+    await expect(loadCommitChanges('history', tree, null)).rejects.toThrow(
+      COMMIT_LOOKUP_MESSAGE['not-a-commit'],
+    )
+  })
+
+  it('serves a commit’s blobs through the mechanism the branch diff uses', async () => {
+    const changes = await loadCommitChanges('history', named.ordinary, null)
+    const blobs = await loadLocalBlobs('history', changes.files[0])
+
+    expect(blobs.before).toMatchObject({ kind: 'text', lines: ['one'] })
+    expect(blobs.after).toMatchObject({ kind: 'text', lines: ['one', 'two'] })
+    expect(blobs.note).toBeNull()
   })
 })
 

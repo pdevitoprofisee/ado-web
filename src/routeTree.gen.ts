@@ -15,7 +15,9 @@ import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as OrgReposRouteImport } from './routes/org-repos'
 import { Route as ReposRouteImport } from './routes/repos'
 import { Route as ReposRepoRouteImport } from './routes/repos_.$repo'
+import { Route as ReposRepoCommitsRouteImport } from './routes/repos_.$repo_.commits'
 import { Route as PrProjectIdRepositoryIdPrIdRouteImport } from './routes/pr.$projectId.$repositoryId.$prId'
+import { Route as ReposRepoCommitShaRouteImport } from './routes/repos_.$repo_.commit.$sha'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -47,12 +49,22 @@ const ReposRepoRoute = ReposRepoRouteImport.update({
   path: '/repos/$repo',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ReposRepoCommitsRoute = ReposRepoCommitsRouteImport.update({
+  id: '/repos_/$repo_/commits',
+  path: '/repos/$repo/commits',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PrProjectIdRepositoryIdPrIdRoute =
   PrProjectIdRepositoryIdPrIdRouteImport.update({
     id: '/pr/$projectId/$repositoryId/$prId',
     path: '/pr/$projectId/$repositoryId/$prId',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ReposRepoCommitShaRoute = ReposRepoCommitShaRouteImport.update({
+  id: '/repos_/$repo_/commit/$sha',
+  path: '/repos/$repo/commit/$sha',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -61,7 +73,9 @@ export interface FileRoutesByFullPath {
   '/org-repos': typeof OrgReposRoute
   '/repos': typeof ReposRoute
   '/repos/$repo': typeof ReposRepoRoute
+  '/repos/$repo/commits': typeof ReposRepoCommitsRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
+  '/repos/$repo/commit/$sha': typeof ReposRepoCommitShaRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -70,7 +84,9 @@ export interface FileRoutesByTo {
   '/org-repos': typeof OrgReposRoute
   '/repos': typeof ReposRoute
   '/repos/$repo': typeof ReposRepoRoute
+  '/repos/$repo/commits': typeof ReposRepoCommitsRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
+  '/repos/$repo/commit/$sha': typeof ReposRepoCommitShaRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -80,7 +96,9 @@ export interface FileRoutesById {
   '/org-repos': typeof OrgReposRoute
   '/repos': typeof ReposRoute
   '/repos_/$repo': typeof ReposRepoRoute
+  '/repos_/$repo_/commits': typeof ReposRepoCommitsRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
+  '/repos_/$repo_/commit/$sha': typeof ReposRepoCommitShaRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -91,7 +109,9 @@ export interface FileRouteTypes {
     | '/org-repos'
     | '/repos'
     | '/repos/$repo'
+    | '/repos/$repo/commits'
     | '/pr/$projectId/$repositoryId/$prId'
+    | '/repos/$repo/commit/$sha'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -100,7 +120,9 @@ export interface FileRouteTypes {
     | '/org-repos'
     | '/repos'
     | '/repos/$repo'
+    | '/repos/$repo/commits'
     | '/pr/$projectId/$repositoryId/$prId'
+    | '/repos/$repo/commit/$sha'
   id:
     | '__root__'
     | '/'
@@ -109,7 +131,9 @@ export interface FileRouteTypes {
     | '/org-repos'
     | '/repos'
     | '/repos_/$repo'
+    | '/repos_/$repo_/commits'
     | '/pr/$projectId/$repositoryId/$prId'
+    | '/repos_/$repo_/commit/$sha'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -119,7 +143,9 @@ export interface RootRouteChildren {
   OrgReposRoute: typeof OrgReposRoute
   ReposRoute: typeof ReposRoute
   ReposRepoRoute: typeof ReposRepoRoute
+  ReposRepoCommitsRoute: typeof ReposRepoCommitsRoute
   PrProjectIdRepositoryIdPrIdRoute: typeof PrProjectIdRepositoryIdPrIdRoute
+  ReposRepoCommitShaRoute: typeof ReposRepoCommitShaRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -166,11 +192,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ReposRepoRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/repos_/$repo_/commits': {
+      id: '/repos_/$repo_/commits'
+      path: '/repos/$repo/commits'
+      fullPath: '/repos/$repo/commits'
+      preLoaderRoute: typeof ReposRepoCommitsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/pr/$projectId/$repositoryId/$prId': {
       id: '/pr/$projectId/$repositoryId/$prId'
       path: '/pr/$projectId/$repositoryId/$prId'
       fullPath: '/pr/$projectId/$repositoryId/$prId'
       preLoaderRoute: typeof PrProjectIdRepositoryIdPrIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/repos_/$repo_/commit/$sha': {
+      id: '/repos_/$repo_/commit/$sha'
+      path: '/repos/$repo/commit/$sha'
+      fullPath: '/repos/$repo/commit/$sha'
+      preLoaderRoute: typeof ReposRepoCommitShaRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -183,7 +223,9 @@ const rootRouteChildren: RootRouteChildren = {
   OrgReposRoute: OrgReposRoute,
   ReposRoute: ReposRoute,
   ReposRepoRoute: ReposRepoRoute,
+  ReposRepoCommitsRoute: ReposRepoCommitsRoute,
   PrProjectIdRepositoryIdPrIdRoute: PrProjectIdRepositoryIdPrIdRoute,
+  ReposRepoCommitShaRoute: ReposRepoCommitShaRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
