@@ -207,6 +207,20 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
            PRIMARY KEY (slug, branch, path, object_id)
          ) STRICT`,
   },
+  {
+    version: 8,
+    name: 'pr-cache-check-states',
+    // Migration 4's situation again, and for a payload change of the same kind:
+    // `Checks.pending` split into `running` and `waiting`, because ADO's
+    // `queued` covers an expired build and an unmet reviewer policy as well as
+    // work in flight, and the inbox was reporting all three as running.
+    //
+    // A row written before this has neither new field. `undefined > 0` is false
+    // both times, so a stale row would draw as no checks outstanding — the
+    // reassuring direction, which is the worse one to be wrong in. Cleared, per
+    // the licence at the top of this list.
+    up: 'DELETE FROM pr_cache',
+  },
 ]
 
 /**

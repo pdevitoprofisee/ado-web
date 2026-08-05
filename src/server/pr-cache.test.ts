@@ -43,6 +43,35 @@ describe('pr cache', () => {
     expect(readPrCache(999, OLD, db)).toBeUndefined()
   })
 
+  it('misses once the payload is older than the age it asked to be trusted for', () => {
+    writePrCache(42, OLD, { unresolved: 3 }, db)
+    db.prepare('UPDATE pr_cache SET fetched_at = ?').run(Date.now() - 60_000)
+
+    // The commit is unchanged and the row is still there — this is the half a
+    // commit token cannot cover, for the things that move without the content.
+    expect(readPrCache(42, OLD, db, () => 30_000)).toBeUndefined()
+    expect(readPrCache(42, OLD, db, () => 90_000)).toEqual({ unresolved: 3 })
+  })
+
+  it('lets the payload choose its own age', () => {
+    writePrCache(42, OLD, { moving: true }, db)
+    db.prepare('UPDATE pr_cache SET fetched_at = ?').run(Date.now() - 60_000)
+
+    const maxAge = (payload: { moving: boolean }) => (payload.moving ? 30_000 : 90_000)
+    expect(readPrCache(42, OLD, db, maxAge)).toBeUndefined()
+
+    writePrCache(42, OLD, { moving: false }, db)
+    db.prepare('UPDATE pr_cache SET fetched_at = ?').run(Date.now() - 60_000)
+    expect(readPrCache(42, OLD, db, maxAge)).toEqual({ moving: false })
+  })
+
+  it('keeps a row forever when no age is asked for', () => {
+    writePrCache(42, OLD, { unresolved: 3 }, db)
+    db.prepare('UPDATE pr_cache SET fetched_at = ?').run(0)
+
+    expect(readPrCache(42, OLD, db)).toEqual({ unresolved: 3 })
+  })
+
   it('replaces the row on re-hydration instead of accumulating rows', () => {
     writePrCache(42, OLD, { unresolved: 3 }, db)
     writePrCache(42, PUSHED, { unresolved: 0 }, db)

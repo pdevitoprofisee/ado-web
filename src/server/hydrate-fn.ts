@@ -79,8 +79,9 @@ export const hydrateQuery = createServerFn({ method: 'POST' })
 
     return {
       targets: targets.map(target),
-      // Refresh, not a poll. The commit-keyed cache cannot see a comment posted
-      // without a push, so this is the only way that count ever corrects.
+      // Refresh, not a poll. A comment posted without a push moves no commit,
+      // so the cache only lets go of it when the age runs out — this is the way
+      // to correct that count now rather than on the cache's schedule.
       fresh: (data as { fresh?: unknown } | null)?.fresh === true,
     }
   })

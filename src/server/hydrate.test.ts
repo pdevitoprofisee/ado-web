@@ -142,7 +142,7 @@ describe('countUnresolved', () => {
 })
 
 describe('readChecks', () => {
-  it('sorts the policy evaluations into the three states that matter', () => {
+  it('sorts the policy evaluations into the four states that matter', () => {
     expect(
       readChecks({
         value: [
@@ -155,11 +155,30 @@ describe('readChecks', () => {
           { status: 'notApplicable' },
         ],
       }),
-    ).toEqual({ passed: 2, failed: 2, pending: 2 })
+    ).toEqual({ passed: 2, failed: 2, running: 1, waiting: 1 })
+  })
+
+  it('does not count a queued evaluation as one that is running', () => {
+    // The live shape from !24971: three approved, one expired build, one build
+    // nobody queued, and two reviewer policies with no votes yet. The row this
+    // feeds said "7 checks running" while nothing at all was running.
+    expect(
+      readChecks({
+        value: [
+          { status: 'approved' },
+          { status: 'approved' },
+          { status: 'approved' },
+          { status: 'queued' },
+          { status: 'queued' },
+          { status: 'queued' },
+          { status: 'queued' },
+        ],
+      }),
+    ).toEqual({ passed: 3, failed: 0, running: 0, waiting: 4 })
   })
 
   it('treats a PR with no policies as having no checks, not as passing', () => {
-    expect(readChecks({})).toEqual({ passed: 0, failed: 0, pending: 0 })
+    expect(readChecks({})).toEqual({ passed: 0, failed: 0, running: 0, waiting: 0 })
   })
 })
 
@@ -267,7 +286,7 @@ describe('hydrate', () => {
       id: 24698,
       ok: true,
       data: {
-        checks: { passed: 1, failed: 1, pending: 0 },
+        checks: { passed: 1, failed: 1, running: 0, waiting: 0 },
         unresolved: 1,
         approvalReset: true,
         // The failing evaluation here carries no configuration, so nothing says
@@ -309,6 +328,57 @@ describe('hydrate', () => {
     const polled = await hydrate(next, TARGET, me, db)
     expect(next.calls).toHaveLength(0)
     expect(polled.ok && polled.data.unresolved).toBe(2)
+  })
+
+  /** Backdates the cached row, which is the only way to age it inside a test. */
+  const age = (db: DatabaseSync, minutes: number) => {
+    db.prepare('UPDATE pr_cache SET fetched_at = ?').run(Date.now() - minutes * 60_000)
+  }
+
+  it('re-asks about a PR whose verdicts are still moving, though nothing was pushed', async () => {
+    // !25033, exactly: created, three policies queued, and then nothing pushed
+    // to it ever again. Its builds finished and its reviewers voted, and the
+    // row went on reporting the state it was born in until somebody pressed
+    // Refresh — because a commit key cannot see a policy change.
+    const db = memory()
+    const moving = {
+      ...replies,
+      '/policy/evaluations': { value: [{ status: 'queued', configuration: { isBlocking: true } }] },
+    }
+    await hydrate(fakeClient(moving), TARGET, me, db)
+    age(db, 5)
+
+    const settled = fakeClient(replies)
+    const again = await hydrate(settled, TARGET, me, db)
+
+    expect(settled.calls).toHaveLength(3)
+    expect(again.ok && again.data.readyToMerge).toBe(true)
+  })
+
+  it('still serves a settled PR from the cache across the same interval', async () => {
+    // The other half of the bargain: only the pull requests that are actually
+    // moving pay 3 calls a poll. A settled inbox is still free to re-poll.
+    const db = memory()
+    await hydrate(fakeClient(replies), TARGET, me, db)
+    age(db, 5)
+
+    const second = fakeClient(replies)
+    await hydrate(second, TARGET, me, db)
+
+    expect(second.calls).toHaveLength(0)
+  })
+
+  it('gives up on even a settled row eventually', async () => {
+    // A rejection or a new comment moves no commit either, and "cached forever"
+    // would mean an inbox that is only ever right if you press Refresh.
+    const db = memory()
+    await hydrate(fakeClient(replies), TARGET, me, db)
+    age(db, 20)
+
+    const later = fakeClient(replies)
+    await hydrate(later, TARGET, me, db)
+
+    expect(later.calls).toHaveLength(3)
   })
 
   it('refetches once the PR is pushed to', async () => {

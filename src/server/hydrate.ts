@@ -77,7 +77,23 @@ interface EvaluationList {
 export interface Checks {
   readonly passed: number
   readonly failed: number
-  readonly pending: number
+  /**
+   * ADO's `running`: a build that is in flight *right now*. The only state in
+   * this shape the inbox is entitled to call "running".
+   */
+  readonly running: number
+  /**
+   * ADO's `queued`, which is the same word for three unrelated situations and
+   * none of them is a check in progress — the live probe on !24971 found a
+   * reviewer policy with nobody's vote yet, a build policy with no build ever
+   * queued, and three builds carrying `isExpired: true` from yesterday.
+   *
+   * Held apart from `running` because folding them together is what made this
+   * column report seven checks running on a pull request where nothing was
+   * running at all. "Not satisfied yet" is the honest reading, and it is a
+   * different instruction to the reviewer: waiting will not fix it.
+   */
+  readonly waiting: number
 }
 
 /**
@@ -210,7 +226,8 @@ export function countUnresolved(
 export function readChecks(evaluations: EvaluationList): Checks {
   let passed = 0
   let failed = 0
-  let pending = 0
+  let running = 0
+  let waiting = 0
 
   for (const evaluation of evaluations.value ?? []) {
     switch (evaluation.status) {
@@ -221,14 +238,16 @@ export function readChecks(evaluations: EvaluationList): Checks {
       case 'broken':
         failed++
         break
-      case 'queued':
       case 'running':
-        pending++
+        running++
+        break
+      case 'queued':
+        waiting++
         break
     }
   }
 
-  return { passed, failed, pending }
+  return { passed, failed, running, waiting }
 }
 
 /**
@@ -309,16 +328,49 @@ const ready = (
 ): boolean => !hydration.blocked && !target.isDraft && !target.conflicted
 
 /**
+ * How long a cached hydration may stand while the commit has not moved.
+ *
+ * The field notes on `readyToMerge` named two inputs that move without the
+ * commit and recomputed them on read. They missed the third, and it is the one
+ * that matters most: `blocked` and `checks` are policy *verdicts*, and every
+ * one of them changes on its own schedule. A build finishes, a reviewer votes,
+ * a build expires — the source tip does not care. Measured live: !25033 sat in
+ * `pr_cache` for three hours reading "3 running, blocked" while ADO had all
+ * seven policies approved and the pull request sitting ready to merge. Nothing
+ * would ever have corrected it, because the only invalidation the row had was a
+ * push that was never going to come.
+ *
+ * Two ages rather than one, because the two states have opposite costs:
+ *
+ *   - A pull request with a verdict outstanding is *guaranteed* to be wrong
+ *     soon, and it is the row a reviewer is actually watching. It expires
+ *     inside one inbox poll, so the next poll re-asks.
+ *   - A settled one is only wrong if somebody rejects or comments without
+ *     pushing — rarer, and already the case Refresh exists for (T-008). It
+ *     holds long enough that a settled inbox still costs nothing to re-poll.
+ *
+ * So the 1+3N cost is paid only for the pull requests that are moving, which is
+ * the bill T-007 was actually trying to avoid.
+ */
+const MOVING_MS = 90_000
+const SETTLED_MS = 15 * 60_000
+
+const staleAfter = (data: Hydration): number =>
+  data.blocked || data.checks.running > 0 || data.checks.waiting > 0 ? MOVING_MS : SETTLED_MS
+
+/**
  * One PR's worth of rich data, cache first.
  *
- * The cache is read through `readPrCache`, which compares the commit inside the
- * read — so a PR nobody has pushed to costs zero calls here, and a PR that moved
- * cannot serve a stale row even if this function forgot to check.
+ * The cache is read through `readPrCache`, which applies both halves of the
+ * validity test inside the read — the commit, so a PR that moved cannot serve a
+ * stale row even if this function forgot to check, and `staleAfter`, so a PR
+ * that has *not* moved still re-asks once its verdicts are old enough to be
+ * suspect. A settled pull request nobody has touched still costs zero calls.
  *
- * `fresh` is the one way past it, and it exists because the commit key has a
- * blind spot T-007 surfaced deliberately: a thread opened or resolved *without*
- * a push does not change `commitId`, so the count stays stale for the life of
- * the page. That is the wrong number someone presses Refresh about (T-008).
+ * `fresh` is the way past both, and it exists because neither half is immediate:
+ * a thread opened or resolved *without* a push does not change `commitId`, so
+ * the count is wrong until the age runs out. That is the wrong number someone
+ * presses Refresh about rather than waiting on (T-008).
  */
 export async function hydrate(
   client: AdoClient,
@@ -327,7 +379,9 @@ export async function hydrate(
   db?: DatabaseSync,
   fresh = false,
 ): Promise<HydrationResult> {
-  const cached = fresh ? undefined : readPrCache<Hydration>(target.id, target.commitId, db)
+  const cached = fresh
+    ? undefined
+    : readPrCache<Hydration>(target.id, target.commitId, db, staleAfter)
   if (cached !== undefined) {
     // The cached row's `readyToMerge` is overwritten rather than served: see the
     // field's own note — the draft flag and the conflict flag both change without

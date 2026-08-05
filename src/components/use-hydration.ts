@@ -67,10 +67,23 @@ export interface Hydrating {
 
 /**
  * `generation` is how Refresh reaches this hook. Bumping it re-runs hydration
- * for rows whose `commitId` has not moved — the one case the cache cannot
- * detect and a poll therefore cannot fix (T-008).
+ * for rows whose `commitId` has not moved and asks the server to skip its cache
+ * entirely.
+ *
+ * `polledAt` is how the inbox's own clock reaches it: the timestamp of the last
+ * successful poll, which advances every cadence whether or not anything changed.
+ * Without it this effect fires once per push and never again, and a tab left
+ * open would hold the badges it drew on arrival — a PR that finished its builds
+ * an hour ago would still be wearing them, because nothing was ever going to
+ * move the commit that keys them. Re-asking is not the same as re-fetching:
+ * the server decides per row whether its cached answer has aged out, and a
+ * settled pull request costs a local sqlite read and no ADO call at all.
  */
-export function useHydration(rows: readonly PullRequestRow[], generation = 0): Hydrating {
+export function useHydration(
+  rows: readonly PullRequestRow[],
+  generation = 0,
+  polledAt = 0,
+): Hydrating {
   const [results, setResults] = useState<ReadonlyMap<string, HydrationResult>>(() => new Map())
   const lists = useRef(new Set<HTMLElement>())
   const hydrated = useRef(generation)
@@ -85,8 +98,10 @@ export function useHydration(rows: readonly PullRequestRow[], generation = 0): H
   }, [])
 
   // The effect keys on the rows' *content*, not the array's identity: react-query
-  // hands back a fresh array on every poll, and re-hydrating an unchanged inbox
-  // each time is precisely what the commit-keyed cache exists to prevent.
+  // hands back a fresh array on every poll, and every keystroke in the list
+  // re-renders this component. `polledAt` beside it is the deliberate re-ask, on
+  // the inbox's cadence and nothing faster; the fingerprint is what keeps the
+  // renders in between from each becoming one.
   const fingerprint = rows.map(keyOf).join(' ')
 
   useEffect(() => {
@@ -154,7 +169,7 @@ export function useHydration(rows: readonly PullRequestRow[], generation = 0): H
     }
     // `rows` is read through `fingerprint`, which is what actually changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fingerprint, generation])
+  }, [fingerprint, generation, polledAt])
 
   return {
     hydrationOf: (row) => results.get(keyOf(row)),

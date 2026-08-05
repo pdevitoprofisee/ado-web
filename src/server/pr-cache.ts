@@ -10,6 +10,10 @@ import { getDatabase } from './db'
 // content changes. The comparison lives *inside* the read so a caller cannot
 // forget it and serve a stale row.
 //
+// It is a validity token for the PR's *content* only, though, and that is the
+// whole reason `maxAge` exists below. Nothing about a pull request's verdicts —
+// policies, votes, builds — is content, and none of it moves this token.
+//
 // That same check is why rows carry no organization column: a PR id is
 // org-scoped in ADO, and for a cached row to be served across an org switch it
 // would have to collide on both the id and a 40-hex commit sha — i.e. be the
@@ -20,17 +24,32 @@ import { getDatabase } from './db'
  * type parameter documents that contract; it is not validated on read, so a
  * change to the payload's shape must clear the table in a migration (see
  * MIGRATIONS in ./db.ts).
+ *
+ * `maxAge` is the second half of the validity test, and it exists because the
+ * commit is not enough: some of what a caller caches here moves while the head
+ * commit stands still (a build finishes, a reviewer votes, a build expires).
+ * It reads the payload because only the caller knows which of its own answers
+ * were provisional — see `staleAfter` in ./hydrate.ts. Defaulted to forever, so
+ * a caller that genuinely has a content-addressed key is unaffected.
+ *
+ * Applied *inside* the read for the same reason the commit comparison is: a
+ * caller that has to remember to check an age is a caller that will one day
+ * serve a stale row.
  */
 export function readPrCache<T>(
   prId: number,
   commitId: string,
   db: DatabaseSync = getDatabase(),
+  maxAge: (payload: T) => number = () => Infinity,
 ): T | undefined {
   const row = db
-    .prepare('SELECT payload FROM pr_cache WHERE pr_id = ? AND commit_id = ?')
+    .prepare('SELECT payload, fetched_at FROM pr_cache WHERE pr_id = ? AND commit_id = ?')
     .get(prId, commitId)
+  if (row === undefined) return undefined
 
-  return row === undefined ? undefined : (JSON.parse(row.payload as string) as T)
+  const payload = JSON.parse(row.payload as string) as T
+
+  return Date.now() - (row.fetched_at as number) > maxAge(payload) ? undefined : payload
 }
 
 export function writePrCache(

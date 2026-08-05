@@ -78,8 +78,9 @@ function Home() {
   // Set by Refresh and consumed by the next run, so the button and the poll can
   // share one query key while meaning different things by it.
   const forceFresh = useRef(false)
-  // The same intent, aimed at the other cache: hydration is keyed by commit and
-  // a poll never re-asks for a row that has not been pushed to.
+  // The same intent, aimed at the other cache: a poll re-asks for every row but
+  // lets the server answer settled ones from sqlite, and this is how Refresh
+  // says "ask Azure DevOps anyway".
   const [generation, refreshed] = useReducer((n: number) => n + 1, 0)
   const query = useQuery({
     queryKey: ['inbox'],
@@ -107,7 +108,11 @@ function Home() {
     () => [...(inbox?.mine ?? []), ...(inbox?.assignedToMe ?? [])],
     [inbox],
   )
-  const { hydrationOf, registerList } = useHydration(rows, generation)
+  // `dataUpdatedAt` is the poll's tick, and hydration rides it for the same
+  // reason the notification panel below does: the inbox is the only clock in the
+  // app, and badges that only ever redraw on a push are badges that go stale
+  // quietly.
+  const { hydrationOf, registerList } = useHydration(rows, generation, query.dataUpdatedAt)
   const selectedId = useInboxSelection(rows)
 
   // What the notification panel is allowed to notice. Built from the two

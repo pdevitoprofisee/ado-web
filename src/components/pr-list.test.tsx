@@ -69,7 +69,7 @@ const rich = (data: Partial<Hydration> = {}): HydrationResult => ({
   id: 3302,
   ok: true,
   data: {
-    checks: { passed: 0, failed: 0, pending: 0 },
+    checks: { passed: 0, failed: 0, running: 0, waiting: 0 },
     unresolved: 0,
     approvalReset: false,
     // Not ready by default, so the strongest badge in the column only ever shows
@@ -194,7 +194,7 @@ describe('PullRequestSection', () => {
         empty="none"
         hydration={() =>
           rich({
-            checks: { passed: 4, failed: 2, pending: 0 },
+            checks: { passed: 4, failed: 2, running: 0, waiting: 0 },
             unresolved: 3,
             approvalReset: true,
           })
@@ -207,8 +207,8 @@ describe('PullRequestSection', () => {
     expect(screen.getByTitle('A push reset your approval')).toBeVisible()
   })
 
-  it('collapses the checks to one badge: failures, else pending, else all-clear', () => {
-    // One glyph rather than three counts, because the column is 6rem wide and
+  it('collapses the checks to one badge: failures, else running, else waiting, else all-clear', () => {
+    // One glyph rather than four counts, because the column is 6rem wide and
     // "something is red" is the whole decision a reviewer makes from a list.
     const section = (checks: Hydration['checks']) => (
       <PullRequestSection
@@ -219,14 +219,23 @@ describe('PullRequestSection', () => {
       />
     )
 
-    const { rerender } = render(section({ passed: 1, failed: 2, pending: 3 }))
+    const { rerender } = render(section({ passed: 1, failed: 2, running: 3, waiting: 1 }))
     expect(screen.getByTitle('2 checks failed')).toBeVisible()
     expect(screen.queryByTitle(/checks running/)).toBeNull()
 
-    rerender(section({ passed: 1, failed: 0, pending: 3 }))
+    rerender(section({ passed: 1, failed: 0, running: 3, waiting: 4 }))
     expect(screen.getByTitle('3 checks running')).toBeVisible()
+    // The count is what is moving, not what is outstanding: four policies are
+    // unmet here and the badge deliberately says three.
+    expect(screen.queryByTitle(/not satisfied/)).toBeNull()
 
-    rerender(section({ passed: 5, failed: 0, pending: 0 }))
+    rerender(section({ passed: 1, failed: 0, running: 0, waiting: 4 }))
+    expect(screen.getByTitle('4 policies not satisfied yet')).toBeVisible()
+    // The bug this split exists for: nothing is running, so nothing may claim to
+    // be. An expired build and a reviewer who has not voted are not progress.
+    expect(screen.queryByTitle(/checks running/)).toBeNull()
+
+    rerender(section({ passed: 5, failed: 0, running: 0, waiting: 0 }))
     expect(screen.getByTitle('All checks passed')).toBeVisible()
   })
 
@@ -237,7 +246,7 @@ describe('PullRequestSection', () => {
         rows={[row()]}
         empty="none"
         hydration={() =>
-          rich({ checks: { passed: 5, failed: 0, pending: 0 }, readyToMerge: true })
+          rich({ checks: { passed: 5, failed: 0, running: 0, waiting: 0 }, readyToMerge: true })
         }
       />,
     )
@@ -255,7 +264,7 @@ describe('PullRequestSection', () => {
         rows={[row()]}
         empty="none"
         hydration={() =>
-          rich({ checks: { passed: 5, failed: 0, pending: 0 }, blocked: true })
+          rich({ checks: { passed: 5, failed: 0, running: 0, waiting: 0 }, blocked: true })
         }
       />,
     )

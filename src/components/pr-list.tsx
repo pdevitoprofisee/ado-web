@@ -6,6 +6,7 @@ import {
   Clock01Icon,
   GitMergeConflictIcon,
   GitMergeIcon,
+  HourglassIcon,
   LinkSquare02Icon,
   Message01Icon,
   RefreshIcon,
@@ -115,10 +116,24 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
           <HugeiconsIcon icon={Cancel01Icon} size={12} className="text-destructive" aria-hidden />
           {checks.failed}
         </Badge>
-      ) : checks && checks.pending > 0 ? (
-        <Badge label={`${checks.pending} checks running`}>
+      ) : checks && checks.running > 0 ? (
+        <Badge label={`${checks.running} checks running`}>
           <HugeiconsIcon icon={Clock01Icon} size={12} className="text-pen-amber" aria-hidden />
-          {checks.pending}
+          {checks.running}
+        </Badge>
+      ) : checks && checks.waiting > 0 ? (
+        /* The same amber pen as the clock above, because it is the same "not
+           finished" news — but a different glyph, because it is the opposite
+           instruction. A clock says wait and this will resolve itself; an
+           hourglass here says something has run out. `queued` is ADO's word for
+           an expired build, a build nobody queued, and a reviewer who has not
+           voted, and none of those clear up on their own. Ranked under the
+           clock so a pull request with one build running and four policies
+           unmet reads as running: that is the one of the two that is about to
+           change. */
+        <Badge label={`${checks.waiting} policies not satisfied yet`}>
+          <HugeiconsIcon icon={HourglassIcon} size={12} className="text-pen-amber" aria-hidden />
+          {checks.waiting}
         </Badge>
       ) : checks && checks.passed > 0 && !ready ? (
         // Not while the ready mark is up: it already implies this, and says more.
