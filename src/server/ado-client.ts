@@ -1,5 +1,7 @@
 import type { AdoCredential } from './credentials'
+import type { CallerOutcome, ObservedResponse } from './write-ledger'
 import { adoAuthHeaders, serviceDetail } from './connection-test'
+import { openWriteLedger } from './write-ledger'
 
 // Server-only. The single chokepoint for every Azure DevOps call.
 //
@@ -8,6 +10,12 @@ import { adoAuthHeaders, serviceDetail } from './connection-test'
 // `Access-Control-Expose-Headers` (note 3), so only a server can see them at
 // all; and once seen, backing off is a property of the transport rather than of
 // whichever feature happened to make the call.
+//
+// Being that chokepoint is also what makes T-049's ledger one edit instead of
+// fifteen. It is off unless `ADO_WEB_WRITE_LEDGER` names a file, and off means
+// `openWriteLedger` returns `null` — no file, no directory, and one comparison
+// per call. No signature moves either: capture records what `write` and `get`
+// already do, and neither return type changes.
 
 /**
  * Two hosts, one service. Identity and Graph live on `vssps` and 404 on the
@@ -299,10 +307,31 @@ function buildUrl(
   return url.toString()
 }
 
+/**
+ * What the ledger records when no response arrived at all.
+ *
+ * Status 0 rather than an omitted record. Note 2 makes the unanswered write the
+ * ambiguous case — a timed-out `POST` may already have been applied — so the
+ * file has to say a button was pressed and nothing came back. A gap there reads
+ * exactly like a write that was never attempted.
+ */
+const UNANSWERED: ObservedResponse = {
+  status: 0,
+  headers: {},
+  present: false,
+  text: '',
+  chars: 0,
+  truncated: false,
+}
+
 export function createAdoClient(
   credential: AdoCredential,
   { concurrency = DEFAULT_CONCURRENCY }: AdoClientOptions = {},
 ): AdoClient {
+  // Read once, here, because there is one client per credential for the length
+  // of the process (`ado.ts`). `null` is every normal run.
+  const ledger = openWriteLedger(credential)
+
   let state: RateLimit = {
     remaining: null,
     limit: null,
@@ -460,10 +489,25 @@ export function createAdoClient(
   ): Promise<T> {
     const url = buildUrl(credential.org, path, params, host)
     const inFlight = reads.get(url)
+    // A joined caller sent nothing, so it records nothing. The ledger is about
+    // requests that went out, and the read that could have seen a write is the
+    // one already in flight below — recording it twice would read as two reads.
     if (inFlight !== undefined) return (await inFlight) as T
 
     // Set before the first await, or two callers in the same tick both miss.
-    const read = (async () => (await demand(await send(url))).json())().finally(() => {
+    const read = (async () => {
+      // Claimed before the request goes out, so the recorded read is the first
+      // one that could have seen the write rather than the one after it.
+      const claim = ledger === null ? null : ledger.claimRead(path)
+      const sent = await send(url)
+      // Observed before `demand`, which reads the body of a failure through
+      // `serviceDetail`. A 404 on the re-read is an answer, so it is recorded.
+      if (ledger !== null && claim !== null) {
+        ledger.read(claim, url, path, await ledger.observe(sent))
+      }
+
+      return (await demand(sent)).json()
+    })().finally(() => {
       reads.delete(url)
     })
     reads.set(url, read)
@@ -496,23 +540,78 @@ export function createAdoClient(
     body?: unknown,
     params: Record<string, QueryValue> = {},
   ): Promise<T | null> {
-    const response = await demand(
-      await send(buildUrl(credential.org, path, params, 'core'), {
+    const url = buildUrl(credential.org, path, params, 'core')
+    // `undefined`, not `'null'`: a DELETE with a body is a different request
+    // to a DELETE without one, and `JSON.stringify(undefined)` is not a
+    // string at all.
+    const sent = body === undefined ? undefined : JSON.stringify(body)
+    // `null` for the whole of the disabled path. `UNANSWERED` stands in until a
+    // response arrives, so a transport failure still has something to record.
+    let observed: ObservedResponse | null = ledger === null ? null : UNANSWERED
+
+    /** Records what the caller saw, rather than working it out from the status. */
+    const record = (caller: CallerOutcome, parsed: unknown, failure: unknown): void => {
+      if (observed === null) return
+      ledger?.write({
         method,
-        // `undefined`, not `'null'`: a DELETE with a body is a different request
-        // to a DELETE without one, and `JSON.stringify(undefined)` is not a
-        // string at all.
-        body: body === undefined ? undefined : JSON.stringify(body),
-        retry: false,
-      }),
-    )
+        url,
+        path,
+        requestBody: sent ?? null,
+        response: observed,
+        caller,
+        parsed,
+        failure,
+      })
+    }
+
+    let response: Response
+    try {
+      response = await send(url, { method, body: sent, retry: false })
+    } catch (cause) {
+      record('threw', null, cause)
+      throw cause
+    }
+    // Observed here for two reasons: `demand` reads the body of a failure through
+    // `serviceDetail`, and the parse below reads it on a success. `observe` takes
+    // a clone, so both still read their own.
+    if (ledger !== null) observed = await ledger.observe(response)
+
+    try {
+      await demand(response)
+    } catch (cause) {
+      record('threw', null, cause)
+      throw cause
+    }
 
     // 204 on a delete. The text check covers the empty 200 as well, because
     // "no body" is a service decision we do not get to insist about.
-    if (response.status === 204) return null
-    const raw = await response.text()
+    if (response.status === 204) {
+      record('null', null, null)
 
-    return raw === '' ? null : (JSON.parse(raw) as T)
+      return null
+    }
+    const raw = await response.text()
+    if (raw === '') {
+      record('null', null, null)
+
+      return null
+    }
+
+    let parsed: T
+    try {
+      parsed = JSON.parse(raw) as T
+    } catch (cause) {
+      record('threw', null, cause)
+      throw cause
+    }
+    // `serviceDetail`'s rule, applied here because `parsed` is the only field in
+    // the record that is not a string: the ledger cleans every string it writes
+    // and cannot reach inside a parsed object. So a body that carried the
+    // credential loses its parse as well as its bytes. `body.text` says it was
+    // dropped, which is how a reader tells this from "there was no body".
+    record('value', raw.includes(credential.pat) ? null : parsed, null)
+
+    return parsed
   }
 
   async function fanOut<I, O>(

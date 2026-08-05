@@ -168,7 +168,7 @@ beforeAll(() => {
 
   process.env.ADO_WEB_REPOS_ROOT = root
   // Roughly 90 synchronous `git` processes, which is about 11 seconds on Windows
-  // on its own and more when the other 65 test files are running beside it. The
+  // on its own and more when the rest of the suite is running beside it. The
   // default 10 second hook budget fails the whole file with a timeout, so the
   // budget is stated here rather than raised for every hook in the suite.
 }, 120_000)
