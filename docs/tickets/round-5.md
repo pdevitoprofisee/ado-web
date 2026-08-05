@@ -1023,8 +1023,16 @@ migration count bump, mute, and the hydration wiring end to end.
 
 ## T-040 — The first real write
 
-**Type:** task (HITL — **needs the user, not an agent**) · **Status:** open · **Blocked by:**
+**Type:** task (HITL — **needs the user, not an agent**) · **Status:** parked · **Blocked by:**
 T-033, T-034, T-049
+
+> **Parked by the user on 2026-08-04.** The instruction is to **assume every finished write path
+> works** until they say otherwise. So nothing below is measured and nothing below is retracted:
+> the fifteen paths are still unsent, their response shapes still inferred, and the ledger built
+> by [T-049](./round-7.md#t-049--the-write-ledger) has still never seen a real Azure DevOps
+> response. What changes is only that this stops blocking other work, and that a write path
+> failing in the field is now an expected cost rather than a surprise. The ticket reopens the
+> day the user says otherwise, and the afternoon it asks for is unchanged.
 
 > **Amended in round 7, twice.** The count is **fifteen**, not eleven — this list omits
 > `requeuePolicy`, `retryBuildRun` and `retryBuildStage`. And the bug class below is understated:
