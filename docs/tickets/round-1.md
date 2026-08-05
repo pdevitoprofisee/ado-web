@@ -24,9 +24,9 @@ concurrent session skips it.
 | **6** | Sonar: findings from the Sonar API, grouped by rule, gate panel, rule detail | **complete, early** — delivered inside [round 4](./round-4.md) as T-027 and T-028; three known shortfalls moved to phase 10 |
 | 7 | Write actions: vote, add reviewers w/ autocomplete, squash merge, abandon/reactivate | [round 5](./round-5.md) — squash merge and rename landed early, out of band |
 | 8 | Notifications: event detection, activity centre, per-type sounds | [round 5](./round-5.md) — after 5 |
-| 9 | Repository list | any time after 3 |
+| 9 | Repository list | [round 7](./round-7.md) — the probe found there is no "last updated" field to put in the promised column |
 | **10** | **The deferred**: what phases 3, 4 and 6 shipped without, on purpose | [round 5](./round-5.md) — see below |
-| — | Local repositories (phase 2 proper) | [round 6](./round-6.md) — the whole-branch diff only; branch and commit browsing stay in the [fog](../map.md#the-fog) |
+| — | Local repositories (phase 2 proper) | [round 6](./round-6.md) — the whole-branch diff; branch and commit browsing taken out of the [fog](../map.md#the-fog) in [round 7](./round-7.md) |
 
 Phases 3 and 4 are the reason this project exists; phase 1 exists to make them cheap.
 

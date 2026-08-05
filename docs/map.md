@@ -133,13 +133,29 @@ badge, plus **sounds differentiated per event type** and a mute toggle.
 ### Repositories
 
 Deliberately minimal: a searchable flat list across the org — name, project, default
-branch, last updated — with copy-clone-URL and open-in-web. No in-app file browser.
+branch — with copy-clone-URL and open-in-web. No in-app file browser.
+
+**There is no "last updated" column, and there cannot be a cheap one** `[LIVE]`. This line
+used to promise one; T-046 looked and found that a repository carries **no timestamp of any
+kind**. `project.lastUpdateTime` is the *project's* and is actively misleading — `SaaS` reports
+`2022-03-03` while a repository in it was last pushed `2022-06-06`, and all seventeen would
+print the same date. A real one costs `pushes?$top=1` per repository: ~66 ms × 114 ≈ 7.5 s
+serial. If it is ever wanted, it is lazy hydration like the inbox rows, not a column — and
+`pushes` is the source, not `commits`, whose date is the commit's and so goes backwards after a
+rebase.
 
 **This is the org-wide list, and it does not exist yet.** `/repos` is the *local* page
 (see below), shipped first because it needs no credential. The two are the same subject
-seen from two sides and they converge later, on the `origin` URL: a clone whose remote
-matches an ADO repository is that repository. Until that join is built, treat them as
-two lists — and do not add a second local-repository concept to this one.
+seen from two sides and they converge later — but **not on the `origin` URL as a string**.
+The identity of a repository is the triple **org / project / name**; the host is not part of
+it. A clone taken before the migration still says `https://{org}.visualstudio.com/{project}/_git/{name}`
+and ADO's `remoteUrl` is always the `dev.azure.com` spelling and **will never report the legacy
+one back**. Measured on one disk: string equality joined 3 of 18, the triple joined 18 of 18.
+A join written on the URL would report fifteen clones as unrelated to the org they came from,
+silently, looking exactly like a correct empty answer. And a remote that parses as neither shape
+— a fork, a mirror, a `file://` path, a non-ADO host — means **"cannot tell"**, never "no match".
+Until that join is built, treat them as two lists — and do not add a second local-repository
+concept to this one.
 
 ### Local repositories
 
@@ -349,6 +365,19 @@ rewrite. Evidence in [`docs/research/`](./research/).
   **empty** page, and dedupe by `pullRequestId`: whether `$skip` is applied before or
   after that filter is unresolved, so overlap is possible.
 - `GET _apis/git/pullrequests` truncates `description` to 400 chars.
+- **Org-wide `/{org}/_apis/git/repositories` is genuinely cross-project too** `[LIVE]` — 114
+  repositories in one 87 ms / 100 KB call, matching the union of per-project enumeration over
+  all six projects exactly, in both directions. Second endpoint after the PR list that needs no
+  fan-out.
+- **The repository list ignores `$top` and `$skip` outright** `[LIVE]` — not clamped, *ignored*.
+  `$top=5` returns all 114 and `$top=5&$skip=5` returns the same 114, byte-identically. **Do not
+  confuse this with the PR list two bullets up**: there a short page is not the last page, here
+  *every* page is the whole list, so a paging loop never terminates. No `x-ms-continuationtoken`
+  and no `Link` header on any run.
+- **Repository flags cost money.** `includeLinks` takes the response 100 KB → 235 KB;
+  **`includeAllUrls` takes it to 1.58 MB — 16×** — for `validRemoteUrls`, which nothing reads.
+  `includeHidden` reveals 3 repositories the default omits. `isDisabled` is true on 11 of 114, and
+  `isFork` is **absent rather than `false`** on 110 of 114.
 - **Comment likes are a real route** `[LIVE]`: `.../threads/{t}/comments/{c}/likes`
   answers 200 authenticated, 401 anonymously, against 404 for an invented sibling path.
   Reading is proven; *writing* is not — see the unknowns below.

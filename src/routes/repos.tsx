@@ -54,6 +54,16 @@ function RepositoriesPage() {
           <Link to="/" className="text-ink hover:text-teal-600 underline underline-offset-4">
             inbox
           </Link>
+          {' · '}
+          {/* The other list, named as the other list. It is not this page's
+              source and this page is not its cache — joining the two on the
+              origin URL is a later ticket. */}
+          <Link
+            to="/org-repos"
+            className="text-ink hover:text-teal-600 underline underline-offset-4"
+          >
+            org repositories
+          </Link>
         </p>
       </header>
 

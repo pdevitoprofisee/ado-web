@@ -184,7 +184,17 @@ function Home() {
               session from a link already on screen has no wording worth printing
               there, and every key it would want is one the list itself claims. */}
           <Link to="/repos" className="text-ink hover:text-teal-600 underline underline-offset-4">
-            repositories
+            your repositories
+          </Link>
+          {' · '}
+          {/* "your" and "org" rather than one word twice: these are two lists of
+              two different things — what is on this disk, and what exists in Azure
+              DevOps — and a single label would send people to the wrong one. */}
+          <Link
+            to="/org-repos"
+            className="text-ink hover:text-teal-600 underline underline-offset-4"
+          >
+            org repositories
           </Link>
           {' · '}
           <Link

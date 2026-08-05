@@ -1024,7 +1024,15 @@ migration count bump, mute, and the hydration wiring end to end.
 ## T-040 — The first real write
 
 **Type:** task (HITL — **needs the user, not an agent**) · **Status:** open · **Blocked by:**
-T-033, T-034
+T-033, T-034, T-049
+
+> **Amended in round 7, twice.** The count is **fifteen**, not eleven — this list omits
+> `requeuePolicy`, `retryBuildRun` and `retryBuildStage`. And the bug class below is understated:
+> the likelier failure is not "a 200 with a body we cannot parse" but a 200 we parse
+> *successfully into the wrong thing*, because `toComment` and `toThread` turn a `{}` into a
+> comment with id `0`, no author and no content, and the page draws it. See
+> [round 7](./round-7.md#t-040--the-first-real-write). T-049's ledger is what makes the afternoon
+> this ticket asks for worth spending, which is why it is now a blocker.
 
 Eleven write paths will exist when this round lands — reply, start thread, set status, edit,
 delete, squash merge, rename, vote, abandon, reactivate, add/remove reviewer — and **not one of

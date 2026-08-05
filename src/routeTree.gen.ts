@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as HistoryRouteImport } from './routes/history'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
+import { Route as OrgReposRouteImport } from './routes/org-repos'
 import { Route as ReposRouteImport } from './routes/repos'
 import { Route as ReposRepoRouteImport } from './routes/repos_.$repo'
 import { Route as PrProjectIdRepositoryIdPrIdRouteImport } from './routes/pr.$projectId.$repositoryId.$prId'
@@ -29,6 +30,11 @@ const HistoryRoute = HistoryRouteImport.update({
 const OnboardingRoute = OnboardingRouteImport.update({
   id: '/onboarding',
   path: '/onboarding',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OrgReposRoute = OrgReposRouteImport.update({
+  id: '/org-repos',
+  path: '/org-repos',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ReposRoute = ReposRouteImport.update({
@@ -52,6 +58,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/history': typeof HistoryRoute
   '/onboarding': typeof OnboardingRoute
+  '/org-repos': typeof OrgReposRoute
   '/repos': typeof ReposRoute
   '/repos/$repo': typeof ReposRepoRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
@@ -60,6 +67,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/history': typeof HistoryRoute
   '/onboarding': typeof OnboardingRoute
+  '/org-repos': typeof OrgReposRoute
   '/repos': typeof ReposRoute
   '/repos/$repo': typeof ReposRepoRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
@@ -69,6 +77,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/history': typeof HistoryRoute
   '/onboarding': typeof OnboardingRoute
+  '/org-repos': typeof OrgReposRoute
   '/repos': typeof ReposRoute
   '/repos_/$repo': typeof ReposRepoRoute
   '/pr/$projectId/$repositoryId/$prId': typeof PrProjectIdRepositoryIdPrIdRoute
@@ -79,6 +88,7 @@ export interface FileRouteTypes {
     | '/'
     | '/history'
     | '/onboarding'
+    | '/org-repos'
     | '/repos'
     | '/repos/$repo'
     | '/pr/$projectId/$repositoryId/$prId'
@@ -87,6 +97,7 @@ export interface FileRouteTypes {
     | '/'
     | '/history'
     | '/onboarding'
+    | '/org-repos'
     | '/repos'
     | '/repos/$repo'
     | '/pr/$projectId/$repositoryId/$prId'
@@ -95,6 +106,7 @@ export interface FileRouteTypes {
     | '/'
     | '/history'
     | '/onboarding'
+    | '/org-repos'
     | '/repos'
     | '/repos_/$repo'
     | '/pr/$projectId/$repositoryId/$prId'
@@ -104,6 +116,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   HistoryRoute: typeof HistoryRoute
   OnboardingRoute: typeof OnboardingRoute
+  OrgReposRoute: typeof OrgReposRoute
   ReposRoute: typeof ReposRoute
   ReposRepoRoute: typeof ReposRepoRoute
   PrProjectIdRepositoryIdPrIdRoute: typeof PrProjectIdRepositoryIdPrIdRoute
@@ -130,6 +143,13 @@ declare module '@tanstack/react-router' {
       path: '/onboarding'
       fullPath: '/onboarding'
       preLoaderRoute: typeof OnboardingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/org-repos': {
+      id: '/org-repos'
+      path: '/org-repos'
+      fullPath: '/org-repos'
+      preLoaderRoute: typeof OrgReposRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/repos': {
@@ -160,6 +180,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   HistoryRoute: HistoryRoute,
   OnboardingRoute: OnboardingRoute,
+  OrgReposRoute: OrgReposRoute,
   ReposRoute: ReposRoute,
   ReposRepoRoute: ReposRepoRoute,
   PrProjectIdRepositoryIdPrIdRoute: PrProjectIdRepositoryIdPrIdRoute,
