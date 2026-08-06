@@ -7,6 +7,7 @@ import { LayoutToggle } from './diff/layout-toggle'
 import { WhitespaceToggle } from './diff/whitespace-toggle'
 import { localDiffSource } from '@/lib/blob-query'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
+import { useLineTarget } from '@/lib/line-link'
 import { TARGET_RUNG_LABEL } from '@/lib/local-git-contract'
 import { useLocalViewedFiles } from '@/lib/viewed'
 import { fileViewedKey } from '@/lib/viewed-key'
@@ -158,6 +159,11 @@ export function BranchDiff({
   const read = changes.files.filter((file) => isViewed(viewed, file)).length
   const isRead = (file: ChangedFile) => isViewed(viewed, file)
 
+  // A permalink somebody sent, if this page was opened on one. Held until the
+  // list below is on screen — until then there is no panel with that path's id to
+  // scroll to, and the one chance to arrive would be spent on nothing.
+  const target = useLineTarget(!viewedPending)
+
   // **The legitimate empty case.** Eleven of nineteen repositories here sit on
   // their own default branch, where a whole-branch diff is correctly empty — and
   // an empty file list is not an answer to that, it is the same blank space a
@@ -235,7 +241,9 @@ export function BranchDiff({
                     withheld rather than passed as null, which is the same thing
                     to the panel and a clearer statement here: there is no
                     conversation on a branch on your disk, so there are no
-                    compose buttons on any row. */}
+                    compose buttons on any row. `webUrl` is withheld for the same
+                    kind of reason: there is no Azure DevOps address for a branch
+                    on your disk, so no row offers to open one. */}
                 <ChangedFileDiff
                   diffSource={source}
                   file={file}
@@ -243,6 +251,7 @@ export function BranchDiff({
                   ignoreWhitespace={ignoreWhitespace}
                   viewed={isRead(file)}
                   onViewedChange={(next) => setViewed(file, next)}
+                  jumpTo={target !== null && target.path === file.path ? target.line : null}
                 />
               </li>
             ))}

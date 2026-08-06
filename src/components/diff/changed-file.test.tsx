@@ -420,6 +420,132 @@ describe('ChangedFileDiff', () => {
   })
 })
 
+describe('a link to one line', () => {
+  // The pull request's own `url`, as ADO hands it back. Only ever asserted as a
+  // prefix here: what the rest of the address should say is the one thing about
+  // this feature nobody has checked in a browser, and a test that pinned it would
+  // be checking the guess against itself. See `ado-line-url.ts`.
+  const WEB_URL = 'https://dev.azure.com/profisee/SaaS/_git/platform/pullrequest/24698'
+
+  /** Line 2 is the added line — see `BLOBS`. */
+  const copy = () => screen.getByRole('button', { name: 'Copy a link to line 2' })
+
+  afterEach(() => {
+    // The stub `userEvent.setup()` installs is torn down with it; one put here by
+    // hand is not, and would follow the suite into the next file.
+    Reflect.deleteProperty(navigator, 'clipboard')
+  })
+
+  async function ready(props: Partial<Parameters<typeof ChangedFileDiff>[0]> = {}) {
+    call.mockResolvedValue(answer(BLOBS))
+    const user = userEvent.setup()
+    draw(panel(props))
+
+    await waitFor(() => expect(screen.getByRole('region', { name: FILE.path })).toBeInTheDocument())
+
+    return user
+  }
+
+  /** Installed after `setup()`, which puts a stub of its own on `navigator`. */
+  function clipboard(writeText: () => Promise<void>) {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  }
+
+  it('copies the page it is on, at the line the button is beside', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const user = await ready()
+    clipboard(writeText)
+
+    await user.click(copy())
+
+    expect(writeText).toHaveBeenCalledTimes(1)
+    // The address as it stands plus the fragment, so the link opens the diff the
+    // reader is looking at rather than some canonical version of it.
+    expect(writeText).toHaveBeenCalledWith(
+      `${window.location.href}#path=%2Fsrc%2Flog.ts&line=2`,
+    )
+  })
+
+  it('says that it copied, and which line', async () => {
+    // The whole feedback there is. A 16px button the pointer has already left
+    // cannot report anything itself, and a copy that says nothing is
+    // indistinguishable from a button that is broken.
+    const user = await ready()
+    clipboard(vi.fn().mockResolvedValue(undefined))
+
+    await user.click(copy())
+
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('Copied a link to line 2.'),
+    )
+  })
+
+  it('says it could not when there is no clipboard to write to', async () => {
+    // Plain http over the LAN is not a secure context, so the API is absent
+    // rather than refusing — and the reader has to be told, because otherwise
+    // they paste whatever was in the clipboard before.
+    const user = await ready()
+    Reflect.deleteProperty(navigator, 'clipboard')
+
+    await user.click(copy())
+
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('Could not copy a link to line 2.'),
+    )
+  })
+
+  it('says it could not when the write is refused', async () => {
+    const user = await ready()
+    clipboard(vi.fn().mockRejectedValue(new Error('Document is not focused.')))
+
+    await user.click(copy())
+
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent('Could not copy a link to line 2.'),
+    )
+  })
+
+  it('takes the copy sentence back down and leaves the jump behind it', async () => {
+    // One live region for both, so the copy has to hand it back — a file jumped
+    // into and then copied from should still say where the reader is.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const user = await ready({ jumpTo: 2 })
+      clipboard(vi.fn().mockResolvedValue(undefined))
+
+      await user.click(copy())
+      await waitFor(() =>
+        expect(screen.getByRole('status')).toHaveTextContent('Copied a link to line 2.'),
+      )
+
+      await vi.advanceTimersByTimeAsync(2000)
+
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Jumped to line 2.'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('offers Azure DevOps when the page has an address there', async () => {
+    await ready({ webUrl: WEB_URL })
+
+    const link = screen.getByRole('link', { name: 'Open line 2 in Azure DevOps' })
+
+    expect(link).toHaveAttribute('href', expect.stringContaining(WEB_URL))
+    expect(link).toHaveAttribute('target', '_blank')
+  })
+
+  it('offers nothing there at all on a diff read off the disk', async () => {
+    // Absent rather than dead. A branch compare and a commit diff are handed no
+    // `webUrl` because there is no Azure DevOps address for either, and that is
+    // what has to take the link off the row — not a link that opens the wrong
+    // thing, and not one that opens nothing.
+    await ready()
+
+    expect(screen.queryByRole('link', { name: /Azure DevOps/ })).toBeNull()
+  })
+})
+
 describe('the same finding clicked twice', () => {
   // Its own block for the `scrollTo` jsdom does not have. Counting the calls rather
   // than asserting an offset: this file is two lines long, so every offset in it

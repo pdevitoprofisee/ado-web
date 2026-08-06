@@ -8,6 +8,7 @@ import { LayoutToggle } from './diff/layout-toggle'
 import { WhitespaceToggle } from './diff/whitespace-toggle'
 import { localDiffSource } from '@/lib/blob-query'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
+import { useLineTarget } from '@/lib/line-link'
 
 import type { ReactNode } from 'react'
 import type { DiffLayout } from '@/lib/diff-contract'
@@ -190,6 +191,11 @@ export function CommitDiff({
   // keep a gitlink away from `cat-file`. See `localDiffSource`.
   const source = useMemo(() => localDiffSource(slug, changes.files), [slug, changes.files])
 
+  // A permalink somebody sent, if this page was opened on one. This list has no
+  // wait in front of it — the changes are already in hand — so it is answerable
+  // on the first commit.
+  const target = useLineTarget(changes.files.length > 0)
+
   return (
     <div className="flex w-full flex-col gap-3">
       <Identity commit={changes.commit} />
@@ -245,12 +251,15 @@ export function CommitDiff({
                     takes the checkbox off the panel — see the note at the top.
                     `threads`, `threadActions` and `iterationContext` are withheld
                     for the branch diff's reason: there is no conversation on a
-                    commit on your disk. */}
+                    commit on your disk. So is `webUrl`, for the same reason again
+                    — a commit on your disk has no Azure DevOps address, so no row
+                    offers to open one. */}
                 <ChangedFileDiff
                   diffSource={source}
                   file={file}
                   layout={layout}
                   ignoreWhitespace={ignoreWhitespace}
+                  jumpTo={target !== null && target.path === file.path ? target.line : null}
                 />
               </li>
             ))}

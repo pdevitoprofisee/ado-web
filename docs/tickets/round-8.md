@@ -280,7 +280,7 @@ of you, but nobody has said whether they would rather it stuck.
 
 ## T-055 — Copy permalink, and open the line in ADO
 
-**Type:** feature · **Status:** open · **Blocked by:** —
+**Type:** feature · **Status:** resolved · **Blocked by:** —
 
 Two verbs the destination names — "copy-permalink, open-line-in-web" — and neither string appears
 anywhere in `src/`. They are how a finding leaves this application: a reviewer reads a line here
@@ -306,6 +306,87 @@ opened in the Azure DevOps web UI.
 - Copying reports that it copied. Clipboard writes fail — permissions, an insecure origin, a
   browser that will not — and a silent failure here is indistinguishable from success until the
   paste.
+
+### Resolution
+
+One commit on `t-055-permalink`, not pushed. New: `src/lib/line-link.ts` with `src/lib/line-link.test.ts`,
+and `src/lib/ado-line-url.ts` with no test at all, deliberately — see the last paragraph. Changed:
+`src/lib/file-anchor.ts`, `src/components/sonar/panel.tsx`, `src/components/diff/diff-view.tsx`,
+`src/components/diff/file-diff.tsx`, `src/components/diff/changed-file.tsx`,
+`src/components/pr-detail.tsx`, `src/components/branch-diff.tsx`, `src/components/commit-diff.tsx`,
+`src/routes/pr.$projectId.$repositoryId.$prId.tsx`, and two test files beside them. No new
+dependency; both icons are hugeicons the app already ships.
+
+**The permalink is a fragment, `#path=%2Fsrc%2Flog.ts&line=214`, and the two names are ADO's own.**
+Three routes show a diff, so a search param would have to be declared on three separate
+`validateSearch`es to survive the router — three places to forget, and a fourth diff page later
+would be a fifth. A fragment belongs to no route and the router never touches it. It is written and
+read through `URLSearchParams` at both ends, which is the only reason a path with a space in it
+survives: form encoding turns it into `+`, and anything that decoded the fragment by another rule
+would hand back a filename nobody has. Everything before the `#` is kept, so a link copied on the
+branch compare still carries the `?target=` that says which two commits are being read.
+
+**This does not contradict `file-anchor.ts`'s refusal to be an `href="#…"`.** That refusal is about
+the app writing hashes into its own URL while you scroll, which fills the back button with positions
+nobody chose to keep. Nothing here navigates — the string is built for the clipboard and read back
+on exactly one load, the one where a fresh tab was opened on somebody else's link.
+
+**Arriving is the Sonar jump, seeded from the URL, and that is the whole of the wiring.** On the
+pull request page `readLineTarget()` is the initial value of the existing `jump` state and of the
+route's `tab`, so a permalink opens on the diff rather than on details. Everything under that is
+untouched: the page scrolls to the panel, the panel holds the line until its bytes land, `jumpToLine`
+opens the gap the line was hiding in, and `jumped`/`arrival` carry it to `scrollToIndex`. So
+"expands collapsed context first" is not new code — it is the reason this was built as a reuse, and
+`changed-file.test.tsx`'s existing test for it covers permalinks by construction. The two local
+pages get the same shape packaged as `useLineTarget(ready)`, which waits for the file list to be on
+screen before spending its one chance to scroll, and forgets the target the moment it has acted.
+
+**`scrollToFile(path)` moved into `file-anchor.ts`** because it now has two callers. It was three
+lines inside `scrollToFinding`, and a permalink arrives by the same route; both optional chains are
+load-bearing and the doc comment says which.
+
+**The open-in-ADO link is absent on the local pages by not being given anything to build from.**
+`ChangedFileDiff` takes `webUrl`, and `branch-diff.tsx` and `commit-diff.tsx` simply do not pass it —
+the same withholding that already takes the compose buttons off those rows. `adoLineUrl` is then
+`undefined` and `LineActions` renders no anchor. There is nothing to disable and nothing to hide.
+The copy verb is on every row on all three pages, because the app's own URL is real everywhere.
+
+**Copying reports itself in words, in the live region the file already has.** Per file, not per row:
+5,000 rows each holding their own `null` answer to a question one of them was ever asked is 5,000
+copies of nothing. The sentence names the line — "Copied a link to line 214." — because "Copied"
+over a file does not say which. It holds for two seconds and then hands the region back to whatever
+the jump had said. Both failures say "Could not copy a link to line 214.": a missing
+`navigator.clipboard`, which is what a plain-http LAN address gets because the API is gated on a
+secure context, and a rejected `writeText`. Same check `CopyBranch` makes, for the same reason.
+
+`pnpm test` is 1482 passing across 76 files, up from 1465 across 75, and `pnpm tsc --noEmit` is
+clean. The new tests are the fragment round trip and everything malformed that has to answer `null`;
+the four clipboard outcomes; the link being present with a `webUrl` and absent without one; and, in
+`commit-diff.test.tsx`, that a page opened on a permalink scrolls to the panel the path names.
+
+**What a reviewer should check by eye.** Three small buttons now sit in the gutter of every row, and
+they only appear on hover — whether three is one too many at 16px each, on a row that already has a
+line number, is a judgement no test makes. The live region is above the panel and inside the anchor,
+so the copy sentence appears at the top of the file rather than beside the line that was copied; that
+is where the jump sentence already was, and whether it is far enough from the pointer to go unread is
+worth watching. Two seconds is a guess at how long it should stay.
+
+**Unproven, and it is the ADO URL.** `src/lib/ado-line-url.ts` is one function and it is the only
+guessed address in the application — every other link out is a field ADO handed us. Nobody has
+opened one in a browser, and there is no test over its shape, on purpose: a test asserting the guess
+against itself would pass and then read to the next person as evidence. For pull request 24698 in
+`profisee/SaaS/_git/platform`, at line 214 of `/src/log.ts`, it produces:
+
+```
+https://dev.azure.com/profisee/SaaS/_git/platform/pullrequest/24698?_a=files&path=%2Fsrc%2Flog.ts&line=214&lineEnd=215&lineStartColumn=1&lineEndColumn=1&lineStyle=plain
+```
+
+Paste that into a browser signed in to the organisation. It should open the Files tab of that pull
+request with line 214 of that file selected. If it opens the overview, `_a=files` is wrong; if it
+opens the file at the top, the `line` family is wrong or is spelled differently. Either way that
+function is the whole of what has to change. The rest of this ticket was verified: the tests above
+ran, and `pnpm tsc --noEmit` is clean. Nothing on any of the three pages has been looked at in a
+browser.
 
 ---
 

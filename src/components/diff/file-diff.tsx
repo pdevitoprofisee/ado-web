@@ -94,6 +94,8 @@ export function FileDiffPanel({
   after = null,
   onExpand,
   onCompose,
+  onCopyLink,
+  adoLineUrl,
   threads = null,
   threadActions,
   hideDone = false,
@@ -165,6 +167,13 @@ export function FileDiffPanel({
    * through: the composer is a row, so only whoever owns the row model can add one.
    */
   onCompose?: (line: number | null) => void
+  /**
+   * Copy a link to a right-side line, and the line's Azure DevOps address. Both
+   * pass straight through: they need the file's path, which this panel is handed
+   * rather than owns.
+   */
+  onCopyLink?: (line: number) => void
+  adoLineUrl?: (line: number) => string
   /**
    * This file's conversations. The anchored ones are already in `rows` — the
    * caller built those with `buildRows(…, threads)` — and this is passed as well
@@ -347,6 +356,8 @@ export function FileDiffPanel({
                 after={after}
                 onExpand={onExpand}
                 onCompose={onCompose}
+                onCopyLink={onCopyLink}
+                adoLineUrl={adoLineUrl}
                 threadActions={threadActions}
                 iterationContext={iterationContext}
                 jumped={jumped}

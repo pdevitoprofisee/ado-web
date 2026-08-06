@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { FileDiffPanel } from './file-diff'
 import { changeKind } from './file-tree'
+import { adoLineUrl } from '@/lib/ado-line-url'
 import { diffFile } from '@/lib/diff'
 import {
   buildRows,
@@ -16,6 +17,7 @@ import {
 } from '@/lib/diff-rows'
 import { fileAnchor } from '@/lib/file-anchor'
 import { sharedHighlighter } from '@/lib/highlight/shared'
+import { linePermalink } from '@/lib/line-link'
 import { useNearViewport } from '@/lib/near-viewport'
 import { useTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
@@ -44,6 +46,9 @@ import type { ChangedFile } from '@/server/pull-request'
 /** The empty side of an add, a delete, a binary, or a refusal — all diff as nothing. */
 const NO_LINES: readonly string[] = []
 
+/** Long enough to be read, short enough that the line goes back to being a line. */
+const COPIED_FOR = 2000
+
 function linesOf(blobs: FileBlobs, side: 'before' | 'after'): readonly string[] {
   const blob = blobs[side]
   return blob.kind === 'text' ? blob.lines : NO_LINES
@@ -62,6 +67,7 @@ export function ChangedFileDiff({
   hideDone = false,
   iterationContext = null,
   jumpTo = null,
+  webUrl,
 }: {
   /**
    * Where this file's two blobs come from, and what to call it when they do not
@@ -89,6 +95,16 @@ export function ChangedFileDiff({
    * finding, today. `null` on every file that is not the one being jumped into.
    */
   jumpTo?: number | null
+  /**
+   * The pull request's own address in Azure DevOps, which each line's link is
+   * built from.
+   *
+   * Absent on the local pages — a branch compare and a commit diff are read off
+   * the disk and have no Azure DevOps address at all — and that absence is what
+   * takes the open-in-ADO link off every row there, rather than leaving one that
+   * opens nothing.
+   */
+  webUrl?: string
 }) {
   // Monotonic on purpose — "has been opened", not "is open". Closing a file
   // should not throw away what it cost two calls to fetch, and the query cache
@@ -203,6 +219,54 @@ export function ChangedFileDiff({
         ? `Line ${model.jumped} is not in this diff.`
         : `Jumped to line ${model.jumped}.`
 
+  // Whether the last copy went, per file rather than per row: 5,000 rows each
+  // holding their own answer to a question only one of them was ever asked is
+  // 5,000 copies of `null`. The line is carried with it because the sentence names
+  // it — "Copied" alone, over a file, does not say which of its lines.
+  const [copied, setCopied] = useState<{ line: number; ok: boolean } | null>(null)
+
+  useEffect(() => {
+    if (copied === null) return
+
+    const timer = setTimeout(() => setCopied(null), COPIED_FOR)
+
+    return () => clearTimeout(timer)
+  }, [copied])
+
+  async function copyLink(line: number) {
+    // Typed as always there by lib.dom and absent in fact: the Clipboard API is
+    // gated on a secure context, so the plain-http LAN address somebody on another
+    // machine reaches this page by has no `navigator.clipboard` at all. The same
+    // check `CopyBranch` makes, and for the same reason — the alternative is a
+    // button that does nothing and says nothing.
+    const clipboard: Clipboard | undefined = navigator.clipboard
+    if (clipboard === undefined) {
+      setCopied({ line, ok: false })
+      return
+    }
+
+    try {
+      // The address as it stands, so the link opens the diff the reader is
+      // actually looking at — which iteration on the pull request, which pair of
+      // commits on a branch compare.
+      await clipboard.writeText(linePermalink(window.location.href, file.path, line))
+      setCopied({ line, ok: true })
+    } catch {
+      // A refused permission, or a document the browser does not consider focused.
+      setCopied({ line, ok: false })
+    }
+  }
+
+  // One live region for both, and the copy wins while it is up: they are the same
+  // kind of sentence — what just happened to this file — and two regions one above
+  // the other would be read out in an order nobody chose.
+  const said =
+    copied === null
+      ? landing
+      : copied.ok
+        ? `Copied a link to line ${copied.line}.`
+        : `Could not copy a link to line ${copied.line}.`
+
   const [tokens, setTokens] = useState<{
     before: HighlightedLines | null
     after: HighlightedLines | null
@@ -259,9 +323,9 @@ export function ChangedFileDiff({
           announce, and this sentence is the whole of what they get. */}
       <p
         role="status"
-        className={cn('text-muted-foreground text-xs', landing !== null && 'px-2 pb-1')}
+        className={cn('text-muted-foreground text-xs', said !== null && 'px-2 pb-1')}
       >
-        {landing}
+        {said}
       </p>
       <FileDiffPanel
         blobs={
@@ -339,6 +403,14 @@ export function ChangedFileDiff({
                             },
                       ),
                 )
+        }
+        onCopyLink={(line) => void copyLink(line)}
+        // Built here for the same reason the compose anchor is: this is the lowest
+        // thing that knows both the path and that the number is a right-side line.
+        // Undefined when there is no `webUrl`, which is what takes the link off
+        // every row of a local diff — see the prop.
+        adoLineUrl={
+          webUrl === undefined ? undefined : (line) => adoLineUrl(webUrl, file.path, line)
         }
         // The same two the rows were built from. The panel does not filter — it
         // renders the rows it is given and puts the unplaceable threads above

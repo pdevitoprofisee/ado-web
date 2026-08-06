@@ -3,7 +3,7 @@ import { HugeiconsIcon } from '@hugeicons/react'
 import { useMemo, useState } from 'react'
 
 import { RuleDetail } from './rule-detail'
-import { fileAnchor } from '@/lib/file-anchor'
+import { scrollToFile } from '@/lib/file-anchor'
 import { SONAR_ISSUE_CEILING } from '@/lib/sonar-contract'
 import { cn } from '@/lib/utils'
 
@@ -137,16 +137,15 @@ export interface SonarJump {
  * The default jump: move the page to the file's diff panel.
  *
  * Found by id rather than held as a ref, the same way the file tree does it —
- * the panels are somebody else's children. `scrollIntoView` is optional-chained
- * because jsdom does not implement it, and a missing scroll is not worth a thrown
- * click.
+ * the panels are somebody else's children, and `scrollToFile` is where that
+ * lookup lives now that a permalink arrives by the same route.
  *
  * **This only lands somewhere when a diff tab is already showing.** The tab strip
  * belongs to `pr-detail.tsx`, so the integrator passes an `onJump` that selects
  * the changes tab and then calls this — which is the whole of the wiring.
  */
 export function scrollToFinding(jump: SonarJump): void {
-  document.getElementById(fileAnchor(jump.path))?.scrollIntoView?.({ block: 'start' })
+  scrollToFile(jump.path)
 }
 
 /**

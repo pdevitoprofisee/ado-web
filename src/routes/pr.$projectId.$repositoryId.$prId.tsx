@@ -7,6 +7,7 @@ import { HugeiconsIcon } from '@hugeicons/react'
 import { pullRequestQuery } from '@/server/pull-request-fn'
 import { sonarReportQuery } from '@/server/sonar-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
+import { readLineTarget } from '@/lib/line-link'
 import { pageTitle } from '@/lib/page-title'
 import { pullRequestKey } from '@/lib/requeue'
 import { useCommand } from '@/commands/command-provider'
@@ -56,7 +57,13 @@ function PullRequestPage() {
   // which the reading width for prose cannot hold either. Not in the URL — a tab
   // is where you are looking, not what the page is, and putting it there would
   // fill the back button with it.
-  const [tab, setTab] = useState<DetailTab>('details')
+  //
+  // The one exception is a permalink, which is somebody else saying where to
+  // look. Opening it on the details tab would land the reader on the page and
+  // leave the line they were sent to one click away and unnamed.
+  const [tab, setTab] = useState<DetailTab>(() =>
+    readLineTarget() === null ? 'details' : 'combined',
+  )
 
   // The URL is the one input nobody validated — it can be typed, pasted, or
   // stale. Checked here so a bad id is answered with a sentence instead of a

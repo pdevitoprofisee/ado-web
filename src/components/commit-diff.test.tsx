@@ -12,6 +12,7 @@ import {
 } from '@tanstack/react-router'
 
 import { CommitDiff } from './commit-diff'
+import { fileAnchor } from '@/lib/file-anchor'
 
 import type { ComponentProps, ReactElement } from 'react'
 import type { DiffLayout } from '@/lib/diff-contract'
@@ -323,6 +324,31 @@ describe('CommitDiff', () => {
       draw()
 
       expect(screen.getByRole('list', { name: 'Changed files' })).toBeInTheDocument()
+    })
+
+    // Note 13: a line inside a panel cannot be found in the DOM, so the page's
+    // half of a permalink is only ever getting to the *file* — the panel carries
+    // the line the rest of the way once it has bytes. Recorded by hand rather
+    // than with a spy on `this`, because which element it landed on is the whole
+    // assertion.
+    it('opens on the file a permalink names', () => {
+      const scrolled: string[] = []
+      Object.defineProperty(Element.prototype, 'scrollIntoView', {
+        configurable: true,
+        value(this: Element) {
+          scrolled.push(this.id)
+        },
+      })
+      window.location.hash = `#${new URLSearchParams({ path: '/src/other.ts', line: '3' })}`
+
+      try {
+        draw({ changes: changes({ files: [changed(), changed({ path: '/src/other.ts' })] }) })
+
+        expect(scrolled).toEqual([fileAnchor('/src/other.ts')])
+      } finally {
+        window.location.hash = ''
+        Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
+      }
     })
   })
 })

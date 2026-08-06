@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { CommentAdd01Icon, UnfoldMoreIcon } from '@hugeicons/core-free-icons'
+import {
+  CommentAdd01Icon,
+  Link01Icon,
+  LinkSquare02Icon,
+  UnfoldMoreIcon,
+} from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 
 import { LineText } from './line-text'
@@ -217,52 +222,93 @@ function Gutter({ line, className }: { line: number | null; className?: string }
 }
 
 /**
- * "Start a thread on this line", over the left edge of the new-side gutter.
+ * The teal wash the app uses for "this is what you are about to press", opaque so
+ * it reads against whichever of the three row tints is under it. Hidden until the
+ * row is hovered or the control itself is focused, and hidden with `opacity`
+ * rather than by not rendering it: each one stays in the tab order, so the whole
+ * affordance is reachable without a pointer.
+ */
+const LINE_ACTION =
+  'bg-accent text-ink flex size-4 items-center justify-center rounded-sm opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+
+/**
+ * What you can do to one line, over the left edge of the new-side gutter: start a
+ * thread on it, copy a link to it, open it in Azure DevOps.
  *
- * A button on the row rather than a keyboard shortcut in the registry, because the
- * registry's commands act on a selection and the diff has no line cursor for one
- * to act on — there is nothing for `c` to mean until the pointer or the tab order
- * has said which line.
+ * Buttons on the row rather than keys in the registry, because the registry's
+ * commands act on a selection and the diff has no line cursor for one to act on —
+ * there is nothing for `c` to mean until the pointer or the tab order has said
+ * which line.
  *
- * Hidden until the row is hovered or the button itself is focused, and hidden with
- * `opacity` rather than by not rendering it: it stays in the tab order, so the
- * whole affordance is reachable without a pointer, and the row's geometry never
- * moves — 5,000 rows that reflow on hover is the one thing this component cannot
- * afford. Absolutely positioned for the same reason: a flex child here would push
- * every line of code 16px to the right.
+ * The row's geometry never moves: 5,000 rows that reflow on hover is the one
+ * thing this component cannot afford. Absolutely positioned for the same reason —
+ * a flex child here would push every line of code sideways.
  *
  * Deliberately absent from a row with no right-side line. A delete has no line in
  * the file as it now stands, ADO would need a left-side anchor for it, and this
  * codebase puts left-side threads in `unanchored` — so no button is the clear
- * refusal, rather than a button that posts a wrong anchor.
+ * refusal, rather than a button that posts a wrong anchor or links to a line that
+ * is gone.
+ *
+ * Each of the three is absent on its own terms too. No `onCompose` is a diff that
+ * cannot post; no `adoLineUrl` is the branch compare and the commit pages, which
+ * have no Azure DevOps address at all and get no button rather than a dead one.
  */
-function ComposeButton({
+function LineActions({
   line,
   className,
   onCompose,
+  onCopyLink,
+  adoLineUrl,
 }: {
   line: number
   /** Where the new-side gutter starts: the row in unified, the right `Cell` in split. */
   className?: string
-  onCompose: (line: number) => void
+  onCompose?: (line: number) => void
+  onCopyLink?: (line: number) => void
+  adoLineUrl?: string
 }) {
+  if (onCompose === undefined && onCopyLink === undefined && adoLineUrl === undefined) return null
+
   return (
-    <button
-      type="button"
-      onClick={() => onCompose(line)}
-      // Names the line, because "Comment" repeated 5,000 times down a tab order
-      // says nothing about where you are.
-      aria-label={`Comment on line ${line}`}
-      title={`Comment on line ${line}`}
-      className={cn(
-        // The teal wash the app uses for "this is what you are about to press",
-        // opaque so it reads against whichever of the three row tints is under it.
-        'bg-accent text-ink absolute top-0 flex size-4 items-center justify-center rounded-sm opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
-        className,
+    // Each name says the line, because "Comment" repeated 5,000 times down a tab
+    // order says nothing about where you are.
+    <span className={cn('absolute top-0 flex items-center gap-px', className)}>
+      {onCompose === undefined ? null : (
+        <button
+          type="button"
+          onClick={() => onCompose(line)}
+          aria-label={`Comment on line ${line}`}
+          title={`Comment on line ${line}`}
+          className={LINE_ACTION}
+        >
+          <HugeiconsIcon icon={CommentAdd01Icon} size={12} aria-hidden />
+        </button>
       )}
-    >
-      <HugeiconsIcon icon={CommentAdd01Icon} size={12} aria-hidden />
-    </button>
+      {onCopyLink === undefined ? null : (
+        <button
+          type="button"
+          onClick={() => onCopyLink(line)}
+          aria-label={`Copy a link to line ${line}`}
+          title={`Copy a link to line ${line}`}
+          className={LINE_ACTION}
+        >
+          <HugeiconsIcon icon={Link01Icon} size={12} aria-hidden />
+        </button>
+      )}
+      {adoLineUrl === undefined ? null : (
+        <a
+          href={adoLineUrl}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`Open line ${line} in Azure DevOps`}
+          title={`Open line ${line} in Azure DevOps`}
+          className={LINE_ACTION}
+        >
+          <HugeiconsIcon icon={LinkSquare02Icon} size={12} aria-hidden />
+        </a>
+      )}
+    </span>
   )
 }
 
@@ -273,7 +319,7 @@ function Cell({
   tokens,
   className,
   width,
-  compose,
+  actions,
 }: {
   line: DiffLine | null
   /** Which of the line's two numbers this column shows. */
@@ -288,18 +334,18 @@ function Cell({
    */
   width?: string
   /**
-   * A `ComposeButton` for this column, or nothing. Passed in rather than decided
+   * A `LineActions` for this column, or nothing. Passed in rather than decided
    * here because only the right-hand column of a row with a new-side line has one,
    * and `Cell` is not told which of the two columns it is.
    */
-  compose?: ReactNode
+  actions?: ReactNode
 }) {
   return (
     <span
       style={width === undefined ? undefined : { flexBasis: width }}
       className={cn(
         'flex min-w-0 flex-1 items-baseline',
-        // Only so `compose` has something to be positioned against. Harmless on
+        // Only so `actions` has something to be positioned against. Harmless on
         // the cells that have none.
         'relative',
         line === null
@@ -332,7 +378,7 @@ function Cell({
       <span className="whitespace-pre">
         {line === null ? '' : <LineText text={line.text} tokens={tokens} edits={line.edits} />}
       </span>
-      {compose}
+      {actions}
     </span>
   )
 }
@@ -366,6 +412,8 @@ function Row({
   onExpand,
   threadActions,
   onCompose,
+  onCopyLink,
+  adoLineUrl,
   composing,
 }: {
   row: DiffRow
@@ -378,6 +426,10 @@ function Row({
   threadActions?: ThreadActions
   /** Open a composer on a right-side line. Absent renders no compose buttons. */
   onCompose?: (line: number) => void
+  /** Put a link to a right-side line on the clipboard. Absent renders no copy buttons. */
+  onCopyLink?: (line: number) => void
+  /** This line's Azure DevOps address. Absent renders no open-in-ADO link. */
+  adoLineUrl?: (line: number) => string
   composing?: Composing
 }) {
   // One row spanning both columns in side-by-side, not one per side: a
@@ -468,9 +520,17 @@ function Row({
   // positioning context and the gutter starts at its left edge, in unified there is
   // one row and the new-side gutter is the second of two.
   const newLine = row.right?.newLine ?? null
-  function composeAt(className: string): ReactNode {
-    if (onCompose === undefined || newLine === null) return null
-    return <ComposeButton line={newLine} onCompose={onCompose} className={className} />
+  function actionsAt(className: string): ReactNode {
+    if (newLine === null) return null
+    return (
+      <LineActions
+        line={newLine}
+        className={className}
+        onCompose={onCompose}
+        onCopyLink={onCopyLink}
+        adoLineUrl={adoLineUrl?.(newLine)}
+      />
+    )
   }
 
   // Unified and side-by-side are the same row read twice. The row model already
@@ -491,7 +551,7 @@ function Row({
           number={row.right?.newLine ?? null}
           tokens={row.right === null ? null : tokensFor(row.right, before, after)}
           width={column}
-          compose={composeAt('left-0')}
+          actions={actionsAt('left-0')}
         />
       </>
     )
@@ -510,7 +570,7 @@ function Row({
   return (
     <span
       className={cn(
-        // `relative` for the compose button and nothing else — see `composeAt`.
+        // `relative` for the line's buttons and nothing else — see `actionsAt`.
         'relative flex w-full items-baseline',
         line.op === 'add' ? 'diff-add' : line.op === 'delete' ? 'diff-delete' : undefined,
       )}
@@ -523,7 +583,7 @@ function Row({
       <span className="whitespace-pre">
         <LineText text={line.text} tokens={tokensFor(line, before, after)} edits={line.edits} />
       </span>
-      {composeAt('left-12')}
+      {actionsAt('left-12')}
     </span>
   )
 }
@@ -537,6 +597,8 @@ export function DiffView({
   onExpand,
   threadActions,
   onCompose,
+  onCopyLink,
+  adoLineUrl,
   iterationContext = null,
   jumped = null,
   arrival = 0,
@@ -562,6 +624,21 @@ export function DiffView({
    * there. Absent renders no compose buttons at all — a read-only diff.
    */
   onCompose?: (line: number | null) => void
+  /**
+   * Put a link to this right-side line on the clipboard.
+   *
+   * Whoever owns the file's path owns this: a row knows its number and nothing
+   * about which file it is in, and the acknowledgement has to be said somewhere a
+   * reader is looking rather than on a 16px button that has already been let go of.
+   */
+  onCopyLink?: (line: number) => void
+  /**
+   * This right-side line's address in Azure DevOps.
+   *
+   * Absent on a page that has no Azure DevOps address — the branch compare, a
+   * commit — where the link is not rendered at all rather than rendered dead.
+   */
+  adoLineUrl?: (line: number) => string
   /** Which iterations a thread started from a row is written against. */
   iterationContext?: IterationContext | null
   /**
@@ -700,7 +777,7 @@ export function DiffView({
                     // line: an absolute child still contributes to its scroll
                     // width.
                     //
-                    // `group` is what the compose button watches for a hover. On
+                    // `group` is what the line's buttons watch for a hover. On
                     // the row rather than on the button so that pointing anywhere
                     // along the line reveals it — a 16px target you have to find
                     // before it appears is not a target.
@@ -735,6 +812,8 @@ export function DiffView({
                 onExpand={onExpand}
                 threadActions={threadActions}
                 onCompose={onCompose}
+                onCopyLink={onCopyLink}
+                adoLineUrl={adoLineUrl}
                 // Built for the composer row and no other, so the 5,000 rows that
                 // are lines do not each allocate a bundle they will not read.
                 composing={

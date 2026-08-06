@@ -47,6 +47,7 @@ import { COMBINED, lastReview, useChanges, viewRange } from '@/lib/changes'
 import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
 import { lifecycleAction, useAbandon, useReactivate } from '@/lib/lifecycle'
+import { readLineTarget } from '@/lib/line-link'
 import { commitMessage, defaultDraft, useSquashMerge } from '@/lib/merge'
 import { useRename } from '@/lib/rename'
 import { useRequeue } from '@/lib/requeue'
@@ -1793,6 +1794,7 @@ function ChangedFiles({
   onHideDoneChange,
   iterationContext,
   jump,
+  webUrl,
 }: {
   /** The selected view's files — the combined diff, one update's, or a range's. */
   changes: ChangeSet
@@ -1834,6 +1836,8 @@ function ChangedFiles({
    * own scroll, which has already happened by the time a panel sees this.
    */
   jump: SonarJump | null
+  /** The pull request's ADO address, which each line's open-in-ADO link is built from. */
+  webUrl: string
 }) {
   const nodes = useMemo(() => buildFileTree(changes.files), [changes.files])
 
@@ -1921,6 +1925,7 @@ function ChangedFiles({
                 // `line` is null on a finding about the file as a whole, and that is
                 // the same `null`: the page's scroll was the whole of that jump.
                 jumpTo={jump !== null && jump.path === file.path ? jump.line : null}
+                webUrl={webUrl}
               />
             </li>
           ))}
@@ -2273,7 +2278,12 @@ export function PullRequestDetailView({
   // its click has to cross a tab. Held as state rather than acted on, because the
   // panel it scrolls to does not exist yet: the tab has to render *and* its file
   // list has to arrive, and neither has happened by the time the click returns.
-  const [jump, setJump] = useState<SonarJump | null>(null)
+  //
+  // Seeded from the URL, because a permalink somebody was sent is the same
+  // request arriving from further away: a file and a line, waiting on the tab to
+  // render and the list to arrive. The route opens on the diff tab when there is
+  // one, so the effect below has a panel to find.
+  const [jump, setJump] = useState<SonarJump | null>(readLineTarget)
 
   // The same crossing for both things on the details tab that point at a line: a
   // Sonar finding and, now, a thread anchored to one.
@@ -2571,6 +2581,7 @@ export function PullRequestDetailView({
               onHideDoneChange={setHideDone}
               iterationContext={iterationContext}
               jump={jump}
+              webUrl={pr.url}
             />
           )}
         </div>

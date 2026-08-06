@@ -18,3 +18,15 @@
 export function fileAnchor(path: string): string {
   return `file${path.replace(/[^a-zA-Z0-9]/g, (char) => `_${char.charCodeAt(0).toString(36)}_`)}`
 }
+
+/**
+ * Put a file's panel at the top of the window, if it is on the page at all.
+ *
+ * Both optional chains are load-bearing. A path that is not in this diff has no
+ * element — a Sonar finding about a file the iteration does not touch, a
+ * permalink to a file since renamed — and jsdom implements no `scrollIntoView`
+ * at all, so the tests take the second one on every call.
+ */
+export function scrollToFile(path: string): void {
+  document.getElementById(fileAnchor(path))?.scrollIntoView?.({ block: 'start' })
+}
