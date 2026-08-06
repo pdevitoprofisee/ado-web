@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { PullRequestDetailView as Detail, mergeBlocker, voteWord } from './pr-detail'
+import { CommandProvider } from '@/commands/command-provider'
 import { viewedKey } from '@/lib/viewed-key'
 import {
   abandonPullRequest,
@@ -231,7 +232,9 @@ const ITERATIONS: readonly Iteration[] = [
 function Providers({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      {children}
+      {/* The find box claims `/`, and `useCommand` throws without this — the
+          same shell the app mounts once in the root route. */}
+      <CommandProvider>{children}</CommandProvider>
     </QueryClientProvider>
   )
 }
@@ -1606,6 +1609,16 @@ describe('PullRequestDetailView files', () => {
     await drawDiff({ pr: detail({ files }) })
 
     expect(screen.getByText(/only the first 3 files/)).toBeVisible()
+  })
+
+  it('owns up to searching none of the files, when none of them were fetched', async () => {
+    // jsdom has no `IntersectionObserver`, so no panel here ever came near a
+    // viewport and nothing is in the cache — which is the worst case the count
+    // has to be honest about, and the one a browser's own find is silent on.
+    await drawDiff({ pr: detail({ files }) })
+    await userEvent.type(screen.getByRole('searchbox', { name: /^Find in/ }), 'sink')
+
+    expect(screen.getByText('No matching lines · 3 of 3 files not searched')).toBeVisible()
   })
 
   it('shows how much has been read without any bytes being fetched', async () => {

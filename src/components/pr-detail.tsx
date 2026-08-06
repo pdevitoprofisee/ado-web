@@ -27,6 +27,7 @@ import { Composer } from './comments/composer'
 import { ThreadCard } from './comments/thread-card'
 import { ChangedFileDiff } from './diff/changed-file'
 import { FileTree } from './diff/file-tree'
+import { FindBar } from './diff/find-bar'
 import { LayoutToggle } from './diff/layout-toggle'
 import { WhitespaceToggle } from './diff/whitespace-toggle'
 import { SonarPanel, scrollToFinding } from './sonar/panel'
@@ -1852,6 +1853,24 @@ function ChangedFiles({
   const read = changes.files.filter((file) => isViewed(viewed, file)).length
   const isRead = (file: ChangedFile) => isViewed(viewed, file)
 
+  const source = adoDiffSource(ref)
+
+  const [term, setTerm] = useState('')
+
+  // A find's own jump, held for exactly as long as the page's own one is: set,
+  // acted on, cleared. Separate from `jump` because that belongs to the Sonar
+  // panel and is cleared by an effect that only runs on the combined tab, and
+  // because clearing is what lets the same match be stepped to twice.
+  const [sent, setSent] = useState<SonarJump | null>(null)
+
+  useEffect(() => {
+    if (sent === null) return
+    scrollToFinding(sent)
+    setSent(null)
+  }, [sent])
+
+  const going = sent ?? jump
+
   return (
     <div className="flex w-full flex-col gap-3">
       {/* Progress and layout on one line, above everything, because both are
@@ -1897,6 +1916,18 @@ function ChangedFiles({
         <Empty>{scope.empty}</Empty>
       ) : null}
 
+      {/* Above the tree and the panels because it acts on all of them, the same
+          argument `InboxControls` makes for one search box over two sections. */}
+      {changes.files.length === 0 ? null : (
+        <FindBar
+          files={ordered}
+          diffSource={source}
+          term={term}
+          onTerm={setTerm}
+          onGo={(hit) => setSent({ path: hit.path, line: hit.line })}
+        />
+      )}
+
       <div className="flex w-full items-start gap-6">
         <FileTree nodes={nodes} viewed={isRead} conflicted={conflicted} />
 
@@ -1906,7 +1937,7 @@ function ChangedFiles({
           {ordered.map((file) => (
             <li key={file.path}>
               <ChangedFileDiff
-                diffSource={adoDiffSource(ref)}
+                diffSource={source}
                 file={file}
                 layout={layout}
                 ignoreWhitespace={ignoreWhitespace}
@@ -1924,8 +1955,9 @@ function ChangedFiles({
                 // so 293 of the 294 are handed the `null` that means "not you".
                 // `line` is null on a finding about the file as a whole, and that is
                 // the same `null`: the page's scroll was the whole of that jump.
-                jumpTo={jump !== null && jump.path === file.path ? jump.line : null}
+                jumpTo={going !== null && going.path === file.path ? going.line : null}
                 webUrl={webUrl}
+                find={term}
               />
             </li>
           ))}

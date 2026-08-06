@@ -429,7 +429,7 @@ exactly one — `nav.back`.** The page the application is for is the one page yo
 
 ## T-057 — Find in the diff
 
-**Type:** feature · **Status:** open · **Blocked by:** —
+**Type:** feature · **Status:** resolved · **Blocked by:** —
 
 Not on the map. The argument for it is note 13 wearing a different hat.
 
@@ -459,3 +459,100 @@ ones it cannot reach either.
 - Searching does not re-tokenize, re-fetch or re-diff anything. The row model and the blobs are
   already in hand; a search that costs a worker round-trip per keystroke is a search nobody will
   leave open.
+
+### Resolution
+
+Built, on branch `t-057-find-in-diff`. New: `src/lib/diff-find.ts`,
+`src/components/diff/find-bar.tsx`, `src/lib/diff-find.test.ts` (16 tests),
+`src/components/diff/find-bar.test.tsx` (13). Changed: `src/components/diff/line-text.tsx`,
+`diff-view.tsx`, `file-diff.tsx`, `changed-file.tsx`, `src/commands/registry.ts`,
+`src/components/pr-detail.tsx`. **1,467 tests across 76 files pass**, up from 1,433 across 74 — 16
+and 13 in the two new files, 4 in `line-text.test.tsx`, 1 in `pr-detail.test.tsx`. `tsc --noEmit` is
+clean.
+
+**The map's "one virtualized row list across all files" is not what is there, and that is what
+shaped this.** `pr-detail.tsx` renders a `<ul>` of panels and each panel owns its own virtualizer,
+its own scroll container and its own lazily-fetched blobs; nothing upstream holds a row. So the
+search does not read rows at all. It reads the **query cache**, through
+`diffSource.blobsOptions(file)` — the same object the panels fetch with, so the ADO key stays
+spelled once in `blob-query.ts` — and takes `blobs.after.lines` per file. That is the only honest
+register of what has been loaded: the DOM knows about 56 rows per open panel and panel state does
+not report upwards.
+
+**It counts and says; it does not fetch.** That is the design decision the ticket asked to be made
+and recorded. Fetching on arrival would turn a keystroke into 294 requests against a service this
+app is careful with, and fetching only the file being stepped into would make the *count* — the
+number the reader is deciding on — still wrong, just wrong later. So the sentence beside the box is
+always two halves from one function: `3 matching lines · 280 of 294 files not searched`, or `… · 14
+files searched` when there is no blind spot. "No matching lines" keeps the second half, because that
+is the answer most likely to be believed and least likely to be true.
+
+**It searches the after side only, which is narrower than the ticket asked for.** The ticket says
+both sides. Every piece of the jump machinery — `rowIndexForLine`, `jumpToLine`, `DiffView.jumped` —
+addresses a right-hand line number and only a right-hand line number, and this round was told to
+change none of it. A hit on a removed line would have nothing to scroll to. Removed lines are still
+*marked* where the term appears on them, since `LineText` draws both columns, but they are not
+counted and not steppable. The box's accessible name says so in words rather than leaving the reader
+to infer it from a count that seems low.
+
+**A hit is a line, not an occurrence**, so the total printed is exactly the number of stops the Next
+button has. Three matches on one line is one stop; all three are marked when you get there.
+
+**The term is a prop the whole way down, never state in the diff.** Note 7: the thread poll rebuilds
+a panel's row model from its inputs every thirty seconds, and anything living inside would go with
+it. `find` threads `ChangedFiles` → `ChangedFileDiff` → `FileDiffPanel` → `DiffView` → `Row` →
+`Cell` → `LineText`, alongside `jumped`, which is there for the same reason.
+
+**Marking it needed the third segmentation, not a `<mark>`.** `segment()` already cut a line on two
+disagreeing boundary sets — Shiki's tokens and the intra-line edit ranges — and flattened them,
+because neither nests inside the other. Search hits are a third set that agrees with neither, so
+they join the same boundary union and each piece now carries `found` as well as `edited`. Where a
+hit and an edit overlap the hit wins the background: the edit marking is on every changed line and
+the match is on the few lines somebody asked about. The fast path that renders an unhighlighted,
+unedited line as a bare text node — a span per line is a span per line times five thousand —
+survives an open box for lines the term is not on.
+
+**The key is `/`, not `Ctrl+F`.** The command layer ignores every key pressed with Ctrl, Meta or
+Alt, on purpose, so `Ctrl+F` cannot be registered there. It should not be anyway: this search cannot
+see into unfetched files, and taking the browser's own find away would be a promise it cannot keep —
+a reviewer who wants the 56 rows in front of them searched exactly should still get them. `/` is
+declared in the registry and appears in the `?` sheet like everything else. Escape is handled on the
+input rather than as a command, because the command layer refuses keys typed into a text field:
+first press clears, second gives the keyboard back, the order `InboxControls` settled on. The
+reader's scroll position is untouched by either.
+
+**Stepping reuses the jump machinery without changing it.** `ChangedFiles` holds a second transient
+jump beside the Sonar one — set, acted on, cleared by an effect — and passes `sent ?? jump` down as
+`jumpTo`. Separate from the Sonar jump because that one is cleared by an effect that only runs on
+the combined tab, and because clearing on arrival is what lets the same match be stepped to twice.
+`jumpToLine` already expands a collapsed gap containing the target line before `scrollToIndex` runs,
+so the note-13 path is the existing one.
+
+**The box is above the file tree and the panels, not in the toolbar.** It acts on all of them, the
+argument `InboxControls` already makes for one search box over two sections — and it keeps this
+ticket's diff out of the toolbar region T-054 is editing on another branch. The cost is
+discoverability: there is no toolbar affordance, so it rests on the always-visible box and the `?`
+sheet. Worth a second opinion once both branches have landed.
+
+**Reactivity to bytes arriving mid-search** is a cache subscription that bumps a counter when a
+watched key succeeds, live only while the term is non-empty — a subscription that ran all the time
+would wake on every poll for the life of the page. Files are keyed by a `path@objectId` fingerprint
+rather than by array identity, the same trick `useWarmDiff` plays on the same list, because the poll
+hands down a fresh array for a diff that has not moved.
+
+**A reviewer should check by eye:** the amber hit background against `diff-add` and `diff-delete`
+rows, in both themes, and against the `bg-diff-word` it displaces — these are adjacent tints and the
+contrast has only been reasoned about. That stepping into a file far down a 294-file list actually
+lands on the line, since the panel may still be measuring when the jump arrives. And whether the
+count updating as panels scroll into view reads as helpful or as jitter.
+
+**Unverified.** Nothing here has been run in a browser. jsdom has no layout, so no real
+`scrollToIndex` or gap expansion has been exercised end to end — the tests prove the hit list and
+the callback, not the scroll. Nothing has been run against a live Azure DevOps instance or against a
+change set anywhere near 294 files; the performance claim is that the search is `indexOf` over
+arrays already in memory, not a measurement. **One known limitation:** a file marked viewed renders
+its panel collapsed but can still have cached bytes, so a hit inside one is jumped to at the panel
+level and the line itself is not revealed — `FileDiffPanel` owns its open state internally and
+making it controlled was judged outside this ticket. And the `İ`-style case-folding fallback in
+`matchRanges` is exercised by a unit test and has not been tried against real source in a non-Latin
+script.

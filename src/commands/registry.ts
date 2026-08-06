@@ -34,6 +34,11 @@ export const COMMANDS = [
     label: 'Back',
     group: 'Navigation',
   },
+  // `/` and not `Ctrl+F`, which this layer cannot have: it ignores every key
+  // pressed with Ctrl, Meta or Alt, on purpose, because those belong to the
+  // browser. Taking the browser's own find away would also be a promise this
+  // cannot keep — a diff has files whose bytes were never fetched.
+  { id: 'find.diff', key: '/', label: 'Find in the diff', group: 'Navigation' },
   // A shell command, so it works on the diff as well as the inbox — the visible
   // control lives in the inbox header, and the diff is where you are when the
   // room gets dark.

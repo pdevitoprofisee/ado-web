@@ -68,6 +68,7 @@ export function ChangedFileDiff({
   iterationContext = null,
   jumpTo = null,
   webUrl,
+  find = '',
 }: {
   /**
    * Where this file's two blobs come from, and what to call it when they do not
@@ -105,6 +106,12 @@ export function ChangedFileDiff({
    * opens nothing.
    */
   webUrl?: string
+  /**
+   * What the find box is looking for, marked in every row of this file that has
+   * it. The same term goes to every panel; which of them can answer it is settled
+   * by whether its bytes were ever fetched.
+   */
+  find?: string
 }) {
   // Monotonic on purpose — "has been opened", not "is open". Closing a file
   // should not throw away what it cost two calls to fetch, and the query cache
@@ -370,6 +377,7 @@ export function ChangedFileDiff({
         failure={failure}
         before={tokens.before}
         after={tokens.after}
+        find={find}
         onExpand={(row) =>
           setModel((current) => (current === null ? current : expandGap(current, row.key, 'all')))
         }

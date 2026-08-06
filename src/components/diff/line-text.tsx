@@ -1,11 +1,15 @@
+import { matchRanges } from '@/lib/diff-find'
+
 import type { HighlightToken } from '@/lib/diff-contract'
 
-// One line of diff text, coloured by Shiki and marked where it differs from the
-// line opposite. Two independent segmentations of the same string meet here —
-// the highlighter cuts it by grammar, the diff cuts it by what changed — and
-// they do not line up. Rendering them as nested elements would put a span
-// inside a span for every token inside every edit; this merges the two sets of
-// boundaries first and emits one flat run per resulting piece.
+// One line of diff text, coloured by Shiki, marked where it differs from the
+// line opposite, and marked again where it answers the find box. Three
+// independent segmentations of the same string meet here — the highlighter cuts
+// it by grammar, the diff cuts it by what changed, the search cuts it by what
+// was typed — and none of the three line up. Rendering them as nested elements
+// would put a span inside a span inside a span for every token inside every
+// edit; this merges all the boundaries first and emits one flat run per
+// resulting piece.
 
 /** A run of text that renders as one element: one colour, one edit state. */
 export interface Segment {
@@ -15,6 +19,8 @@ export interface Segment {
   /** Shiki's `FontStyle` bit flags: 1 italic, 2 bold, 4 underline. */
   readonly fontStyle: number
   readonly edited: boolean
+  /** Inside a hit for the term in the find box. */
+  readonly found: boolean
 }
 
 const ITALIC = 1
@@ -33,6 +39,7 @@ export function segment(
   text: string,
   tokens: readonly HighlightToken[] | null = null,
   edits: readonly (readonly [start: number, end: number])[] = [],
+  found: readonly (readonly [start: number, end: number])[] = [],
 ): readonly Segment[] {
   if (text === '') return []
 
@@ -60,12 +67,14 @@ export function segment(
       bounds.add(at)
     }
   }
-  for (const [start, end] of edits) {
-    // A range past the end of the line is a bug upstream, not a reason to
-    // render nothing. Clamp it and carry on.
-    if (start >= end) continue
-    bounds.add(Math.max(0, Math.min(start, text.length)))
-    bounds.add(Math.max(0, Math.min(end, text.length)))
+  for (const ranges of [edits, found]) {
+    for (const [start, end] of ranges) {
+      // A range past the end of the line is a bug upstream, not a reason to
+      // render nothing. Clamp it and carry on.
+      if (start >= end) continue
+      bounds.add(Math.max(0, Math.min(start, text.length)))
+      bounds.add(Math.max(0, Math.min(end, text.length)))
+    }
   }
 
   const cuts = [...bounds].sort((left, right) => left - right)
@@ -89,6 +98,7 @@ export function segment(
       color: token?.color ?? null,
       fontStyle: token?.fontStyle ?? 0,
       edited: edits.some(([start, end]) => start <= from && to <= end),
+      found: found.some(([start, end]) => start <= from && to <= end),
     })
   }
 
@@ -108,12 +118,15 @@ export function LineText({
   text,
   tokens = null,
   edits = [],
+  find = '',
 }: {
   text: string
   tokens?: readonly HighlightToken[] | null
   edits?: readonly (readonly [start: number, end: number])[]
+  /** The term in the find box. Marked wherever it appears, on either side. */
+  find?: string
 }) {
-  const parts = segment(text, tokens, edits)
+  const parts = segment(text, tokens, edits, matchRanges(text, find))
 
   // Nothing to say about this text, so say it with no element at all — a bare
   // text node. This is the common case: an unhighlighted context line, of which
@@ -122,7 +135,11 @@ export function LineText({
   // step further down that same road.
   if (
     parts.length === 0 ||
-    (parts.length === 1 && parts[0].color === null && parts[0].fontStyle === 0 && !parts[0].edited)
+    (parts.length === 1 &&
+      parts[0].color === null &&
+      parts[0].fontStyle === 0 &&
+      !parts[0].edited &&
+      !parts[0].found)
   ) {
     return text
   }
@@ -132,7 +149,16 @@ export function LineText({
       // Index is identity here and nowhere else: this list is a leaf, rebuilt
       // whole whenever the line or its tokens change, and never reordered.
       key={at}
-      className={part.edited ? 'bg-diff-word rounded-[2px]' : undefined}
+      // A found run inside an edited one takes the find colour: the edit
+      // marking is on every changed line and the match is on the few the
+      // reader asked for, so the rarer fact is the one worth seeing.
+      className={
+        part.found
+          ? 'bg-pen-amber-tint rounded-[2px]'
+          : part.edited
+            ? 'bg-diff-word rounded-[2px]'
+            : undefined
+      }
       style={style(part)}
     >
       {part.text}

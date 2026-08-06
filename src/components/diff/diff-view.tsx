@@ -317,6 +317,7 @@ function Cell({
   line,
   number,
   tokens,
+  find,
   className,
   width,
   actions,
@@ -325,6 +326,8 @@ function Cell({
   /** Which of the line's two numbers this column shows. */
   number: number | null
   tokens: readonly HighlightToken[] | null
+  /** The find box's term. Marked here on both sides, though only one is steppable. */
+  find: string
   className?: string
   /**
    * The column's own width, from `columnWidth` — set in side-by-side and absent
@@ -376,7 +379,11 @@ function Cell({
         {line === null ? '' : MARK[line.op]}
       </span>
       <span className="whitespace-pre">
-        {line === null ? '' : <LineText text={line.text} tokens={tokens} edits={line.edits} />}
+        {line === null ? (
+          ''
+        ) : (
+          <LineText text={line.text} tokens={tokens} edits={line.edits} find={find} />
+        )}
       </span>
       {actions}
     </span>
@@ -409,6 +416,7 @@ function Row({
   column,
   before,
   after,
+  find,
   onExpand,
   threadActions,
   onCompose,
@@ -422,6 +430,7 @@ function Row({
   column: string
   before: HighlightedLines | null
   after: HighlightedLines | null
+  find: string
   onExpand?: (row: Extract<DiffRow, { kind: 'gap' }>) => void
   threadActions?: ThreadActions
   /** Open a composer on a right-side line. Absent renders no compose buttons. */
@@ -543,6 +552,7 @@ function Row({
           line={row.left}
           number={row.left?.oldLine ?? null}
           tokens={row.left === null ? null : tokensFor(row.left, before, after)}
+          find={find}
           className="border-border border-r"
           width={column}
         />
@@ -550,6 +560,7 @@ function Row({
           line={row.right}
           number={row.right?.newLine ?? null}
           tokens={row.right === null ? null : tokensFor(row.right, before, after)}
+          find={find}
           width={column}
           actions={actionsAt('left-0')}
         />
@@ -581,7 +592,12 @@ function Row({
         {MARK[line.op]}
       </span>
       <span className="whitespace-pre">
-        <LineText text={line.text} tokens={tokensFor(line, before, after)} edits={line.edits} />
+        <LineText
+          text={line.text}
+          tokens={tokensFor(line, before, after)}
+          edits={line.edits}
+          find={find}
+        />
       </span>
       {actionsAt('left-12')}
     </span>
@@ -594,6 +610,7 @@ export function DiffView({
   label,
   before = null,
   after = null,
+  find = '',
   onExpand,
   threadActions,
   onCompose,
@@ -610,6 +627,13 @@ export function DiffView({
   /** Tokens for each side, indexed by line number − 1. `null` until the worker answers. */
   before?: HighlightedLines | null
   after?: HighlightedLines | null
+  /**
+   * The term in the find box, marked wherever it appears in a rendered row.
+   *
+   * A prop and not state, because the thread poll rebuilds this view's row model
+   * from its inputs every thirty seconds and would take any state here with it.
+   */
+  find?: string
   onExpand?: (row: Extract<DiffRow, { kind: 'gap' }>) => void
   /**
    * What a conversation in the diff can do. Absent renders every thread
@@ -809,6 +833,7 @@ export function DiffView({
                 column={column}
                 before={before}
                 after={after}
+                find={find}
                 onExpand={onExpand}
                 threadActions={threadActions}
                 onCompose={onCompose}

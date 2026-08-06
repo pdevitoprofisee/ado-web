@@ -92,6 +92,7 @@ export function FileDiffPanel({
   sourceName = 'The diff source',
   before = null,
   after = null,
+  find = '',
   onExpand,
   onCompose,
   onCopyLink,
@@ -161,6 +162,8 @@ export function FileDiffPanel({
   sourceName?: string
   before?: HighlightedLines | null
   after?: HighlightedLines | null
+  /** The find box's term. Straight through to the rows, like `jumped`. */
+  find?: string
   onExpand?: (row: Extract<DiffRow, { kind: 'gap' }>) => void
   /**
    * Open a composer on a right-side line, or `null` to close it. Passed straight
@@ -354,6 +357,7 @@ export function FileDiffPanel({
                 label={blobs.path}
                 before={before}
                 after={after}
+                find={find}
                 onExpand={onExpand}
                 onCompose={onCompose}
                 onCopyLink={onCopyLink}
