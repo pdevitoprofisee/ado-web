@@ -392,7 +392,7 @@ browser.
 
 ## T-056 — The review view on the keyboard
 
-**Type:** feature · **Status:** open · **Blocked by:** —
+**Type:** feature · **Status:** resolved · **Blocked by:** —
 
 The destination's first sentence is "a dense, **keyboard-driven** PR review client". T-009 built
 the machinery for that in round 1 — one keydown listener, a declared registry, `useCommand` for a
@@ -424,6 +424,93 @@ exactly one — `nav.back`.** The page the application is for is the one page yo
   `PUT` that ADO does not re-judge and that *adds a reviewer* when it is addressed to somebody who
   is not one, and `castVote`'s re-read is the only guard in the system. Nothing that costs that
   much goes behind a single keystroke.
+
+### Resolution
+
+One commit on `t-056-review-keyboard`, not pushed. New: `src/lib/review-stops.ts` with
+`src/lib/review-stops.test.ts` (17 tests), and `src/components/diff/review-keys.tsx`. Changed:
+`src/commands/registry.ts`, `src/components/pr-detail.tsx`, and `src/components/pr-detail.test.tsx`
+(10 tests). **1,543 tests across 79 files pass**, up from 1,516 across 78, and `tsc --noEmit` is
+clean. No new dependency, no new server function, no change to the jump machinery.
+
+**Seven keys: `]` and `[` between files, `n` and `p` between unresolved threads, `}` and `{` between
+Sonar's findings, and `v` to mark the file being read.** Nothing was displaced — all seven were
+unclaimed, `/` and `?` and `j`/`k`/`Enter`/`Escape`/`t`/`b` are untouched, and the command layer's
+refusal of Ctrl, Meta and Alt made unmodified keys the only option. The brackets are one family on
+purpose, bare between files and shifted between findings, because both are "send me somewhere else
+in this change set"; `n`/`p` keep the shortest pair for the traversal a reviewer makes most.
+
+**They are registered by `ReviewKeys`, which is mounted with the file list, so the `?` sheet is
+honest about which tab you are on.** T-009's design is that a declared key dims until something
+claims it, and a component that registered all seven on every page would claim them on the inbox
+too. The consequence is stated rather than hidden: on the details tab all seven are grey, including
+`}` and `{` — the Sonar panel lives on that tab and its findings are steppable only from the diff.
+A click on a finding already crosses to the diff, so the keys and the mouse arrive at the same place
+by different routes. `pr-detail.test.tsx` asserts both halves against the real registry: the seven
+labels are bound on a diff tab and unbound on details, which fails loudly if a later command is ever
+registered by some other means.
+
+**"Which file am I on" is read from the DOM at the moment a key is pressed, and held nowhere.** Note
+7 says any transient state that is not a row-model input vanishes when the thread poll rebuilds it,
+and a cursor into a 294-file list is exactly the state that must not. The panels carry
+`id={fileAnchor(path)}` already — note 13 is about *rows* being absent from the document, not
+panels, and `scrollToFile` has always used `getElementById` — so `fileAt` takes each panel's
+`getBoundingClientRect().top` and answers with the last one to have reached the fold. The fold is 24
+pixels rather than zero because panels carry `scroll-mt-2`: a jump parks one eight pixels down, and
+a fold at zero would decide the reader was still on the file above and send `]` back where it
+started.
+
+**Thread and finding cursors are refs holding an id, not an index.** The conversation poll hands
+down a fresh array every thirty seconds and somebody else can resolve a thread while the page is
+open; an index remembered across that tick points at a different thread than the one the reader was
+standing on. An id that has left the list is treated as standing nowhere, so the next press lands on
+the first remaining stop — `FindBar` steps the same way for the same reason. Refs and not state
+because none of it is on the screen.
+
+**Files clamp; threads and findings wrap.** A change set is read top to bottom, and `]` on the last
+file quietly restarting at the first is how a reviewer comes to believe they have been through all
+of them. A thread list is a work queue and wrapping it is the point.
+
+**Moving is `setSent`, the transient jump T-057 built, and that is the whole of the wiring.**
+`ChangedFiles` already held it beside the Sonar jump and passed `sent ?? jump` down as `jumpTo`; the
+keys call the same setter with the same shape. So a stop with a line uses `jumpToLine`, which
+expands a collapsed gap before it scrolls, and a stop with no line is a scroll to the panel. There
+is one way into the diff and this ticket did not add a second.
+
+**Ordering is a pure function of data the page already has.** `review-stops.ts` walks the files in
+the order the list is drawing them — the tree's order, not ADO's — putting a file's unanchored
+threads before its lines because `FileThreadList` renders above the diff, and sorting the rest by
+right-hand line. Resolution and not status, since `active` and `pending` are both open. Findings keep
+the panel's grouped order and are filtered against the paths on screen, the same test the panel makes
+before it offers one as a button, so the update tab cannot step to a finding about a file that tab is
+not showing. All of it is tested without a DOM.
+
+**`v` is the only key that records anything and it records it locally.** `viewed-fn.ts` is the one
+server function pair in the project that makes no Azure DevOps call at all — confirmed in the code,
+not taken on trust — so a mis-keyed `v` costs a row in this app's own SQLite and a second press
+undoes it. Nothing else here leaves the machine. No vote, no comment, no reply, no resolve, no
+merge: note 10's `PUT` is the same request as adding a reviewer, and a slip would put a colleague's
+name on a pull request. The registry's header comment says so where the next person will be deciding
+whether to add `r`.
+
+**The guard is tested against the two boxes a reviewer actually types in**, not a synthetic input:
+the find box, and a comment composer opened from a panel. `n`, `v` and `]` typed into either land in
+the box, move nothing and mark nothing.
+
+**What a reviewer should check by eye.** Whether `]` lands where you expect after a jump has already
+moved the page — the 24-pixel fold is reasoned about and jsdom lays nothing out, so every rect in the
+tests is one this file wrote. Whether `n` into a file far down the list reveals the line or only the
+panel. Whether a second `role="status"` beside `FindBar`'s produces two announcements where one was
+wanted; they never speak at once in practice, but no screen reader has been near either. And whether
+`}`/`{` being grey on the details tab, where the findings are printed, reads as a bug.
+
+**Unverified.** Nothing here has been run in a browser, against a live Azure DevOps instance, or
+against a change set anywhere near 294 files. No screen reader has heard the live region. **Two
+known limitations.** T-057's is inherited: a file marked viewed renders its panel collapsed but may
+still have cached bytes, so a thread or finding inside one is jumped to at panel level and the line
+is not revealed — `FileDiffPanel` owns its open state internally and making it controlled is still
+outside this ticket. And the brackets need AltGr on several non-US layouts, which is the limitation
+`/` already has and the price of a layer that cannot see modifiers.
 
 ---
 

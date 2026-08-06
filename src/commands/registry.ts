@@ -6,12 +6,14 @@
 // order the sheet prints them in are app-wide, the behaviour is not. Surfaces
 // claim a key with `useCommand`.
 //
-// The keys later phases will want — `[`/`]` between files, `n`/`p` between
-// unresolved threads, `r` reply, `e` edit — are not listed yet. They are one
-// entry each, added alongside the surface that implements them, because a key
-// whose meaning doesn't exist yet has no wording to print.
+// `r` reply and `e` edit are still not listed, and not because nobody has got to
+// them: nothing that reaches Azure DevOps has a key. A vote is the same `PUT` as
+// adding a reviewer, so a mistyped one puts a colleague's name on a pull request,
+// and a comment posted by a slip is a comment everybody watching the thread has
+// already been mailed. The review keys below either move the window or write a
+// local SQLite row.
 
-export type CommandGroup = 'Navigation' | 'View' | 'Help'
+export type CommandGroup = 'Navigation' | 'Review' | 'View' | 'Help'
 
 export interface Command {
   readonly id: string
@@ -39,6 +41,24 @@ export const COMMANDS = [
   // browser. Taking the browser's own find away would also be a promise this
   // cannot keep — a diff has files whose bytes were never fetched.
   { id: 'find.diff', key: '/', label: 'Find in the diff', group: 'Navigation' },
+  // Reading one pull request without the mouse. The brackets are one family on
+  // purpose — bare between the files, shifted between Sonar's findings — because
+  // both are "send me somewhere else in this change set", and `n`/`p` stay for
+  // the thing a reviewer steps through most.
+  { id: 'review.nextFile', key: ']', label: 'Next file', group: 'Review' },
+  { id: 'review.previousFile', key: '[', label: 'Previous file', group: 'Review' },
+  { id: 'review.nextThread', key: 'n', label: 'Next unresolved thread', group: 'Review' },
+  {
+    id: 'review.previousThread',
+    key: 'p',
+    label: 'Previous unresolved thread',
+    group: 'Review',
+  },
+  // The one key here that records anything, and it records it locally: a viewed
+  // mark is a row in this app's own SQLite and never leaves the machine.
+  { id: 'review.viewed', key: 'v', label: 'Mark this file read or unread', group: 'Review' },
+  { id: 'review.nextFinding', key: '}', label: 'Next Sonar finding', group: 'Review' },
+  { id: 'review.previousFinding', key: '{', label: 'Previous Sonar finding', group: 'Review' },
   // A shell command, so it works on the diff as well as the inbox — the visible
   // control lives in the inbox header, and the diff is where you are when the
   // room gets dark.

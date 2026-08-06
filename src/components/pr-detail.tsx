@@ -29,6 +29,7 @@ import { ChangedFileDiff } from './diff/changed-file'
 import { FileTree } from './diff/file-tree'
 import { FindBar } from './diff/find-bar'
 import { LayoutToggle } from './diff/layout-toggle'
+import { ReviewKeys } from './diff/review-keys'
 import { WhitespaceToggle } from './diff/whitespace-toggle'
 import { SonarPanel, scrollToFinding } from './sonar/panel'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -65,6 +66,7 @@ import type { FileThreads, IterationContext, Thread } from '@/lib/comment-contra
 import type { Conversation } from '@/lib/conversation'
 import type { DiffLayout } from '@/lib/diff-contract'
 import type { Withdraw } from '@/lib/reviewers'
+import type { SonarFinding } from '@/lib/sonar-contract'
 import type { SonarReportResult } from '@/server/sonar-fn'
 import type {
   ChangeSet,
@@ -1795,6 +1797,7 @@ function ChangedFiles({
   onHideDoneChange,
   iterationContext,
   jump,
+  findings,
   webUrl,
 }: {
   /** The selected view's files — the combined diff, one update's, or a range's. */
@@ -1837,6 +1840,15 @@ function ChangedFiles({
    * own scroll, which has already happened by the time a panel sees this.
    */
   jump: SonarJump | null
+  /**
+   * Sonar's findings, flattened into the panel's own order, for the keys that
+   * step through them. Empty on a pull request Sonar has not analysed.
+   *
+   * Down here rather than bound beside the panel that lists them, because
+   * stepping through findings is something you do while reading the diff — and
+   * this is where the jump that answers it already lives.
+   */
+  findings: readonly SonarFinding[]
   /** The pull request's ADO address, which each line's open-in-ADO link is built from. */
   webUrl: string
 }) {
@@ -1925,6 +1937,20 @@ function ChangedFiles({
           term={term}
           onTerm={setTerm}
           onGo={(hit) => setSent({ path: hit.path, line: hit.line })}
+        />
+      )}
+
+      {/* Beside the find box because it moves the page the same way, through the
+          same jump. Mounted with the list rather than always, so the `?` sheet
+          dims these keys on a tab that has no files to step through. */}
+      {changes.files.length === 0 ? null : (
+        <ReviewKeys
+          files={ordered}
+          isRead={isRead}
+          onViewedChange={onViewedChange}
+          threads={threads}
+          findings={findings}
+          onGo={setSent}
         />
       )}
 
@@ -2317,6 +2343,14 @@ export function PullRequestDetailView({
   // one, so the effect below has a panel to find.
   const [jump, setJump] = useState<SonarJump | null>(readLineTarget)
 
+  // Flattened out of the groups rather than re-derived below, so the keys that
+  // step through findings walk them in the order the panel prints them: rule by
+  // rule, count descending.
+  const findings = useMemo(
+    () => sonar?.report?.groups.flatMap((group) => group.findings) ?? [],
+    [sonar?.report],
+  )
+
   // The same crossing for both things on the details tab that point at a line: a
   // Sonar finding and, now, a thread anchored to one.
   const goToFile = (next: SonarJump) => {
@@ -2613,6 +2647,7 @@ export function PullRequestDetailView({
               onHideDoneChange={setHideDone}
               iterationContext={iterationContext}
               jump={jump}
+              findings={findings}
               webUrl={pr.url}
             />
           )}

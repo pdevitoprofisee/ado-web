@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { PullRequestDetailView as Detail, mergeBlocker, voteWord } from './pr-detail'
 import { CommandProvider } from '@/commands/command-provider'
+import { fileAnchor } from '@/lib/file-anchor'
 import { viewedKey } from '@/lib/viewed-key'
 import {
   abandonPullRequest,
@@ -23,6 +24,7 @@ import { markViewed, viewedQuery } from '@/server/viewed-fn'
 import type { ComponentProps, ReactElement, ReactNode } from 'react'
 import type { DetailTab } from './pr-detail'
 import type { Comment, Thread, ThreadList } from '@/lib/comment-contract'
+import type { SonarFinding } from '@/lib/sonar-contract'
 import type { SonarReportResult } from '@/server/sonar-fn'
 import type { ThreadsResult } from '@/server/threads-fn'
 import type {
@@ -2534,5 +2536,369 @@ describe('PullRequestDetailView checks and avatars', () => {
     // avatar and a missing one look the same.
     expect(screen.getByText('PD')).toBeVisible()
     expect(screen.getByText('NA')).toBeVisible()
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+// The ordering is `review-stops.test.ts`'s subject. What these are about is the
+// two things a keyboard has to get right before any of it can be trusted: every
+// key is in the `?` sheet without anybody having listed it there a second time,
+// and not one of them fires while somebody is typing into the page.
+describe('PullRequestDetailView on the keyboard', () => {
+  const files = {
+    iterationId: 2,
+    iterations: ITERATIONS,
+    truncated: false,
+    files: [
+      { path: '/src/log.ts', changeType: ['edit'], originalPath: null, objectId: 'aa', originalObjectId: 'bb' },
+      { path: '/src/sink.ts', changeType: ['edit'], originalPath: null, objectId: 'cc', originalObjectId: 'dd' },
+      { path: '/src/new.ts', changeType: ['add'], originalPath: null, objectId: 'ee', originalObjectId: null },
+    ],
+  }
+
+  /** The tree's order, which is the order every key here steps in. */
+  const ORDER = ['/src/log.ts', '/src/new.ts', '/src/sink.ts']
+
+  const onLine = (
+    id: number,
+    path: string,
+    line: number,
+    content: string,
+    resolution: Thread['resolution'] = 'open',
+  ): Thread => ({
+    id,
+    status: resolution === 'open' ? 'active' : 'closed',
+    resolution,
+    kind: 'human',
+    publishedDate: '2026-07-22T00:00:00Z',
+    lastUpdatedDate: null,
+    isDeleted: false,
+    context: {
+      filePath: path,
+      rightStart: { line, offset: 1 },
+      rightEnd: { line, offset: 30 },
+      leftStart: null,
+      leftEnd: null,
+    },
+    iterationContext: null,
+    comments: [
+      {
+        id,
+        parentCommentId: null,
+        author: {
+          id: 'reviewer-1',
+          displayName: 'Naveen Angali',
+          uniqueName: 'naveen.angali@profisee.com',
+          imageUrl: null,
+        },
+        content,
+        publishedDate: '2026-07-22T00:00:00Z',
+        lastUpdatedDate: null,
+        lastContentUpdatedDate: null,
+        isDeleted: false,
+        commentType: 'text',
+        likedBy: [],
+        mentions: {},
+      },
+    ],
+    properties: {},
+  })
+
+  const answered = (threads: readonly Thread[]): ThreadsResult => ({
+    threads: {
+      threads,
+      openCount: threads.filter((entry) => entry.resolution === 'open').length,
+      doneCount: threads.filter((entry) => entry.resolution === 'done').length,
+      systemCount: 0,
+      botCount: 0,
+      votes: [],
+    },
+    error: null,
+    connected: true,
+    notFound: false,
+    rateLimit: null,
+  })
+
+  const finding = (key: string, path: string, line: number): SonarFinding => ({
+    key,
+    rule: 'javascript:S4036',
+    message: `Something about ${path}.`,
+    path,
+    textRange: { startLine: line, endLine: line, startOffset: 2, endOffset: 30 },
+    status: 'OPEN',
+    impacts: [{ softwareQuality: 'SECURITY', severity: 'MEDIUM' }],
+    cleanCodeAttributeCategory: 'RESPONSIBLE',
+    effort: '20min',
+    tags: [],
+    url: 'https://sonarcloud.io/project/issues?id=Profisee_utilities&open=AY-1',
+  })
+
+  const reported = (findings: readonly SonarFinding[]): SonarReportResult => ({
+    report: {
+      projects: [
+        {
+          projectKey: 'Profisee_utilities',
+          pullRequest: '24698',
+          dashboardUrl: 'https://sonarcloud.io/dashboard?id=Profisee_utilities',
+        },
+      ],
+      groups: [
+        {
+          rule: 'javascript:S4036',
+          name: 'Searching OS commands in PATH is security-sensitive',
+          severity: 'MEDIUM',
+          findings,
+        },
+      ],
+      gate: { status: 'OK', conditions: [] },
+      failed: [],
+      truncated: [],
+    },
+    rules: [],
+    error: null,
+    connected: true,
+    rateLimit: null,
+  })
+
+  const measured = Element.prototype.getBoundingClientRect
+
+  /** Where each panel sits, since jsdom lays nothing out and answers zero for all of them. */
+  let tops = new Map<string, number>()
+
+  /** Put the window at the top of one file, with the rest of the panels above and below it. */
+  function reading(path: string) {
+    const at = ORDER.indexOf(path)
+    tops = new Map(ORDER.map((other, index) => [fileAnchor(other), (index - at) * 600 + 8]))
+  }
+
+  /**
+   * The panels the page is sent to, in the order it is sent to them.
+   *
+   * Assigned per element rather than on the prototype, so the array says which
+   * file was jumped to and not merely that something was.
+   */
+  function jumps(): string[] {
+    const went: string[] = []
+    for (const path of ORDER) {
+      const panel = document.getElementById(fileAnchor(path))
+      if (panel !== null) {
+        panel.scrollIntoView = () => {
+          went.push(path)
+        }
+      }
+    }
+    return went
+  }
+
+  /** Every row of the `?` sheet, by the label the registry gave it. */
+  function sheet(): Record<string, string | null> {
+    return Object.fromEntries(
+      [...document.querySelectorAll('[data-slot="shortcut"]')].map((row) => [
+        row.querySelector('dt')?.textContent ?? '',
+        row.getAttribute('data-bound'),
+      ]),
+    )
+  }
+
+  beforeEach(() => {
+    tops = new Map()
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const top = tops.get(this.id)
+      // Everything else keeps jsdom's own zeroes: React Aria measures elements
+      // this file never places, and answering for those would be a lie of a
+      // different kind.
+      if (top === undefined) return measured.call(this)
+      return { x: 0, y: top, top, bottom: top, left: 0, right: 0, width: 0, height: 0, toJSON: () => ({}) } as DOMRect
+    }
+    vi.mocked(threadsQuery).mockResolvedValue(answered([]))
+    vi.mocked(markViewed).mockClear()
+  })
+
+  afterEach(() => {
+    Element.prototype.getBoundingClientRect = measured
+  })
+
+  it('puts every review key in the ? sheet by being registered, not by being listed twice', async () => {
+    // The point of the criterion: these labels are the registry's, so a command
+    // bound some other way is one this assertion cannot find.
+    await drawDiff({ pr: detail({ files }) })
+    await userEvent.keyboard('?')
+    await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })
+
+    expect(sheet()).toMatchObject({
+      'Next file': 'true',
+      'Previous file': 'true',
+      'Next unresolved thread': 'true',
+      'Previous unresolved thread': 'true',
+      'Mark this file read or unread': 'true',
+      'Next Sonar finding': 'true',
+      'Previous Sonar finding': 'true',
+    })
+  })
+
+  it('dims them on a tab with no files to step through', async () => {
+    render(<PullRequestDetailView pr={detail({ files })} />)
+    await userEvent.keyboard('?')
+    await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })
+
+    // Still printed, because the sheet is the whole registry — and greyed, which
+    // is the sheet's way of saying "not here".
+    expect(sheet()).toMatchObject({
+      'Next file': 'false',
+      'Mark this file read or unread': 'false',
+      'Next Sonar finding': 'false',
+    })
+  })
+
+  it('sends ] to the next file and [ back to the one above', async () => {
+    await drawDiff({ pr: detail({ files }) })
+    reading('/src/log.ts')
+    const went = jumps()
+
+    await userEvent.keyboard(']')
+
+    expect(went).toEqual(['/src/new.ts'])
+    expect(screen.getByText('File 2 of 3, /src/new.ts.')).toBeInTheDocument()
+
+    reading('/src/new.ts')
+    // Doubled because user-event reads a bare `[` as the start of a key code.
+    await userEvent.keyboard('[[')
+
+    expect(went).toEqual(['/src/new.ts', '/src/log.ts'])
+    expect(screen.getByText('File 1 of 3, /src/log.ts.')).toBeInTheDocument()
+  })
+
+  it('stops at the last file rather than starting over at the first', async () => {
+    // The two lists below wrap and this one does not, on purpose: quietly
+    // restarting at the top is how a reviewer comes to believe they have been
+    // through every file in the change set.
+    await drawDiff({ pr: detail({ files }) })
+    reading('/src/sink.ts')
+    const went = jumps()
+
+    await userEvent.keyboard(']')
+
+    expect(went).toEqual(['/src/sink.ts'])
+    expect(screen.getByText('File 3 of 3, /src/sink.ts.')).toBeInTheDocument()
+  })
+
+  it('marks the file the window is on read, and unmarks it', async () => {
+    // Local SQLite on the other side of `markViewed`, which is why this one key
+    // records anything at all: nothing here reaches Azure DevOps.
+    await drawDiff({ pr: detail({ files }) })
+    reading('/src/sink.ts')
+
+    await userEvent.keyboard('v')
+
+    expect(await screen.findByText('1 of 3 read')).toBeVisible()
+    expect(screen.getByText('/src/sink.ts marked read.')).toBeInTheDocument()
+    expect(vi.mocked(markViewed).mock.lastCall?.[0]?.data).toMatchObject({
+      path: '/src/sink.ts',
+      objectId: 'cc',
+      viewed: true,
+    })
+
+    await userEvent.keyboard('v')
+
+    expect(await screen.findByText('0 of 3 read')).toBeVisible()
+    expect(vi.mocked(markViewed).mock.lastCall?.[0]?.data).toMatchObject({ viewed: false })
+  })
+
+  it('steps n and p through the unresolved threads, in the order the files are drawn', async () => {
+    vi.mocked(threadsQuery).mockResolvedValue(
+      answered([
+        onLine(101, '/src/sink.ts', 4, 'this reads the disposed handle'),
+        onLine(102, '/src/log.ts', 12, 'this loop is quadratic'),
+        onLine(103, '/src/log.ts', 3, 'nothing to do here', 'done'),
+      ]),
+    )
+    await drawDiff({ pr: detail({ files }) })
+    // No bytes were fetched, so the panels print their threads above the diff —
+    // which is also the only sign on this tab that the poll has answered at all.
+    await list().findByText('this loop is quadratic')
+    const went = jumps()
+
+    await userEvent.keyboard('n')
+    expect(screen.getByText('Unresolved thread 1 of 2, /src/log.ts line 12.')).toBeInTheDocument()
+
+    await userEvent.keyboard('n')
+    expect(screen.getByText('Unresolved thread 2 of 2, /src/sink.ts line 4.')).toBeInTheDocument()
+
+    // Wrapping, unlike the files: the resolved one on line 3 is not a stop, and
+    // two of three threads is the whole of what the key promises.
+    await userEvent.keyboard('n')
+    expect(screen.getByText('Unresolved thread 1 of 2, /src/log.ts line 12.')).toBeInTheDocument()
+
+    await userEvent.keyboard('p')
+    expect(screen.getByText('Unresolved thread 2 of 2, /src/sink.ts line 4.')).toBeInTheDocument()
+    expect(went).toEqual(['/src/log.ts', '/src/sink.ts', '/src/log.ts', '/src/sink.ts'])
+  })
+
+  it('says there is nowhere to go rather than doing nothing', async () => {
+    await drawDiff({ pr: detail({ files }) })
+
+    await userEvent.keyboard('n')
+
+    // A key that silently does nothing is indistinguishable from a broken one.
+    expect(screen.getByText('No unresolved threads in this diff.')).toBeInTheDocument()
+  })
+
+  it('steps through the Sonar findings this diff can actually show', async () => {
+    await drawDiff({
+      pr: detail({ files }),
+      sonar: reported([
+        finding('AY-1', '/src/log.ts', 12),
+        // Not in the change set, so the panel offers no button for it and the
+        // key must not stop on it either.
+        finding('AY-2', '/src/untouched.ts', 3),
+        finding('AY-3', '/src/sink.ts', 40),
+      ]),
+    })
+    const went = jumps()
+
+    await userEvent.keyboard('}')
+    expect(screen.getByText('Sonar finding 1 of 2, /src/log.ts line 12.')).toBeInTheDocument()
+
+    await userEvent.keyboard('}')
+    expect(screen.getByText('Sonar finding 2 of 2, /src/sink.ts line 40.')).toBeInTheDocument()
+
+    // Doubled for the same reason `[` is: user-event reads a bare `{` as the
+    // start of a key name.
+    await userEvent.keyboard('{{')
+    expect(screen.getByText('Sonar finding 1 of 2, /src/log.ts line 12.')).toBeInTheDocument()
+    expect(went).toEqual(['/src/log.ts', '/src/sink.ts', '/src/log.ts'])
+  })
+
+  it('holds every key while the reviewer is typing in the find box', async () => {
+    await drawDiff({ pr: detail({ files }) })
+    reading('/src/log.ts')
+    const went = jumps()
+
+    const box = screen.getByRole('searchbox', { name: /^Find in/ })
+    await userEvent.type(box, 'nv]')
+
+    expect(box).toHaveValue('nv]')
+    expect(went).toEqual([])
+    expect(vi.mocked(markViewed)).not.toHaveBeenCalled()
+  })
+
+  it('holds every key while the reviewer is typing a comment', async () => {
+    // The real composer and not a bare `<input>`: what the guard has to
+    // understand is a React Aria widget, and a search for `n` in a sentence
+    // somebody is writing to a colleague is the worst way to find that out.
+    await drawDiff({ pr: detail({ files }) })
+    reading('/src/log.ts')
+    const went = jumps()
+
+    const [compose] = await list().findAllByRole('button', { name: 'Comment on this file' })
+    await userEvent.click(compose as HTMLElement)
+    const box = screen.getByLabelText('New comment on /src/log.ts')
+    await userEvent.type(box, 'not every n is a shortcut]')
+
+    expect(box).toHaveValue('not every n is a shortcut]')
+    expect(went).toEqual([])
+    expect(vi.mocked(markViewed)).not.toHaveBeenCalled()
+    expect(screen.getByText('0 of 3 read')).toBeVisible()
   })
 })
