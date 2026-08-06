@@ -21,7 +21,7 @@ import { markViewed, viewedQuery } from '@/server/viewed-fn'
 
 import type { ComponentProps, ReactElement, ReactNode } from 'react'
 import type { DetailTab } from './pr-detail'
-import type { Comment, Thread } from '@/lib/comment-contract'
+import type { Comment, Thread, ThreadList } from '@/lib/comment-contract'
 import type { SonarReportResult } from '@/server/sonar-fn'
 import type { ThreadsResult } from '@/server/threads-fn'
 import type {
@@ -102,7 +102,7 @@ vi.mock('@/server/pull-request-fn', () => ({
 // into a jsdom bundle that has no fetch to send them with.
 vi.mock('@/server/threads-fn', () => ({
   threadsQuery: vi.fn(async () => ({
-    threads: { threads: [], openCount: 0, doneCount: 0, systemCount: 0, botCount: 0 },
+    threads: { threads: [], openCount: 0, doneCount: 0, systemCount: 0, botCount: 0, votes: [] },
     error: null,
     connected: true,
     notFound: false,
@@ -1928,6 +1928,178 @@ describe('PullRequestDetailView changes views', () => {
 
 // ---------------------------------------------------------------------------
 
+describe('PullRequestDetailView changes since my last review', () => {
+  /** Three pushes, so the range this view asks for cannot be mistaken for `id - 1`. */
+  const iterations: readonly Iteration[] = [
+    ...ITERATIONS,
+    { id: 3, subject: 'rebase on main', author: 'Paul DeVito', createdAt: '2026-07-22T00:00:00Z', reason: 'push' },
+  ]
+
+  const files = {
+    iterationId: 3,
+    iterations,
+    truncated: false,
+    files: [
+      { path: '/src/log.ts', changeType: ['edit'], originalPath: null, objectId: 'aa', originalObjectId: 'bb' },
+    ],
+  }
+
+  /** `viewerId` on the page under test, and so the identity every signal below is attributed to. */
+  const ME = 'author-1'
+
+  const NOTHING: ThreadList = {
+    threads: [],
+    openCount: 0,
+    doneCount: 0,
+    systemCount: 0,
+    botCount: 0,
+    votes: [],
+  }
+
+  const empty = (): ThreadsResult => ({
+    threads: NOTHING,
+    error: null,
+    connected: true,
+    notFound: false,
+    rateLimit: null,
+  })
+
+  const voted = (at: string, vote = 10, voterId = ME): ThreadsResult => ({
+    ...empty(),
+    threads: { ...NOTHING, votes: [{ voterId, at, vote }] },
+  })
+
+  const commented = (at: string, authorId = ME): ThreadsResult => {
+    const said: Thread = {
+      id: 900,
+      status: 'active',
+      resolution: 'open',
+      kind: 'human',
+      publishedDate: at,
+      lastUpdatedDate: null,
+      isDeleted: false,
+      context: null,
+      iterationContext: null,
+      comments: [
+        {
+          id: 1,
+          parentCommentId: null,
+          author: { id: authorId, displayName: 'Paul DeVito', uniqueName: null, imageUrl: null },
+          content: 'the migration needs a rollback note',
+          publishedDate: at,
+          lastUpdatedDate: null,
+          lastContentUpdatedDate: null,
+          isDeleted: false,
+          commentType: 'text',
+          likedBy: [],
+          mentions: {},
+        },
+      ],
+      properties: {},
+    }
+
+    return { ...empty(), threads: { ...NOTHING, threads: [said], openCount: 1 } }
+  }
+
+  const asked = () => vi.mocked(iterationChangesQuery).mock.lastCall?.[0]?.data
+
+  const openSince = async (conversation: ThreadsResult, pr = detail({ files })) => {
+    vi.mocked(threadsQuery).mockResolvedValue(conversation)
+    await drawDiff({ pr })
+    await userEvent.click(screen.getByRole('tab', { name: 'Since my review' }))
+  }
+
+  beforeEach(() => {
+    vi.mocked(iterationChangesQuery).mockClear()
+  })
+
+  // The mock is module-level and every describe below shares it, so a vote left
+  // behind here would turn up in somebody else's conversation.
+  afterEach(() => {
+    vi.mocked(threadsQuery).mockResolvedValue(empty())
+  })
+
+  it('offers no such view on a pull request with one update', async () => {
+    await drawDiff({ pr: detail({ files: { ...files, iterations: [ITERATIONS[0]!] } }) })
+
+    expect(screen.queryByRole('tab', { name: 'Since my review' })).toBeNull()
+  })
+
+  it('asks for the range from the update that was head when I voted', async () => {
+    await openSince(voted('2026-07-20T12:00:00Z'))
+
+    const shown = within(await screen.findByRole('list', { name: 'Changed files' }))
+
+    // Update 1 was head at midday on the 20th; update 3 is head now. Not `3` and
+    // `2`, which is what "By update" already answers — the two pushes since I
+    // approved are one question, and this is the only view that asks it.
+    expect(asked()).toEqual({
+      projectId: REF.projectId,
+      repositoryId: REF.repositoryId,
+      id: REF.id,
+      iterationId: 3,
+      compareTo: 1,
+    })
+    expect(shown.getByTitle('/src/only-in-update.ts')).toBeVisible()
+    expect(shown.queryByTitle('/src/log.ts')).toBeNull()
+  })
+
+  it('says what it measured from, because a vote and a remark are not the same claim', async () => {
+    await openSince(voted('2026-07-20T12:00:00Z'))
+
+    expect(await screen.findByText(/^Since your approval on 20 July/)).toBeVisible()
+  })
+
+  it('measures from a comment when nobody voted, and says that is what it did', async () => {
+    // Azure DevOps puts no date on `reviewers[].vote`, so the vote trail is the
+    // only dated vote there is — and on a pull request nobody has voted on there
+    // is no trail either. A comment is still someone having read the code.
+    await openSince(commented('2026-07-21T12:00:00Z'))
+
+    expect(await screen.findByText(/^Since your comment on 21 July/)).toBeVisible()
+    expect(asked()).toMatchObject({ iterationId: 3, compareTo: 2 })
+  })
+
+  it('gives a reason rather than a date when I have never reviewed', async () => {
+    await openSince(commented('2026-07-21T12:00:00Z', 'someone-else'))
+
+    expect(
+      await screen.findByText('You have not voted or commented here, so there is nothing to measure from.'),
+    ).toBeVisible()
+    // The wrong answer here is a range measured from somebody else's review, and
+    // the second wrong answer is asking for one at all.
+    expect(vi.mocked(iterationChangesQuery)).not.toHaveBeenCalled()
+    expect(screen.queryByRole('list', { name: 'Changed files' })).toBeNull()
+  })
+
+  it('says nothing has been pushed, rather than showing an empty file list', async () => {
+    await openSince(voted('2026-07-23T12:00:00Z'))
+
+    expect(await screen.findByText(/^Nothing has been pushed since your approval on 23 July/)).toBeVisible()
+    // `3` against `3` is a pair the server refuses, and it should never be asked
+    // for: there is no range, and "no files" is not what the reader needs told.
+    expect(vi.mocked(iterationChangesQuery)).not.toHaveBeenCalled()
+  })
+
+  it('says the range failed rather than falling back to the whole pull request', async () => {
+    vi.mocked(iterationChangesQuery).mockResolvedValueOnce({
+      changes: null,
+      error: 'TF401019: The Git repository does not exist.',
+    })
+    await openSince(voted('2026-07-20T12:00:00Z'))
+
+    expect(
+      await screen.findByText(/Could not load the changes since your last review\./),
+    ).toBeVisible()
+    // `$compareTo=999` answers 200 with the complete combined diff, so a wrong
+    // answer in this view wears the right label. Showing the combined list on a
+    // failure would be doing that on purpose.
+    expect(screen.queryByTitle('/src/log.ts')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+
 // The panel is `sonar/panel.test.tsx`'s subject. What these are about is the one
 // thing it cannot do for itself: it sits on the details tab and the files it
 // points at are on another one, so the tab strip has to move for a click on a
@@ -2111,6 +2283,7 @@ describe('PullRequestDetailView conversation', () => {
       doneCount: threads.filter((entry) => entry.resolution === 'done').length,
       systemCount: 0,
       botCount: 0,
+      votes: [],
     },
     error: null,
     connected: true,
@@ -2186,7 +2359,7 @@ describe('PullRequestDetailView conversation', () => {
   it('says what it left out rather than dropping it silently', async () => {
     vi.mocked(threadsQuery).mockResolvedValue({
       ...said([]),
-      threads: { threads: [], openCount: 0, doneCount: 0, systemCount: 32, botCount: 3 },
+      threads: { threads: [], openCount: 0, doneCount: 0, systemCount: 32, botCount: 3, votes: [] },
     })
     render(<PullRequestDetailView pr={detail({ files })} />)
 

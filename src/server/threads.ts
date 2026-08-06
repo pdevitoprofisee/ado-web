@@ -15,6 +15,7 @@ import type {
   ThreadList,
   ThreadResolution,
   ThreadStatus,
+  VoteEvent,
 } from '../lib/comment-contract'
 
 // One pull request's conversation, read and written.
@@ -374,12 +375,41 @@ function toThread(
 }
 
 /**
+ * When somebody voted, out of a system thread that says they did.
+ *
+ * The one dated record of a vote there is: `reviewers[].vote` is a standing
+ * number with nothing to say about when it was cast. `hydrate.ts` reads the same
+ * two properties off the raw payload for the inbox's approval-reset mark; this
+ * reads them off the mapped thread, where the `$value` wrappers are already gone.
+ *
+ * A vote of `0` is not kept. It is the *absence* of a vote — ADO writes one when
+ * a push resets an approval — and treating it as a review would date a review
+ * that was taken away.
+ */
+function voteEvent(thread: Thread): VoteEvent | null {
+  if (thread.properties.CodeReviewThreadType !== 'VoteUpdate') return null
+  if (thread.isDeleted) return null
+
+  const voterId = thread.comments[0]?.author.id ?? ''
+  const vote = Number(thread.properties.CodeReviewVoteResult)
+  if (voterId === '' || thread.publishedDate === '' || !Number.isFinite(vote) || vote === 0) {
+    return null
+  }
+
+  return { voterId, at: thread.publishedDate, vote }
+}
+
+/**
  * The conversation, with the two kinds it left out counted rather than dropped
  * silently.
  *
  * A pull request whose 32 system threads vanish has to be able to say "32
  * system", because "no comments" and "no comments a person wrote" are different
  * answers and only one of them is ever surprising.
+ *
+ * The vote trail is the one thing carried *out* of those system threads rather
+ * than counted with them, because it is the only dated record of who reviewed
+ * and when — see `VoteEvent`.
  */
 export function toThreadList(
   raw: readonly AdoThread[],
@@ -387,6 +417,7 @@ export function toThreadList(
   names: ReadonlyMap<string, string> = NO_NAMES,
 ): ThreadList {
   const threads: Thread[] = []
+  const votes: VoteEvent[] = []
   let systemCount = 0
   let botCount = 0
   let openCount = 0
@@ -397,6 +428,8 @@ export function toThreadList(
 
     if (thread.kind === 'system') {
       systemCount += 1
+      const vote = voteEvent(thread)
+      if (vote !== null) votes.push(vote)
       continue
     }
     if (thread.kind === 'bot') {
@@ -409,7 +442,7 @@ export function toThreadList(
     else doneCount += 1
   }
 
-  return { threads, openCount, doneCount, systemCount, botCount }
+  return { threads, openCount, doneCount, systemCount, botCount, votes }
 }
 
 /**

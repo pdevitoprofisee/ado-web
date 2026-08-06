@@ -363,6 +363,60 @@ describe('classification', () => {
   })
 })
 
+describe('the vote trail', () => {
+  const voted = (vote: number, at: string, voter = COLLEAGUE): AdoThread =>
+    systemThread({
+      publishedDate: at,
+      comments: [comment({ commentType: 'system', author: { id: voter } })],
+      properties: {
+        CodeReviewThreadType: property('VoteUpdate'),
+        CodeReviewVoteResult: property(String(vote)),
+      },
+    } as Partial<AdoThread>)
+
+  it('carries a vote out with the date the standing vote does not have', () => {
+    const list = toThreadList([voted(10, '2026-07-20T09:00:00Z')])
+
+    // `reviewers[].vote` says Melissa approved and stops there. This is the only
+    // place in the payload that says when, and "changes since my last review" is
+    // a question about when.
+    expect(list.votes).toEqual([{ voterId: COLLEAGUE, at: '2026-07-20T09:00:00Z', vote: 10 }])
+    expect(list.threads).toEqual([])
+    expect(list.systemCount).toBe(1)
+  })
+
+  it('keeps every vote, so the last one can be found rather than the first', () => {
+    const list = toThreadList([
+      voted(-5, '2026-07-20T09:00:00Z'),
+      voted(10, '2026-07-22T09:00:00Z'),
+    ])
+
+    expect(list.votes.map((vote) => vote.vote)).toEqual([-5, 10])
+  })
+
+  it('drops a vote of zero, because that is a vote being taken away', () => {
+    // ADO writes one of these when a push resets an approval. Treating it as a
+    // review would date a review that no longer exists — and date it to the push
+    // that cancelled it, which is the worst possible answer.
+    expect(toThreadList([voted(0, '2026-07-20T09:00:00Z')]).votes).toEqual([])
+  })
+
+  it('ignores a system thread that is not a vote', () => {
+    const list = toThreadList([
+      systemThread({
+        properties: { CodeReviewThreadType: property('RefUpdate') },
+      } as Partial<AdoThread>),
+    ])
+
+    expect(list.votes).toEqual([])
+    expect(list.systemCount).toBe(1)
+  })
+
+  it('ignores a vote thread ADO sent no vote on', () => {
+    expect(toThreadList([systemThread()]).votes).toEqual([])
+  })
+})
+
 describe('mentions', () => {
   /** The identity T-022 found tagged in a real comment, and the casing ADO wrote it in. */
   const TAGGED = 'fbfd3dd4-4d56-641d-9005-ae776a2d856c'

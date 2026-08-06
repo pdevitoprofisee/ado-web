@@ -47,7 +47,7 @@ no HITL ticket in it.
 
 ## T-053 — Changes since my last review
 
-**Type:** feature · **Status:** open · **Blocked by:** —
+**Type:** feature · **Status:** resolved · **Blocked by:** —
 
 The map has promised this since round 1: "**Changes since my last review** via iteration
 comparison (`$compareTo`)". What exists is `ChangeView` in `src/lib/changes.ts` — `combined`, or
@@ -89,6 +89,69 @@ when I last reviewed against the head iteration now, and reads as one diff.
 - The failure and pending arms are the ones already written — an empty list under a heading that
   names a range is the same wrong answer the update view exists to avoid, and is guarded the same
   way.
+
+### Resolution
+
+Built, on branch `t-053-last-review`. Changed: `src/lib/changes.ts`, `src/lib/comment-contract.ts`,
+`src/lib/conversation.ts`, `src/server/threads.ts`, `src/components/pr-detail.tsx`. New:
+`src/lib/changes.test.ts` with 20 tests. **1,433 tests across 74 files pass**, up from 1,401 across
+73 — 20 new in `changes.test.ts`, 5 in `threads.test.ts`, 7 in `pr-detail.test.tsx`. `tsc --noEmit`
+is clean.
+
+**The ticket's premise about system threads is wrong, and the derivation nearly had no materials.**
+It says the 32-of-56 vote trail is "retained with `kind: 'system'` rather than dropped".
+`toThreadList` does the opposite: `if (thread.kind === 'system') { systemCount += 1; continue }` —
+it counts them and drops them, and `Conversation.threads` documents itself as "Bot and system
+threads are already out". So the only dated record of a vote in the whole payload was being parsed
+and thrown away one line before it could be read. Un-dropping the threads would have put ADO's
+activity trail into the conversation and into the diff, which is a regression against T-022's own
+decision. Instead `voteEvent()` reads the two properties while the thread is being counted and
+`ThreadList` gained `votes: readonly VoteEvent[]` — a list of dates, not threads. That is additive,
+so nothing that reads `threads` changed.
+
+**The vote trail does carry what was needed.** `CodeReviewThreadType === 'VoteUpdate'`, voter in
+`comments[0].author.id`, value in `properties.CodeReviewVoteResult`, date on the thread's
+`publishedDate`. A comment by me is the fallback and it is a real signal rather than a consolation:
+on a pull request nobody has voted on there is no trail at all, and someone who left a remark has
+read the code. Whichever of the two is later wins; a vote wins a tie, because ADO writes the vote
+thread as the vote is cast, so the two coinciding means I voted on my own comment.
+
+**A vote of `0` is discarded.** It is the *absence* of a vote — ADO writes one when a push resets an
+approval — so keeping it would date "my last review" to the push that cancelled it, which is the
+worst available answer: a range that starts after the change the reviewer most needs to see.
+
+**Undated iterations are a refusal, not a fallback.** If no iteration has a parseable `createdAt`,
+`compareTo` would fall out of the walk as `0`, and `0` against head is a *legal* pair that answers
+the complete combined diff. Under a heading that says "since your approval" that is the same
+undetectable wrong answer as `$compareTo=999`, arrived at from the other side, so it returns `none`
+with a reason instead. A range that reviewed before the first push does legitimately compare against
+`0`, and that case is kept.
+
+**The tab is offered even when it has nothing to show.** `none` and `current` are each a sentence in
+place of the file list — "You have not voted or commented here…", "Nothing has been pushed since
+your approval on 20 July…" — and neither sends a request. A disabled tab is a reason nobody reads
+and an absent tab is a reason nobody is given. It is hidden only on a single-update pull request,
+where "By update" is hidden for the same reason.
+
+**Two refactors the feature forced, both small.** `viewRange(view)` is now exported from
+`changes.ts`: the `compareTo: id - 1` arithmetic and the pair the thread composer anchors against
+were two copies of the same rule in two files, and a third view would have made them three.
+`ChangedFiles` took a `scope: ChangeScope` in place of `update: ReactNode | null`, because the
+pending, failed and empty sentences all had "this update's changes" hard-coded into them and a
+range under an update's wording is exactly the mislabelling this view exists to prevent.
+
+**Unverified.** Nothing here has been run against a live Azure DevOps instance. The vote-trail
+shape is taken from T-022's census and from the two existing consumers that already read the same
+two properties (`hydrate.ts` for the inbox's approval-reset mark, `notifications.ts` for the
+timeline), not from a fresh capture. Every `CodeReviewVoteResult` in this repository — in
+`hydrate.test.ts`, `notifications.test.ts` and now `threads.test.ts` — is a fixture somebody wrote,
+including the vote integers here; the pre-existing `systemThread()` fixture carried the `VoteUpdate`
+type and no vote result at all. Three consumers agreeing about a shape is not the same as having
+seen it. The 39-iteration case on !24766 is reasoned about and not exercised. Date formatting is
+`toLocaleDateString('en-GB', …)` in the browser's own zone, so a reviewer who voted late in the
+evening may see the following day's date; the tests use midday UTC stamps to stay off that edge
+rather than proving it right. And the derivation cannot see a review left in ADO's web UI that
+produced neither a vote nor a comment — there is nothing in the payload that records one.
 
 ---
 

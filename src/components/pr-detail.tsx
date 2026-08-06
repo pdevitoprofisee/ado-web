@@ -42,7 +42,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { adoDiffSource, useWarmDiff } from '@/lib/blob-query'
-import { COMBINED, useChanges } from '@/lib/changes'
+import { COMBINED, lastReview, useChanges, viewRange } from '@/lib/changes'
 import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
 import { lifecycleAction, useAbandon, useReactivate } from '@/lib/lifecycle'
@@ -1536,8 +1536,27 @@ function UpdatePicker({
   )
 }
 
-/** The three things this page can be showing. */
-export type DetailTab = 'details' | 'combined' | 'update'
+/**
+ * A date a sentence can hold: "3 August", and the year too when it was not this one.
+ *
+ * `age()` is what the rest of the page dates things with and it is wrong here.
+ * "Since 4 days ago" stops being true while you read it, and the reader is being
+ * told the fixed point a comparison was made against, which is the one thing on
+ * this page that must not drift.
+ */
+function onDate(iso: string): string {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return iso
+
+  return at.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    ...(at.getFullYear() === new Date().getFullYear() ? {} : { year: 'numeric' }),
+  })
+}
+
+/** The four things this page can be showing. */
+export type DetailTab = 'details' | 'combined' | 'update' | 'since'
 
 interface TabSpec {
   readonly id: DetailTab
@@ -1546,17 +1565,23 @@ interface TabSpec {
 }
 
 /**
- * Details, the combined diff, or one update.
+ * Details, the combined diff, one update, or everything since I last looked.
  *
  * Details leads and is the default because of what this page is for: the answer to
- * "what is stopping this from merging" comes before the diff, not after it. The two
+ * "what is stopping this from merging" comes before the diff, not after it. The
  * diff tabs exist so that when you do go to read the code you get the whole window
  * for it — a tree down one side and eighty columns of it — instead of the bottom
  * third of a page whose top is a policy checklist you have already read.
  *
- * "By update" is absent on a single-update pull request, nearly half of them
- * measured, because there the two diffs are the same files and offering a choice
- * between them only invites the reader to look for a difference.
+ * "By update" and "Since my review" are both absent on a single-update pull
+ * request, nearly half of them measured, because there every view is the same files
+ * and offering a choice between them only invites the reader to look for a
+ * difference.
+ *
+ * "Since my review" is offered even when there is nothing to show, because the
+ * reasons there is nothing — you never reviewed this, nothing has been pushed since
+ * you did — are answers to the question the tab asks, and a tab that is missing or
+ * greyed out gives neither.
  */
 function TabStrip({
   tab,
@@ -1731,9 +1756,25 @@ function HideDoneToggle({
   )
 }
 
+/**
+ * What the file list below is a list *of*, in the three places the reader is told.
+ *
+ * One object rather than three props because the three sentences have to agree:
+ * "Update 4" beside the count and "Loading these changes…" underneath it is a page
+ * that has stopped saying which question it is answering.
+ */
+interface ChangeScope {
+  /** The update picker, or the sentence a range states itself by. `null` for the combined diff, which is the page's default and needs no label. */
+  readonly control: ReactNode
+  /** The middle of "Could not load …" and "Loading …". */
+  readonly what: string
+  /** What no files means here, which is a different fact in each view. */
+  readonly empty: string
+}
+
 function ChangedFiles({
   changes,
-  update,
+  scope,
   pending,
   error,
   ref,
@@ -1750,10 +1791,9 @@ function ChangedFiles({
   iterationContext,
   jump,
 }: {
-  /** The selected view's files — the combined diff, or one update's. */
+  /** The selected view's files — the combined diff, one update's, or a range's. */
   changes: ChangeSet
-  /** The update picker, when this is an update's diff — and the word the empty state needs. */
-  update: ReactNode | null
+  scope: ChangeScope
   pending: boolean
   error: string | null
   ref: PullRequestRef
@@ -1816,7 +1856,7 @@ function ChangedFiles({
           <span className="font-mono tabular-nums">
             {read} of {changes.files.length} read
           </span>
-          {update}
+          {scope.control}
         </span>
         <span className="flex items-baseline gap-3">
           <HideDoneToggle hideDone={hideDone} onHideDoneChange={onHideDoneChange} />
@@ -1832,20 +1872,16 @@ function ChangedFiles({
         </p>
       )}
 
-      {/* An update that failed or is still arriving renders no rows at all, so
+      {/* A view that failed or is still arriving renders no rows at all, so
           these say which of the two it is. Falling back to the combined list
           would put every file in the pull request under a heading that says
-          "Update 4", which is the one wrong answer this view can give. */}
+          "Update 4", which is the one wrong answer these views can give. */}
       {error !== null ? (
-        <Failed>Could not load this update&rsquo;s changes. {error}</Failed>
+        <Failed>Could not load {scope.what}. {error}</Failed>
       ) : pending ? (
-        <p className="text-muted-foreground text-xs">Loading this update&rsquo;s changes…</p>
+        <p className="text-muted-foreground text-xs">Loading {scope.what}…</p>
       ) : changes.files.length === 0 ? (
-        <Empty>
-          {update === null
-            ? 'No files changed.'
-            : 'This update changed no files. A push that only moves the branch pointer — a rebase or a merge from the target — leaves nothing new to read.'}
-        </Empty>
+        <Empty>{scope.empty}</Empty>
       ) : null}
 
       <div className="flex w-full items-start gap-6">
@@ -2124,17 +2160,65 @@ export function PullRequestDetailView({
       label: 'Combined',
       count: failed.files === true ? undefined : pr.files.files.length,
     },
-    ...(iterations.length > 1 ? ([{ id: 'update', label: 'By update' }] as const) : []),
+    ...(iterations.length > 1
+      ? ([
+          { id: 'update', label: 'By update' },
+          { id: 'since', label: 'Since my review' },
+        ] as const)
+      : []),
   ]
 
-  // A tab that is not on offer cannot be the one we are showing: the update tab
-  // disappears on a single-update pull request, and the route's state outlives
+  // A tab that is not on offer cannot be the one we are showing: the two update
+  // tabs disappear on a single-update pull request, and the route's state outlives
   // the payload it was chosen against.
   const active = tabs.some((entry) => entry.id === tab) ? tab : 'details'
   const update = active === 'update' && selected !== null ? selected : null
 
-  const view: ChangeView = update === null ? COMBINED : { kind: 'update', iterationId: update }
+  // Derived on every render and never held, which is note 7 of the map: the
+  // thirty-second thread poll answers with a new conversation, and a copy of this
+  // taken when the tab was clicked would go on naming an iteration that is no
+  // longer the head.
+  const review = useMemo(
+    () => lastReview(pr.viewerId, conversation.threads, conversation.votes, iterations),
+    [pr.viewerId, conversation.threads, conversation.votes, iterations],
+  )
+
+  // Only `behind` asks ADO anything. The other two are sentences, and asking for a
+  // range to put under them would be asking a question whose answer we already
+  // know is empty.
+  const since = active === 'since' && review.kind === 'behind' ? review.view : null
+
+  const view: ChangeView =
+    since ?? (update === null ? COMBINED : { kind: 'update', iterationId: update })
   const changes = useChanges(prRef, view, pr.files)
+
+  // Which of the three questions the file list is answering, in the three places
+  // it has to be said. The range states its basis where the update picker sits,
+  // on the line the reader is already reading for the count — and "since your
+  // approval" and "since your comment" are different sentences, because one of
+  // them means you finished and the other means you were passing through.
+  const changeScope: ChangeScope =
+    since !== null && review.kind === 'behind'
+      ? {
+          control: (
+            <span>
+              Since {review.basis.what} on {onDate(review.basis.at)}
+            </span>
+          ),
+          what: 'the changes since your last review',
+          empty:
+            'Nothing has changed in the files since then. The pushes since your review only moved the branch pointer — a rebase, or a merge from the target.',
+        }
+      : update === null
+        ? { control: null, what: 'the changed files', empty: 'No files changed.' }
+        : {
+            control: (
+              <UpdatePicker iterations={iterations} selected={update} onSelect={setChosen} />
+            ),
+            what: 'this update’s changes',
+            empty:
+              'This update changed no files. A push that only moves the branch pointer — a rebase or a merge from the target — leaves nothing new to read.',
+          }
 
   // The bytes for the first few files, fetched while you are reading the details
   // tab, so that clicking Combined paints a diff instead of starting one. The
@@ -2150,21 +2234,23 @@ export function PullRequestDetailView({
   //
   // `null` on the combined diff, deliberately: ADO anchors a thread with no
   // iteration context against the latest iteration, which is exactly what the
-  // combined view's line numbers are. An update's diff is the pair `useChanges`
-  // asked ADO for, `compareTo` and all.
+  // combined view's line numbers are. Otherwise it is the pair `useChanges` asked
+  // ADO for, `compareTo` and all — read from the same function, so a range and its
+  // comments cannot end up describing different diffs.
+  const range = viewRange(view)
   const iterationContext = useMemo<IterationContext | null>(
     () =>
-      update === null
+      range === null
         ? null
         : {
-            firstComparingIteration: update - 1,
-            secondComparingIteration: update,
+            firstComparingIteration: range.compareTo,
+            secondComparingIteration: range.iterationId,
             // ADO's own way of following a line across iterations, and it was on
             // 5 of the 12 anchored threads sampled. We have no way to compute one
             // from a change entry, so it is left out rather than guessed.
             changeTrackingId: null,
           },
-    [update],
+    [range?.compareTo, range?.iterationId],
   )
 
   // A Sonar finding sits on the details tab and points at a file in the diff, so
@@ -2435,14 +2521,20 @@ export function PullRequestDetailView({
             // panel chooses whether to start open when it mounts, so the list
             // cannot mount before the marks it would be choosing against.
             <p className="text-muted-foreground text-xs">Loading…</p>
+          ) : active === 'since' && review.kind !== 'behind' ? (
+            // The two answers this tab has that are not a file list, and each is a
+            // sentence rather than an empty list under a heading. An empty list
+            // says "no files" and leaves the reader to guess whether that means
+            // nothing was pushed, or nothing was found, or the call failed.
+            <p className="text-muted-foreground text-xs">
+              {review.kind === 'none'
+                ? review.reason
+                : `Nothing has been pushed since ${review.basis.what} on ${onDate(review.basis.at)}. What you read then is what is there now.`}
+            </p>
           ) : (
             <ChangedFiles
               changes={changes.changes}
-              update={
-                update === null ? null : (
-                  <UpdatePicker iterations={iterations} selected={update} onSelect={setChosen} />
-                )
-              }
+              scope={changeScope}
               pending={changes.pending}
               error={changes.error}
               ref={prRef}

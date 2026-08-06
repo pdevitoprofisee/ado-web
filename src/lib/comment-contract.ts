@@ -236,6 +236,21 @@ export interface Thread {
  */
 export type ThreadKind = 'human' | 'bot' | 'system'
 
+/**
+ * One entry of ADO's vote trail: a `VoteUpdate` system thread, read for its date.
+ *
+ * `reviewers[].vote` carries a vote and **no timestamp**, so this is the only
+ * place a vote has a date on it. Kept as a separate list rather than inside
+ * `threads`, because a vote is not a conversation and the diff must not have to
+ * skip past one.
+ */
+export interface VoteEvent {
+  readonly voterId: string
+  readonly at: string
+  /** ADO's scale: `10` approved · `5` with suggestions · `0` reset · `−5` waiting · `−10` rejected. */
+  readonly vote: number
+}
+
 /** Every thread on a pull request, with the counts a "hide done" toggle needs. */
 export interface ThreadList {
   readonly threads: readonly Thread[]
@@ -245,6 +260,8 @@ export interface ThreadList {
   /** Excluded from `threads` entirely, and counted so the exclusion is visible rather than silent. */
   readonly systemCount: number
   readonly botCount: number
+  /** Oldest first, out of the system threads the counts above only count. */
+  readonly votes: readonly VoteEvent[]
 }
 
 // ---------------------------------------------------------------------------

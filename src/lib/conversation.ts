@@ -13,7 +13,7 @@ import {
 } from '@/server/threads-fn'
 
 import type { ThreadActions } from '@/components/comments/thread-actions'
-import type { FileThreads, Thread } from './comment-contract'
+import type { FileThreads, Thread, VoteEvent } from './comment-contract'
 import type { PullRequestRef } from '@/server/pull-request'
 import type { WriteResult } from '@/server/threads-fn'
 
@@ -45,6 +45,7 @@ import type { WriteResult } from '@/server/threads-fn'
 
 /** The empty answer, so a page whose conversation has not arrived still renders. */
 const NONE: readonly Thread[] = []
+const NO_VOTES: readonly VoteEvent[] = []
 const NO_FILES: ReadonlyMap<string, FileThreads> = new Map()
 
 export interface Conversation {
@@ -62,6 +63,8 @@ export interface Conversation {
   /** Excluded from `threads`, and said out loud rather than silently dropped. */
   readonly systemCount: number
   readonly botCount: number
+  /** The dated votes out of those system threads. What `lastReview` measures from. */
+  readonly votes: readonly VoteEvent[]
   readonly pending: boolean
   /** Why the conversation could not be read, or `null`. The diff beside it still reviews. */
   readonly error: string | null
@@ -164,6 +167,7 @@ export function useConversation(ref: PullRequestRef, viewerId: string | null): C
     openCount: query.data?.threads?.openCount ?? 0,
     systemCount: query.data?.threads?.systemCount ?? 0,
     botCount: query.data?.threads?.botCount ?? 0,
+    votes: query.data?.threads?.votes ?? NO_VOTES,
     pending: query.isPending,
     // Two ways to fail and one sentence for both, as `useChanges` does: the
     // server function catching an ADO error, and the call not arriving at all.
