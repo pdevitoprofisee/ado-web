@@ -1,10 +1,11 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 
 import { age } from './pr-list'
 import { ChangedFileDiff } from './diff/changed-file'
 import { FileTree } from './diff/file-tree'
 import { LayoutToggle } from './diff/layout-toggle'
+import { WhitespaceToggle } from './diff/whitespace-toggle'
 import { localDiffSource } from '@/lib/blob-query'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
 
@@ -177,6 +178,10 @@ export function CommitDiff({
   layout: DiffLayout
   onLayoutChange: (layout: DiffLayout) => void
 }) {
+  // Here and not in the route, unlike `layout`: the route owns that one because
+  // side-by-side widens the page, and `-w` changes nothing about its shape.
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false)
+
   const nodes = useMemo(() => buildFileTree(changes.files), [changes.files])
   const ordered = useMemo(() => treeFiles(nodes), [nodes])
 
@@ -197,7 +202,13 @@ export function CommitDiff({
           <span className="font-mono tabular-nums">{changes.files.length}</span>{' '}
           {changes.files.length === 1 ? 'file' : 'files'}
         </span>
-        <LayoutToggle layout={layout} onLayoutChange={onLayoutChange} />
+        <span className="flex items-baseline gap-3">
+          <WhitespaceToggle
+            ignoreWhitespace={ignoreWhitespace}
+            onIgnoreWhitespaceChange={setIgnoreWhitespace}
+          />
+          <LayoutToggle layout={layout} onLayoutChange={onLayoutChange} />
+        </span>
       </div>
 
       {/* `-M` gave up and git said so on stderr while exiting 0, so every rename
@@ -235,7 +246,12 @@ export function CommitDiff({
                     `threads`, `threadActions` and `iterationContext` are withheld
                     for the branch diff's reason: there is no conversation on a
                     commit on your disk. */}
-                <ChangedFileDiff diffSource={source} file={file} layout={layout} />
+                <ChangedFileDiff
+                  diffSource={source}
+                  file={file}
+                  layout={layout}
+                  ignoreWhitespace={ignoreWhitespace}
+                />
               </li>
             ))}
           </ul>

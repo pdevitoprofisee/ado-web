@@ -157,7 +157,7 @@ produced neither a vote nor a comment — there is nothing in the payload that r
 
 ## T-054 — Ignore whitespace
 
-**Type:** feature · **Status:** open · **Blocked by:** —
+**Type:** feature · **Status:** resolved · **Blocked by:** —
 
 `src/lib/diff.ts:22` lists what the differ deliberately does not implement, and `-b`/`-w` is on
 that list. The map lists an "ignore-whitespace toggle" as shipped behaviour of the review view. One
@@ -189,6 +189,92 @@ normalisation belongs in the key, not in a pass over the output.
   hand; this is a re-diff, and on a large file it is the only cost.
 - The toggle reads as one control for the page, like `LayoutToggle`, and where it is drawn is the
   same place for all three pages that have one.
+
+### Resolution
+
+One commit on `t-054-ignore-whitespace`, not pushed. New: `src/components/diff/whitespace-toggle.tsx`
+and `src/lib/diff-whitespace.test.ts`. Changed: `src/lib/diff.ts`, `src/components/diff/changed-file.tsx`,
+`src/components/branch-diff.tsx`, `src/components/commit-diff.tsx`, `src/components/pr-detail.tsx`
+and the five test files beside them. No new dependency.
+
+`DiffOptions` gained `ignoreWhitespace`, and in the differ it reaches exactly two places. `intern`
+takes a key function — `asWritten`, or `squeezed` under the flag — and everything below it goes on
+comparing integers: the discard heuristics, `compact`'s sliding and its indent heuristic, and the
+`identical` fast path were not touched and none of them needed to be. A pair that differs only in
+whitespace falls through `identical`, interns to the same ids, and produces zero hunks, which is
+what git prints for it.
+
+**git prints the *after* side, and the premise this was started on said the opposite.** The ticket
+asked for the decision to be made explicitly; the decision turned out to be a measurement. `git
+diff -w` on a re-indented file was run in both directions and read through `cat -A` on
+2.55.0.windows.3: a context line whose two sides differ only in whitespace draws the postimage
+bytes. Coming in, the recollection was that xdiff's `xdl_emit_diff` walks `xdf1` and therefore
+prints the preimage, and that recollection was carried far enough to be about to write `before[p1]`
+into `emit`. Whatever that C does on the way, the bytes that come out are the after side's. There
+is a second, independent reason to want the same answer, found afterwards rather than before:
+`buildRows` is handed the **after** side's `lines` and reads them when the reader expands a
+collapsed gap, so emitting from `before` would have made a revealed context line and a printed one
+disagree on the same file.
+
+**The intra-line marks were a bug the ticket did not name, and the first test written for them
+asserted the wrong thing.** `markPair` interns raw tokens, so under `-w` the indent token is a
+changed token like any other and got a highlight — the flag switched on to stop showing a re-indent
+was handing the re-indent back, one word at a time, on every line that also held a real edit. It
+was written as a test claiming the old behaviour was fine, and the test failed. `markPair` now
+takes the flag and clears the change bit on tokens that are only whitespace, reusing `squeezed`
+rather than `trim` so that one definition decides both what a changed line is and what a changed
+word is. This has no analogue in `git diff` output, so the oracle cannot rule on it; it is pinned
+by a pair of tests, one with the flag and one without.
+
+**`\s` is not `isspace`.** xdiff's `XDL_ISSPACE` is C's, over bytes: space, tab, and the four
+vertical ones. JavaScript's `\s` also matches the Unicode separators, so a key built on it would
+call a line that gained a non-breaking space unchanged, where git calls it a change. The character
+class is written out. A fixture pasted from a real `git diff -w` run pins it, spelling the
+non-breaking space as an escape so a trim-on-save cannot silently delete the only thing it asks
+about.
+
+The proof is `diff-whitespace.test.ts`: four of this repository's own source files, five
+formatter-shaped mutations each — re-indent, tabs, trailing whitespace, and two of those with three
+real edits buried in them — diffed by git at test time and compared with ours, **with the flag and
+without it**, twenty-one tests and about forty process starts for two seconds. It passed on its
+first run, which is not evidence of anything, so `emit` was reverted to `before[p1]` on purpose to
+watch it fail. It failed **4 of 21** — because two corpus files were short enough that fixed-index
+edits fell off the end and `src/lib/utils.ts` was too small to re-indent interestingly. Placing the
+edits by fraction and swapping in `changed-file.tsx` took the same deliberate break to **9 of 21**.
+The difference between those two numbers is the whole value of breaking it.
+
+`WhitespaceToggle` is one component and all three pages render it, each with its own test, because
+the way "one control" stops being true is a page that never draws it. **The state is local to the
+three page components and not owned by the routes, which is a reversal.** It was first written as
+props threaded up to the routes beside `layout`; `pr-detail.tsx` already states the rule that says
+not to — the route owns the layout because side-by-side widens the page, and `chosen` and `hideDone`
+are local because they change nothing about the page's shape. `-w` changes nothing about its shape
+either. No route file was touched.
+
+Flipping it re-diffs and fetches nothing: `changed-file.tsx` tracks the flag beside the blobs and
+rebuilds the model when either moves, and a test holds one `QueryClient` across a rerender, flips
+the toggle both ways, and asserts the blob call stayed at one. It cannot be a reprojection the way
+`setLayout` is, because the hunks themselves come out different — so a gap the reader had expanded
+does not survive the flip. That is a real if small loss, and it is the honest one: those gaps were
+about hunks that no longer exist.
+
+32 new tests across 6 files, **1,433 in the suite over 74 files**, `tsc --noEmit` clean.
+
+**Worth a note, if the map wants one.** When a flag makes two representations of the same thing
+differ, *which one the tool prints* is a measurement and not something to be derived from having
+read its source. The belief here came from the right file in xdiff and was still wrong, and it
+would have produced a diff that renders, passes every count assertion, and quietly shows the wrong
+bytes on exactly the lines the flag was turned on for. It is note 14's lesson one step further
+along: a fixture confirms your misunderstanding, and so does a memory of the implementation.
+
+Unproven: nobody has looked at the toggle in a browser — the pressed styling is `LayoutToggle`'s,
+read rather than seen, and no one has checked the toolbar's three controls on a narrow window. The
+corpus is four files of this repository under five mutations, all ASCII whitespace and all `\n`; no
+file whose committed bytes contain CRLF went through the sweep, and the non-breaking-space case is
+a pasted fixture from one git run rather than part of it. The intra-line behaviour under `-w` has
+no oracle at all. `-b` is still on `diff.ts`'s list of what is not implemented, deliberately. And
+the choice is per visit and remembered nowhere: a formatter run is a fact about the change in front
+of you, but nobody has said whether they would rather it stuck.
 
 ---
 

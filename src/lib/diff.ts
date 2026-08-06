@@ -19,7 +19,9 @@ import type { DiffHunk, DiffLine, FileDiff } from './diff-contract'
 //     sampling), which abandon minimality once a single recursion box has cost
 //     more than 256 edits. Realistic source files never reach that, and where
 //     they would this refuses outright instead — see `MAX_DIFF_STEPS`.
-//   - `-b`/`-w` whitespace flags, and the ` @@ funcname` trailer on a header.
+//   - `-b`, and the ` @@ funcname` trailer on a header. `-w` is here — see
+//     `DiffOptions.ignoreWhitespace` — and `-b` is not, because one flag
+//     answers the re-indent this was wanted for and two is a menu.
 //
 // `diff.test.ts` measures how often the difference shows, against git itself,
 // on this repository's own history.
@@ -54,6 +56,15 @@ const MAX_DIFF_STEPS = 5e8
 export interface DiffOptions {
   /** Unchanged lines kept either side of a change. `git diff -U<n>`. */
   readonly context?: number
+  /**
+   * `git diff -w`. Two lines are the same line when they are the same after
+   * every whitespace character comes out of both.
+   *
+   * Only the interning key changes, which is where git applies it too: every
+   * loop under `intern` goes on comparing integers, and the text that comes out
+   * is still bytes that are in the file. See `emit` for which file.
+   */
+  readonly ignoreWhitespace?: boolean
 }
 
 const EMPTY: FileDiff = { hunks: [], added: 0, removed: 0, gaveUp: false }
@@ -73,7 +84,8 @@ export function diffFile(
   if (identical(before, after)) return EMPTY
 
   const context = options.context ?? DIFF_CONTEXT
-  const { a, b } = intern(before, after)
+  const ignoreWhitespace = options.ignoreWhitespace === true
+  const { a, b } = intern(before, after, ignoreWhitespace ? squeezed : asWritten)
 
   let changed: { chg1: Uint8Array; chg2: Uint8Array }
   try {
@@ -89,7 +101,7 @@ export function diffFile(
   compact(after, b, changed.chg2, changed.chg1)
 
   const changes = buildScript(changed.chg1, changed.chg2)
-  const hunks = emit(before, after, changes, context)
+  const hunks = emit(before, after, changes, context, ignoreWhitespace)
 
   let added = 0
   let removed = 0
@@ -130,8 +142,29 @@ interface Interned {
   readonly count2: Int32Array
 }
 
-/** Line text to a dense integer, so every inner loop compares numbers instead of strings. */
-function intern(first: readonly string[], second: readonly string[]): Interned {
+/** A line is itself: the key when no flag is asking for anything else. */
+const asWritten = (line: string): string => line
+
+/**
+ * `-w`'s key: the line with every space taken out.
+ *
+ * The class is C's `isspace`, which is what xdiff's `XDL_ISSPACE` is, and not
+ * JavaScript's `\s` — that also matches the Unicode separators. git compares
+ * bytes and leaves a non-breaking space alone, so a line that gained one is a
+ * line that changed, and `\s` would quietly call it context.
+ */
+const squeezed = (line: string): string => line.replace(/[ \t\n\v\f\r]+/g, '')
+
+/**
+ * Line text to a dense integer, so every inner loop compares numbers instead of
+ * strings. `key` is what "the same line" means: two lines with the same key get
+ * the same id and every stage below this one treats them as equal.
+ */
+function intern(
+  first: readonly string[],
+  second: readonly string[],
+  key: (line: string) => string = asWritten,
+): Interned {
   const ids = new Map<string, number>()
   const count1: number[] = []
   const count2: number[] = []
@@ -139,7 +172,7 @@ function intern(first: readonly string[], second: readonly string[]): Interned {
   const put = (lines: readonly string[], counts: number[]): Int32Array => {
     const out = new Int32Array(lines.length)
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] as string
+      const line = key(lines[i] as string)
       let id = ids.get(line)
       if (id === undefined) {
         id = ids.size
@@ -731,6 +764,7 @@ function emit(
   after: readonly string[],
   changes: readonly Change[],
   context: number,
+  ignoreWhitespace: boolean,
 ): DiffHunk[] {
   // Two changes closer together than twice the context would print overlapping
   // context, so they become one hunk instead. Exactly `2 * context` apart is
@@ -759,10 +793,16 @@ function emit(
     let p1 = s1
     let p2 = s2
 
+    // Context is drawn from `after`, not from `before`. With no flag the two
+    // hold the same bytes on a context line and the choice is invisible; under
+    // `-w` they differ on exactly the lines the flag turned into context, and
+    // git prints the after side there — measured against `git diff -w`, not
+    // reasoned out. It is also the side `buildRows` reads when it expands a
+    // collapsed gap, so a revealed line and a printed one say the same thing.
     for (let c = first; c <= last; c++) {
       const change = changes[c] as Change
       for (; p1 < change.i1; p1++, p2++) {
-        lines.push({ op: 'context', text: before[p1] as string, oldLine: p1 + 1, newLine: p2 + 1, edits: [] })
+        lines.push({ op: 'context', text: after[p2] as string, oldLine: p1 + 1, newLine: p2 + 1, edits: [] })
       }
       for (let i = 0; i < change.chg1; i++) {
         const at = change.i1 + i
@@ -777,10 +817,10 @@ function emit(
     }
 
     for (; p1 < e1; p1++, p2++) {
-      lines.push({ op: 'context', text: before[p1] as string, oldLine: p1 + 1, newLine: p2 + 1, edits: [] })
+      lines.push({ op: 'context', text: after[p2] as string, oldLine: p1 + 1, newLine: p2 + 1, edits: [] })
     }
 
-    markIntraLine(lines)
+    markIntraLine(lines, ignoreWhitespace)
 
     hunks.push({ oldStart: s1 + 1, oldCount: e1 - s1, newStart: s2 + 1, newCount: e2 - s2, lines })
     first = last + 1
@@ -798,7 +838,7 @@ function emit(
 // the two halves of a side-by-side row always refer to each other.
 // ---------------------------------------------------------------------------
 
-function markIntraLine(lines: readonly Line[]): void {
+function markIntraLine(lines: readonly Line[], ignoreWhitespace: boolean): void {
   for (let i = 0; i < lines.length; ) {
     if ((lines[i] as Line).op !== 'delete') {
       i++
@@ -811,18 +851,28 @@ function markIntraLine(lines: readonly Line[]): void {
 
     const pairs = Math.min(addStart - deleteStart, i - addStart)
     for (let p = 0; p < pairs; p++) {
-      markPair(lines[deleteStart + p] as Line, lines[addStart + p] as Line)
+      markPair(lines[deleteStart + p] as Line, lines[addStart + p] as Line, ignoreWhitespace)
     }
   }
 }
 
-function markPair(removed: Line, added: Line): void {
+function markPair(removed: Line, added: Line, ignoreWhitespace: boolean): void {
   if (removed.text.length > MAX_INTRALINE_CHARS || added.text.length > MAX_INTRALINE_CHARS) return
 
   const left = tokenize(removed.text)
   const right = tokenize(added.text)
   const tokens = intern(left.texts, right.texts)
   const { chg1, chg2 } = myers(tokens.a, tokens.b)
+
+  // Under `-w` the marks stop pointing at whitespace. This pair is a real
+  // change or it would not be here, but a re-indented line still has a changed
+  // indent token, and highlighting it is the flag handing back the thing the
+  // reader turned it on to stop seeing. Only the marking is dropped; the bytes
+  // are drawn as they are.
+  if (ignoreWhitespace) {
+    unmarkWhitespace(left.texts, chg1)
+    unmarkWhitespace(right.texts, chg2)
+  }
 
   // Two lines whose only common ground is whitespace have nothing to point at,
   // and neither does a pair with no common tokens at all: marking every
@@ -850,6 +900,15 @@ function tokenize(text: string): Tokens {
     starts.push(m.index)
   }
   return { texts, starts }
+}
+
+/** Clears the change bit on tokens the flag says are not there. */
+function unmarkWhitespace(texts: readonly string[], chg: Uint8Array): void {
+  for (let i = 0; i < texts.length; i++) {
+    // `squeezed` and not `trim`, so one definition of whitespace decides both
+    // what counts as a changed line and what counts as a changed word.
+    if (chg[i] && squeezed(texts[i] as string) === '') chg[i] = 0
+  }
 }
 
 function sharesSubstance(texts: readonly string[], chg: Uint8Array): boolean {

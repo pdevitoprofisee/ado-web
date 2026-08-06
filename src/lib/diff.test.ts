@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import { diffFile, formatHunkHeader } from './diff'
 
+import type { DiffOptions } from './diff'
+
 // The bar for this module is agreement with `git diff`, so most of what follows
 // compares against output git actually produced rather than output that looks
 // right. Every `expected` block below was pasted from a real git run and the
@@ -15,9 +17,13 @@ import { diffFile, formatHunkHeader } from './diff'
 // a git checkout.
 
 /** git's own rendering of a hunk, so a failure diffs as text rather than as objects. */
-function render(before: readonly string[], after: readonly string[], context?: number): string[] {
+function render(
+  before: readonly string[],
+  after: readonly string[],
+  options: DiffOptions = {},
+): string[] {
   const out: string[] = []
-  for (const hunk of diffFile(before, after, context === undefined ? {} : { context }).hunks) {
+  for (const hunk of diffFile(before, after, options).hunks) {
     out.push(formatHunkHeader(hunk))
     for (const line of hunk.lines) {
       out.push((line.op === 'add' ? '+' : line.op === 'delete' ? '-' : ' ') + line.text)
@@ -304,6 +310,152 @@ describe('diffFile against real git output', () => {
       ' b();',
       ' if (x) {',
     ])
+  })
+})
+
+// The readable end of `diff-whitespace.test.ts`, which runs git itself over this
+// repository's own source and is where the flag is actually proved. These are
+// here so the decisions are visible without spawning a process; every `expected`
+// below was pasted out of the run in the comment above it.
+describe('diffFile with ignoreWhitespace', () => {
+  const before = [
+    'function total(items) {',
+    '  let sum = 0',
+    '  for (const item of items) {',
+    '    sum += item.price',
+    '  }',
+    '  return sum',
+    '}',
+  ]
+  const after = [
+    'function total(items) {',
+    '    let sum = 0',
+    '    for (const item of items) {',
+    '        sum += item.cost',
+    '    }',
+    '    return sum',
+    '}',
+  ]
+  // Spelled as an escape: a literal one is invisible to the next reader and
+  // survives a save that trims or normalises, which would quietly delete the
+  // only thing this fixture is asking about.
+  const NBSP = '\u00a0'
+
+  // The whole point of the toggle: a formatter went through the file and one
+  // line actually changed. Without the flag all six inner lines are a change.
+  // git -c core.autocrlf=false diff --no-index --no-color -U3 -w A.txt B.txt
+  it('leaves the re-indent as context and shows the one real edit', () => {
+    expect(render(before, after, { ignoreWhitespace: true })).toEqual([
+      '@@ -1,7 +1,7 @@',
+      ' function total(items) {',
+      '     let sum = 0',
+      '     for (const item of items) {',
+      '-    sum += item.price',
+      '+        sum += item.cost',
+      '     }',
+      '     return sum',
+      ' }',
+    ])
+  })
+
+  // **Which side the context bytes come from**, pinned. The four lines above
+  // that read as context hold different bytes on the two sides, and the block
+  // shows the after side's — four spaces of indent, not two. That is what git
+  // prints, measured rather than argued, and it is also the side `buildRows`
+  // reads when the reader expands a collapsed gap, so the two agree.
+  it('draws a context line from the after side, where the two sides differ', () => {
+    const lines = diffFile(before, after, { ignoreWhitespace: true }).hunks[0]?.lines ?? []
+    const context = lines.filter((line) => line.op === 'context')
+
+    for (const line of context) {
+      expect(line.newLine).not.toBeNull()
+      expect(after[(line.newLine as number) - 1]).toBe(line.text)
+    }
+    expect(context.some((line) => before[(line.oldLine as number) - 1] !== line.text)).toBe(true)
+  })
+
+  it('is off unless it is asked for', () => {
+    // git -c core.autocrlf=false diff --no-index --no-color -U3 A.txt B.txt
+    expect(render(before, after)).toEqual([
+      '@@ -1,7 +1,7 @@',
+      ' function total(items) {',
+      '-  let sum = 0',
+      '-  for (const item of items) {',
+      '-    sum += item.price',
+      '-  }',
+      '-  return sum',
+      '+    let sum = 0',
+      '+    for (const item of items) {',
+      '+        sum += item.cost',
+      '+    }',
+      '+    return sum',
+      ' }',
+    ])
+  })
+
+  // git prints nothing at all for this pair under -w, and nothing is what an
+  // empty hunk list renders as.
+  it('has nothing to show when only the whitespace moved', () => {
+    const diff = diffFile(before, before.map((line) => `\t${line}  `), { ignoreWhitespace: true })
+
+    expect(diff.hunks).toEqual([])
+    expect(diff.added).toBe(0)
+    expect(diff.removed).toBe(0)
+  })
+
+  // Three claims in one pair, all of them git's and none of them obvious. A tab
+  // and two spaces are the same line. An empty line and a line of three spaces
+  // are the same line. A **non-breaking** space is not whitespace — git's class
+  // is C's `isspace` over bytes, so `\s` in the interning key would have called
+  // that line context and been wrong.
+  // git -c core.autocrlf=false diff --no-index --no-color -U3 -w A.txt B.txt
+  it('counts a tab as whitespace and a non-breaking space as a change', () => {
+    expect(
+      render(
+        ['head', '  alpha', '  beta', '', 'gamma', 'tail'],
+        ['head', '\talpha', ` ${NBSP} beta`, '   ', 'gamma', 'tail CHANGED'],
+        { ignoreWhitespace: true },
+      ),
+    ).toEqual([
+      '@@ -1,6 +1,6 @@',
+      ' head',
+      ' \talpha',
+      '-  beta',
+      `+ ${NBSP} beta`,
+      '    ',
+      ' gamma',
+      '-tail',
+      '+tail CHANGED',
+    ])
+  })
+
+  // The pair is a real change or it would not be in a hunk, so the marking runs
+  // — but it points at the number and not at the indent, which also moved. This
+  // was written the other way round first and it failed: the two-spaces token
+  // and the tab token are a change like any other and were marked like one, so
+  // the flag was handing back the indentation it had just been asked to stop
+  // showing. `edits` is the whole list here, deliberately, because "one mark"
+  // is the claim.
+  it('points at the words that changed and not at the indent', () => {
+    const diff = diffFile(['  const timeout = 30'], ['\tconst timeout = 45'], {
+      ignoreWhitespace: true,
+    })
+    const [removed, added] = diff.hunks[0]?.lines as [
+      (typeof diff.hunks)[number]['lines'][number],
+      (typeof diff.hunks)[number]['lines'][number],
+    ]
+
+    expect(removed.edits.map((edit) => removed.text.slice(...edit))).toEqual(['30'])
+    expect(added.edits.map((edit) => added.text.slice(...edit))).toEqual(['45'])
+  })
+
+  // The same pair with the flag off, so the line above is a difference the flag
+  // makes and not something that was always true.
+  it('marks the indent when the flag is off', () => {
+    const diff = diffFile(['  const timeout = 30'], ['\tconst timeout = 45'])
+    const [removed] = diff.hunks[0]?.lines as [(typeof diff.hunks)[number]['lines'][number]]
+
+    expect(removed.edits.map((edit) => removed.text.slice(...edit))).toEqual(['  ', '30'])
   })
 })
 

@@ -227,6 +227,49 @@ describe('ChangedFileDiff', () => {
     expect(screen.getByRole('region', { name: FILE.path })).toHaveTextContent('is here')
   })
 
+  it('re-diffs when ignore whitespace is flipped, without fetching again', async () => {
+    // The other half of the toggle, and the half that is not in `diff.ts`: the
+    // two blobs are content-addressed and already in hand, so turning the flag on
+    // is a re-diff and nothing else. A flip that reached the network would be a
+    // second call for bytes that cannot have changed.
+    //
+    // The re-indented `keep` is the line under test. With the flag off it is a
+    // delete and an add like any other; with it on it is context, and only the
+    // real edit is left. Counted off the panel's own label rather than by reading
+    // rows, because the count is the diff and the rows are one way of drawing it.
+    call.mockResolvedValue(
+      answer({
+        path: FILE.path,
+        before: { kind: 'text', lines: ['keep', 'was here'], bytes: 14, noFinalNewline: false },
+        after: { kind: 'text', lines: ['    keep', 'is here'], bytes: 17, noFinalNewline: false },
+        renamedOnly: false,
+      }),
+    )
+    // Held rather than made fresh by `draw`, so the re-render below is the same
+    // panel changing its mind and not a new one mounting against a warm cache.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const show = (ignoreWhitespace: boolean) => (
+      <QueryClientProvider client={client}>{panel({ ignoreWhitespace })}</QueryClientProvider>
+    )
+    const { rerender } = render(show(false))
+
+    await waitFor(() => expect(screen.getByLabelText('2 added, 2 removed')).toBeInTheDocument())
+
+    rerender(show(true))
+
+    await waitFor(() => expect(screen.getByLabelText('1 added, 1 removed')).toBeInTheDocument())
+    // Drawn from the after side, which is where the four spaces come from — see
+    // `emit`. The bytes are the file's either way; the flag only decides whose.
+    expect(screen.getByRole('region', { name: FILE.path })).toHaveTextContent('keep')
+    expect(call).toHaveBeenCalledTimes(1)
+
+    // And back, because a one-way toggle is not a toggle.
+    rerender(show(false))
+
+    await waitFor(() => expect(screen.getByLabelText('2 added, 2 removed')).toBeInTheDocument())
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
   it('renders a non-text outcome as itself instead of as an empty diff', async () => {
     call.mockResolvedValue(
       answer({ ...BLOBS, before: { kind: 'absent' }, after: { kind: 'binary', bytes: 750 } }),

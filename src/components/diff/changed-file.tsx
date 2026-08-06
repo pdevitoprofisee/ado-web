@@ -53,6 +53,7 @@ export function ChangedFileDiff({
   diffSource,
   file,
   layout,
+  ignoreWhitespace = false,
   conflicted = false,
   viewed = false,
   onViewedChange,
@@ -70,6 +71,8 @@ export function ChangedFileDiff({
   diffSource: DiffSource
   file: ChangedFile
   layout: DiffLayout
+  /** The page's `-w`. A diff input, unlike `layout`, so changing it starts the file over. */
+  ignoreWhitespace?: boolean
   conflicted?: boolean
   viewed?: boolean
   onViewedChange?: (viewed: boolean) => void
@@ -121,13 +124,25 @@ export function ChangedFileDiff({
   const [model, setModel] = useState<RowModel | null>(null)
   const [source, setSource] = useState<NotedBlobs | null>(null)
 
-  if (blobs !== source) {
+  // `-w` is tracked beside the blobs because it is the same kind of input: it
+  // decides what the hunks are. That is also why it is here and not in the
+  // reprojection below — `setLayout` moves rows around a diff that has not
+  // changed, and this changes the diff, so the file starts over and any gaps the
+  // reader had expanded are about hunks that no longer exist.
+  //
+  // Starting over costs nothing off the network. `query` is untouched, the blobs
+  // are already in hand, and their key is the two content ids, so there is
+  // nothing here that could ask ADO for them again.
+  const [whitespace, setWhitespace] = useState(ignoreWhitespace)
+
+  if (blobs !== source || ignoreWhitespace !== whitespace) {
     setSource(blobs)
+    setWhitespace(ignoreWhitespace)
     setModel(
       blobs === null
         ? null
         : buildRows(
-            diffFile(linesOf(blobs, 'before'), linesOf(blobs, 'after')),
+            diffFile(linesOf(blobs, 'before'), linesOf(blobs, 'after'), { ignoreWhitespace }),
             linesOf(blobs, 'after'),
             layout,
             threads,

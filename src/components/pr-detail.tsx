@@ -28,6 +28,7 @@ import { ThreadCard } from './comments/thread-card'
 import { ChangedFileDiff } from './diff/changed-file'
 import { FileTree } from './diff/file-tree'
 import { LayoutToggle } from './diff/layout-toggle'
+import { WhitespaceToggle } from './diff/whitespace-toggle'
 import { SonarPanel, scrollToFinding } from './sonar/panel'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -1781,6 +1782,8 @@ function ChangedFiles({
   conflicted,
   layout,
   onLayoutChange,
+  ignoreWhitespace,
+  onIgnoreWhitespaceChange,
   viewed,
   onViewedChange,
   threads,
@@ -1802,6 +1805,8 @@ function ChangedFiles({
   conflicted: ReadonlySet<string>
   layout: DiffLayout
   onLayoutChange: (layout: DiffLayout) => void
+  ignoreWhitespace: boolean
+  onIgnoreWhitespaceChange: (ignoreWhitespace: boolean) => void
   viewed: ReadonlySet<string>
   onViewedChange: (file: ChangedFile, viewed: boolean) => void
   /**
@@ -1860,6 +1865,10 @@ function ChangedFiles({
         </span>
         <span className="flex items-baseline gap-3">
           <HideDoneToggle hideDone={hideDone} onHideDoneChange={onHideDoneChange} />
+          <WhitespaceToggle
+            ignoreWhitespace={ignoreWhitespace}
+            onIgnoreWhitespaceChange={onIgnoreWhitespaceChange}
+          />
           <LayoutToggle layout={layout} onLayoutChange={onLayoutChange} />
         </span>
       </div>
@@ -1896,6 +1905,7 @@ function ChangedFiles({
                 diffSource={adoDiffSource(ref)}
                 file={file}
                 layout={layout}
+                ignoreWhitespace={ignoreWhitespace}
                 conflicted={conflicted.has(file.path)}
                 viewed={isRead(file)}
                 onViewedChange={(next) => onViewedChange(file, next)}
@@ -2144,6 +2154,12 @@ export function PullRequestDetailView({
   // back tomorrow to a page that is quietly hiding half the conversation is a
   // worse default than one click.
   const [hideDone, setHideDone] = useState(false)
+
+  // Beside `hideDone` and for the same reason: the route owns `layout` because
+  // side-by-side widens the page, and `-w` changes nothing about its shape. Per
+  // visit too — it answers "this change was reformatted", which is a fact about
+  // the pull request in front of you and not about how you read.
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false)
 
   const iterations = pr.files.iterations
   const latest = iterations[iterations.length - 1]
@@ -2541,6 +2557,8 @@ export function PullRequestDetailView({
               conflicted={new Set(pr.merge.conflicts.map((conflict) => conflict.path))}
               layout={layout}
               onLayoutChange={onLayoutChange}
+              ignoreWhitespace={ignoreWhitespace}
+              onIgnoreWhitespaceChange={setIgnoreWhitespace}
               viewed={viewed}
               onViewedChange={setViewed}
               threads={conversation.files}

@@ -1,9 +1,10 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 
 import { age } from './pr-list'
 import { ChangedFileDiff } from './diff/changed-file'
 import { FileTree } from './diff/file-tree'
 import { LayoutToggle } from './diff/layout-toggle'
+import { WhitespaceToggle } from './diff/whitespace-toggle'
 import { localDiffSource } from '@/lib/blob-query'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
 import { TARGET_RUNG_LABEL } from '@/lib/local-git-contract'
@@ -132,6 +133,10 @@ export function BranchDiff({
   layout: DiffLayout
   onLayoutChange: (layout: DiffLayout) => void
 }) {
+  // Here and not in the route, unlike `layout`: the route owns that one because
+  // side-by-side widens the page, and `-w` changes nothing about its shape.
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false)
+
   // Read here rather than passed in, as the pull request page reads its own: the
   // branch the marks hang on is the *resolved* one, which arrives with the change
   // set and is not in the URL on the common `/repos/$repo` with nothing after it.
@@ -181,7 +186,13 @@ export function BranchDiff({
           </span>
           <Dirty count={dirtyCount} error={dirtyError} />
         </span>
-        <LayoutToggle layout={layout} onLayoutChange={onLayoutChange} />
+        <span className="flex items-baseline gap-3">
+          <WhitespaceToggle
+            ignoreWhitespace={ignoreWhitespace}
+            onIgnoreWhitespaceChange={setIgnoreWhitespace}
+          />
+          <LayoutToggle layout={layout} onLayoutChange={onLayoutChange} />
+        </span>
       </div>
 
       {/* `-M` gave up and git said so on stderr while exiting 0, so every rename
@@ -229,6 +240,7 @@ export function BranchDiff({
                   diffSource={source}
                   file={file}
                   layout={layout}
+                  ignoreWhitespace={ignoreWhitespace}
                   viewed={isRead(file)}
                   onViewedChange={(next) => setViewed(file, next)}
                 />

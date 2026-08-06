@@ -266,6 +266,20 @@ describe('BranchDiff', () => {
       )
     })
 
+    // Kept here rather than left to the pull request page's copy of it: the
+    // point of one component is that all three pages have the control, and the
+    // way that stops being true is a page that never renders it.
+    it('carries the ignore-whitespace toggle, and holds the choice itself', async () => {
+      await draw()
+
+      const toggle = screen.getByRole('button', { name: 'Ignore whitespace' })
+      expect(toggle).toHaveAttribute('aria-pressed', 'false')
+
+      await userEvent.click(toggle)
+
+      expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    })
+
     // A diff read off this disk has no conversation to join, so there is no
     // invitation to write a comment that would go nowhere. This is what
     // withholding `threadActions` buys, and it is the difference the ticket is

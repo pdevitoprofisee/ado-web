@@ -1693,6 +1693,20 @@ describe('PullRequestDetailView files', () => {
     expect(onLayoutChange).toHaveBeenCalledWith('split')
   })
 
+  // One choice for the page like the layout, and held here rather than in the
+  // route, which is the difference: the route owns the layout because
+  // side-by-side widens the page, and `-w` changes nothing about its shape.
+  it('offers one ignore-whitespace choice for the whole page', async () => {
+    await drawDiff({ pr: detail({ files }) })
+
+    const toggle = screen.getByRole('button', { name: 'Ignore whitespace' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+
+    await userEvent.click(toggle)
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+  })
+
   it('tells the two empty file states apart', async () => {
     const { rerender } = await drawDiff({ pr: detail() })
     expect(screen.getByText('No files changed.')).toBeVisible()
