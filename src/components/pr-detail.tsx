@@ -56,6 +56,7 @@ import { voteWord } from '@/lib/people'
 import { useRename } from '@/lib/rename'
 import { useRequeue } from '@/lib/requeue'
 import { useWithdrawReviewer, withdrawBlocker } from '@/lib/reviewers'
+import { useSonarResolve } from '@/lib/sonar-resolve'
 import { cn } from '@/lib/utils'
 import { useViewedFiles } from '@/lib/viewed'
 import { fileViewedKey } from '@/lib/viewed-key'
@@ -2238,6 +2239,11 @@ export function PullRequestDetailView({
   // is on offer is made once, next to the header it belongs to.
   const rename = useRename(prRef)
 
+  // Beside `rename` and for its reason: the write is the page's, the busy state
+  // is the row's. Held here rather than in the route because the route hands this
+  // component the report and nothing else about it.
+  const resolveSonar = useSonarResolve(prRef)
+
   // Per pull request and per visit, not persisted: "hide resolved" is a thing you
   // do on a second pass through a diff somebody has already reviewed, and coming
   // back tomorrow to a page that is quietly hiding half the conversation is a
@@ -2552,6 +2558,7 @@ export function PullRequestDetailView({
               // server normalised the Sonar half to it, so this is set membership.
               changedPaths={new Set(pr.files.files.map((file) => file.path))}
               onJump={goToFile}
+              actions={resolveSonar}
             />
           )}
 

@@ -1,12 +1,29 @@
 import { createServerFn } from '@tanstack/react-start'
 
 import { NotConnectedError, adoClient } from './ado'
-import { SonarNotConnectedError, loadSonarProjects, loadSonarReport, sonarClient } from './sonar'
+import {
+  SonarNotConnectedError,
+  applyTransition,
+  loadSonarProjects,
+  loadSonarReport,
+  sonarClient,
+  sonarThreadFor,
+} from './sonar'
+import { SONAR_TRANSITIONS } from '../lib/sonar-contract'
+import { loadBotThreads, setThreadStatus } from './threads'
 import { pullRequestRef } from './pull-request-fn'
 
 import type { AdoClient, RateLimit } from './ado-client'
 import type { SonarClient } from './sonar'
-import type { SonarProjectRef, SonarReport, SonarRule } from '../lib/sonar-contract'
+import type { PullRequestRef } from './pull-request'
+import type {
+  SonarProjectRef,
+  SonarReport,
+  SonarResolveRequest,
+  SonarResolveResult,
+  SonarRule,
+  SonarTransition,
+} from '../lib/sonar-contract'
 
 // The findings panel's one entry point. The route hands over the same three
 // URL values `pullRequestQuery` validates, so `pullRequestRef` is reused rather
@@ -152,5 +169,128 @@ export const sonarReportQuery = createServerFn({ method: 'GET' })
         connected: true,
         rateLimit: ado.rateLimit(),
       }
+    }
+  })
+
+// ---------------------------------------------------------------------------
+// Triaging a finding.
+// ---------------------------------------------------------------------------
+
+/** What the thread step does for each transition. Read once, from the contract. */
+const THREAD_STATUS = new Map(SONAR_TRANSITIONS.map((one) => [one.transition, one.thread]))
+
+/**
+ * The one write, validated the way every other write here is.
+ *
+ * `transition` is checked against the four this app offers rather than the twelve
+ * `do_transition` accepts, and the difference matters: `close` and the security
+ * hotspot transitions are real API values that no button sends, and a validator
+ * that waves them through turns a missing button into an open endpoint.
+ *
+ * `issueKey` is checked for shape only. It is not interpolated into a path — it
+ * travels as a form parameter — so length and character class are all there is to
+ * test, and Sonar answers 404 for a well-shaped key that is not one of its own.
+ */
+export function resolveRequest(input: unknown): PullRequestRef & SonarResolveRequest {
+  const ref = pullRequestRef(input)
+  const raw = (input ?? {}) as Record<string, unknown>
+
+  if (typeof raw.issueKey !== 'string' || !/^[\w-]{1,64}$/.test(raw.issueKey)) {
+    throw new Error('issueKey must be a SonarCloud issue key.')
+  }
+  if (typeof raw.transition !== 'string' || !THREAD_STATUS.has(raw.transition as SonarTransition)) {
+    const offered = [...THREAD_STATUS.keys()].join(', ')
+    throw new Error(`transition must be one of ${offered}.`)
+  }
+  if (raw.comment !== undefined && typeof raw.comment !== 'string') {
+    throw new Error('comment must be text.')
+  }
+
+  return {
+    ...ref,
+    issueKey: raw.issueKey,
+    transition: raw.transition as SonarTransition,
+    comment: raw.comment,
+  }
+}
+
+/**
+ * Triage one finding in SonarCloud, then close the comment ADO shows for it.
+ *
+ * **Two services, two answers, and neither is inferred from the other.** Sonar is
+ * asked first because it owns both the issue state and the quality gate; a thread
+ * closed over a finding Sonar still calls open is contradicted by the gate on the
+ * same screen. If the transition fails, nothing is written to ADO at all.
+ *
+ * Once Sonar has agreed, **the thread step cannot fail the operation**. The debt
+ * decision is recorded, the gate will move on the next analysis, and an ADO PATCH
+ * that failed afterwards is one unfinished write — reported as
+ * `thread: 'failed'` beside a `transitioned: true` rather than folded into a
+ * single "it did not work", which would send a reviewer to do the whole thing
+ * again in the Sonar UI.
+ *
+ * `thread: 'none'` is the *ordinary* outcome, not a fault. ADO caps Sonar's
+ * comments at 50 per pull request, so most findings have no thread — and
+ * `confirm` deliberately leaves the one it has open, because confirming an issue
+ * is agreeing it is real.
+ */
+export const resolveSonarFinding = createServerFn({ method: 'POST' })
+  .validator(resolveRequest)
+  .handler(async ({ data }): Promise<SonarResolveResult> => {
+    const { issueKey, transition, comment, ...ref } = data
+
+    const client = connectedSonar()
+    if (client instanceof SonarNotConnectedError) {
+      return {
+        transitioned: false,
+        status: null,
+        thread: 'none',
+        error: client.message,
+        threadError: null,
+      }
+    }
+
+    let status: SonarResolveResult['status']
+    try {
+      status = await applyTransition(client, issueKey, transition, comment)
+    } catch (error) {
+      return {
+        transitioned: false,
+        status: null,
+        thread: 'none',
+        error: message(error),
+        threadError: null,
+      }
+    }
+
+    const wanted = THREAD_STATUS.get(transition) ?? null
+    // Sonar has already agreed by here, so every path below reports
+    // `transitioned: true` — including the ones that never reach ADO.
+    if (wanted === null) {
+      return { transitioned: true, status, thread: 'none', error: null, threadError: null }
+    }
+
+    const ado = connectedAdo()
+    if (ado instanceof NotConnectedError) {
+      return {
+        transitioned: true,
+        status,
+        thread: 'failed',
+        error: null,
+        threadError: ado.message,
+      }
+    }
+
+    try {
+      const thread = sonarThreadFor(await loadBotThreads(ado, ref), issueKey)
+      if (thread === null) {
+        return { transitioned: true, status, thread: 'none', error: null, threadError: null }
+      }
+
+      await setThreadStatus(ado, ref, { threadId: thread.id, status: wanted })
+
+      return { transitioned: true, status, thread: 'updated', error: null, threadError: null }
+    } catch (error) {
+      return { transitioned: true, status, thread: 'failed', error: null, threadError: message(error) }
     }
   })

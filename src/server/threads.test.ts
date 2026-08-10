@@ -6,6 +6,7 @@ import {
   fileThreads,
   guardOwnComment,
   isSettableStatus,
+  loadBotThreads,
   loadThreads,
   createThread,
   postReply,
@@ -360,6 +361,61 @@ describe('classification', () => {
 
     expect(list).toMatchObject({ openCount: 1, doneCount: 1, botCount: 1, systemCount: 2 })
     expect(list.threads).toHaveLength(2)
+  })
+})
+
+describe('the robot half', () => {
+  const robot = (over: Record<string, unknown> = {}) =>
+    comment({ author: { id: SONAR, displayName: 'QA Automation' }, ...over })
+
+  const bots = (threads: readonly AdoThread[], over: Record<string, Reply> = {}) => {
+    const { client, calls } = fakeClient({
+      '/threads': { value: threads },
+      '/statuses': { value: [sonarStatus()] },
+      ...over,
+    })
+
+    return { calls, loading: loadBotThreads(client, REF) }
+  }
+
+  it('answers with the threads the conversation drops, and only those', async () => {
+    const threads = await bots([
+      thread({ id: 1, comments: [robot({ content: 'Code Smell: 8 parameters.' })] }),
+      thread({ id: 2 }),
+      systemThread({ id: 3 }),
+    ]).loading
+
+    expect(threads.map((entry) => entry.id)).toEqual([1])
+    expect(threads[0]?.kind).toBe('bot')
+    expect(threads[0]?.comments[0]?.content).toBe('Code Smell: 8 parameters.')
+  })
+
+  it('answers with an empty list when the robot opened no thread', async () => {
+    const threads = await bots([thread({ id: 1 }), systemThread({ id: 2 })]).loading
+
+    expect(threads).toEqual([])
+  })
+
+  it('fails when it cannot tell whose threads are whose', async () => {
+    const { loading } = bots([thread({ comments: [robot()] })], {
+      '/statuses': new Error('Azure DevOps answered 500.'),
+    })
+
+    // `loadThreads` swallows this one and pays a label for it. Here the answer
+    // would be an empty list, which reads as "Sonar opened no thread" — and the
+    // caller would then report a finding as triaged with its comment left open.
+    await expect(loading).rejects.toThrow('Azure DevOps answered 500.')
+  })
+
+  it('resolves no mention, because nothing here is read by a person', async () => {
+    const tag = '@<FBFD3DD4-4D56-641D-9005-AE776A2D856C>'
+    const { calls, loading } = bots([thread({ comments: [robot({ content: `cc ${tag}` })] })])
+    const threads = await loading
+
+    // Two calls, not three: this list exists to be matched against an issue key
+    // and then PATCHed, so a name to draw is a call spent on nothing.
+    expect(calls.map((call) => call.path)).toEqual([THREADS, `${PR}/statuses`])
+    expect(threads[0]?.comments[0]?.mentions).toEqual({})
   })
 })
 

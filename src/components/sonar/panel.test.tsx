@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -10,6 +10,7 @@ import type {
   RuleGroup,
   SonarFinding,
   SonarReport,
+  SonarResolveResult,
   SonarRule,
 } from '@/lib/sonar-contract'
 
@@ -32,6 +33,9 @@ const finding = (over: Partial<SonarFinding> = {}): SonarFinding => ({
   effort: '20min',
   tags: ['brain-overload'],
   url: 'https://sonarcloud.io/project/issues?id=profisee_matching&open=AZ-pXh-nP-U4fPfm1RSA',
+  // The census array minus the two this app does not offer, in wire order — §10
+  // sent `["accept","confirm","resolve","falsepositive","wontfix"]`.
+  transitions: ['accept', 'confirm', 'falsepositive'],
   ...over,
 })
 
@@ -420,5 +424,164 @@ describe('SonarPanel', () => {
 
     expect(panel().getByText(/No open findings/)).toBeVisible()
     expect(panel().queryByRole('list', { name: 'Findings by rule' })).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Triage.
+// ---------------------------------------------------------------------------
+
+const landed = (over: Partial<SonarResolveResult> = {}): SonarResolveResult => ({
+  transitioned: true,
+  status: 'ACCEPTED',
+  thread: 'updated',
+  error: null,
+  threadError: null,
+  ...over,
+})
+
+/** Opens the one group and answers with its single row. */
+async function row(over: Partial<Parameters<typeof SonarPanel>[0]> = {}) {
+  draw(over)
+  await userEvent.click(panel().getByRole('button', { name: /Methods should not/ }))
+
+  return within(within(panel().getByRole('list', { name: /occurrences/ })).getByRole('listitem'))
+}
+
+describe('triaging a finding', () => {
+  it('draws no triage button on a panel that was given no way to write', async () => {
+    const only = await row()
+
+    expect(only.queryByRole('button', { name: 'Accept' })).toBeNull()
+    expect(only.getByRole('link', { name: 'SonarCloud' })).toBeVisible()
+  })
+
+  it('offers exactly the transitions Sonar offered for this issue', async () => {
+    const only = await row({ actions: { onResolve: vi.fn() } })
+
+    expect(only.getByRole('button', { name: 'Accept' })).toBeVisible()
+    expect(only.getByRole('button', { name: 'False positive' })).toBeVisible()
+    expect(only.getByRole('button', { name: 'Confirm' })).toBeVisible()
+    // Sonar drops a transition it will refuse, and the issue in the census is
+    // open, so `reopen` was not in its array. A button from a fixed list would
+    // offer a write the API answers 400 to.
+    expect(only.queryByRole('button', { name: 'Reopen' })).toBeNull()
+  })
+
+  it('draws nothing at all when the token may not triage', async () => {
+    // §10's other sampled issue: `transitions: []`, `actions: ["comment"]`. This is
+    // also every issue for a token without Administer Issues.
+    const only = await row({
+      actions: { onResolve: vi.fn() },
+      report: report({ groups: [group({ findings: [finding({ transitions: [] })] })] }),
+    })
+
+    expect(only.queryAllByRole('button', { name: /Accept|False positive|Confirm|Reopen/ })).toEqual([])
+    expect(only.getByRole('link', { name: 'SonarCloud' })).toBeVisible()
+  })
+
+  it('sends the issue key and the transition, and nothing else', async () => {
+    const onResolve = vi.fn().mockResolvedValue(landed())
+    const only = await row({ actions: { onResolve } })
+
+    await userEvent.click(only.getByRole('button', { name: 'False positive' }))
+
+    expect(onResolve).toHaveBeenCalledWith({
+      issueKey: 'AZ-pXh-nP-U4fPfm1RSA',
+      transition: 'falsepositive',
+    })
+  })
+
+  it('holds every button on the row while the write is out', async () => {
+    let settle: (result: SonarResolveResult) => void = () => {}
+    const onResolve = vi.fn(
+      () => new Promise<SonarResolveResult>((resolve) => (settle = resolve)),
+    )
+    const only = await row({ actions: { onResolve } })
+
+    await userEvent.click(only.getByRole('button', { name: 'Accept' }))
+
+    // Said on the button that was pressed, so the row states which write is out
+    // rather than going quiet. The others are held because they are alternatives
+    // to it — a second transition sent while the first is in flight would be a
+    // race whose winner decides the issue's state.
+    expect(only.getByRole('button', { name: 'Saving…' })).toBeDisabled()
+    expect(only.getByRole('button', { name: 'Confirm' })).toBeDisabled()
+
+    await act(async () => settle(landed()))
+
+    expect(only.getByRole('button', { name: 'Accept' })).toBeEnabled()
+  })
+
+  it('says why Sonar refused, and does not pretend the finding moved', async () => {
+    const onResolve = vi.fn().mockResolvedValue({
+      transitioned: false,
+      status: null,
+      thread: 'none',
+      error: 'SonarCloud answered 403.',
+      threadError: null,
+    })
+    const only = await row({ actions: { onResolve } })
+
+    await userEvent.click(only.getByRole('button', { name: 'Accept' }))
+
+    expect(await only.findByRole('alert')).toHaveTextContent('SonarCloud answered 403.')
+  })
+
+  it('reports a call that never arrived as a failure of the row', async () => {
+    const onResolve = vi.fn().mockRejectedValue(new Error('Failed to fetch'))
+    const only = await row({ actions: { onResolve } })
+
+    await userEvent.click(only.getByRole('button', { name: 'Accept' }))
+
+    expect(await only.findByRole('alert')).toHaveTextContent('Failed to fetch')
+    // The button comes back, because nothing is known to have happened.
+    expect(only.getByRole('button', { name: 'Accept' })).toBeEnabled()
+  })
+
+  it('names the half that is outstanding when the comment could not be closed', async () => {
+    const onResolve = vi
+      .fn()
+      .mockResolvedValue(landed({ thread: 'failed', threadError: 'Azure DevOps answered 409.' }))
+    const only = await row({ actions: { onResolve } })
+
+    await userEvent.click(only.getByRole('button', { name: 'Accept' }))
+
+    // Two services, and the triage is the one that mattered. Sending the reader
+    // back to do the whole thing again would be telling them to transition an
+    // issue Sonar has already accepted.
+    const said = await only.findByRole('alert')
+    expect(said).toHaveTextContent('SonarCloud is updated.')
+    expect(said).toHaveTextContent('Azure DevOps answered 409.')
+    expect(said).not.toHaveClass('text-destructive')
+  })
+
+  it('says nothing at all when both halves landed', async () => {
+    const onResolve = vi.fn().mockResolvedValue(landed())
+    const only = await row({ actions: { onResolve } })
+
+    await userEvent.click(only.getByRole('button', { name: 'Accept' }))
+
+    expect(only.queryByRole('alert')).toBeNull()
+  })
+
+  it.each([
+    ['ACCEPTED', 'accepted'],
+    ['CONFIRMED', 'confirmed'],
+  ] as const)('marks a %s finding, which stays in this list', async (status, said) => {
+    // `issueStatuses` asks for `OPEN,CONFIRMED,ACCEPTED`, so a finding somebody
+    // accepted stays in this list. Unmarked, it is identical to an untouched one
+    // and the button that moved it reads as broken.
+    const only = await row({
+      report: report({ groups: [group({ findings: [finding({ status })] })] }),
+    })
+
+    expect(only.getByText(said)).toBeVisible()
+  })
+
+  it('marks nothing on an open finding, which is what every row here is', async () => {
+    const only = await row()
+
+    expect(only.queryByText(/accepted|confirmed/)).toBeNull()
   })
 })

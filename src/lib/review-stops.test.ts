@@ -44,6 +44,8 @@ const finding = (over: Partial<SonarFinding> = {}): SonarFinding => ({
   effort: null,
   tags: [],
   url: 'https://sonarcloud.io/project/issues?id=Profisee_utilities&open=AY-1',
+  // Empty because keyboard stops do not read it, not because the wire sends none.
+  transitions: [],
   ...over,
 })
 

@@ -613,6 +613,37 @@ export async function loadThreads(client: AdoClient, ref: PullRequestRef): Promi
 }
 
 /**
+ * Only the robot's threads — the half `loadThreads` throws away.
+ *
+ * `toThreadList` drops `kind === 'bot'` on purpose: the conversation tab shows
+ * people, and the findings panel says what Sonar said better than 50 capped
+ * comments do. Resolving a finding is the one act that needs them back, because
+ * the thread it closes is one of these.
+ *
+ * **`sonarAuthors` is allowed to throw here**, unlike in `loadThreads`. There, a
+ * failed statuses call costs a label and the conversation still renders. Here it
+ * is the entire test for whether a thread is Sonar's, and without it every thread
+ * reads as a person's — so the honest answer is a failure, not an empty list that
+ * means "Sonar opened no thread for this".
+ */
+export async function loadBotThreads(
+  client: AdoClient,
+  ref: PullRequestRef,
+): Promise<readonly Thread[]> {
+  const [raw, bots] = await fanOutTuple<[{ value?: readonly AdoThread[] }, ReadonlySet<string>]>(
+    client,
+    [
+      () => client.get<{ value?: readonly AdoThread[] }>(threadsBase(ref)),
+      () => sonarAuthors(client, ref),
+    ],
+  )
+
+  return (raw.value ?? [])
+    .map((entry) => toThread(entry, bots, NO_NAMES))
+    .filter((thread) => thread.kind === 'bot')
+}
+
+/**
  * One comment, for the server-side own-author check.
  *
  * `GET .../threads/{id}` returns the thread **unwrapped** — measured, T-022 §3 —

@@ -85,6 +85,123 @@ export interface SonarImpact {
 export type IssueStatus = 'OPEN' | 'CONFIRMED' | 'FALSE_POSITIVE' | 'ACCEPTED' | 'FIXED'
 
 // ---------------------------------------------------------------------------
+// Triaging an issue.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every workflow transition `api/issues/do_transition` accepts.
+ *
+ * All twelve, verbatim from the live descriptor
+ * (`api/webservices/list?include_internals=true`), because the API rejects
+ * anything else and a union is the cheapest place to be told so. Only the four in
+ * `SONAR_TRANSITIONS` are offered — see the note there.
+ *
+ * The `resolveas*` and `resetastoreview` values belong to security hotspots,
+ * which are a different endpoint's business (`hotspots/search`) and are not in
+ * this app's findings list at all.
+ */
+export type SonarTransition =
+  | 'confirm'
+  | 'unconfirm'
+  | 'reopen'
+  | 'resolve'
+  | 'falsepositive'
+  | 'close'
+  | 'wontfix'
+  | 'accept'
+  | 'resolveasreviewed'
+  | 'resolveassafe'
+  | 'resolveasacknowledged'
+  | 'resetastoreview'
+
+/**
+ * One offered transition: the word for it, and what it means for the ADO thread.
+ *
+ * **`thread` is why this table exists rather than a label map.** Triaging in
+ * SonarCloud and resolving the comment ADO shows a reviewer are two writes to two
+ * services, and the second one's status is a judgement about the first: accepting
+ * an issue and calling it a false positive are both `wontFix` — the code is not
+ * changing — while confirming one leaves the conversation open on purpose. Only
+ * this file knows both halves, so the mapping lives here and neither the panel
+ * nor the server function re-decides it.
+ *
+ * `wontFix` and not `fixed` for both, and the census agrees: 4 of the 7 sampled
+ * Sonar threads had been closed as `wontFix` by hand. `fixed` claims the code
+ * changed, which is the one thing a transition never does.
+ */
+export interface SonarResolution {
+  readonly transition: SonarTransition
+  readonly label: string
+  /**
+   * The ADO thread status to write after Sonar accepts, or `null` to leave the
+   * thread alone.
+   */
+  readonly thread: 'wontFix' | 'active' | null
+}
+
+/**
+ * The transitions this app offers, and deliberately not all twelve.
+ *
+ * Sonar returns `accept` and `wontfix` together on every issue that allows
+ * either, because `wontfix` is the old name for the same decision. Offering both
+ * would be two buttons that do one thing, so only `accept` is here.
+ *
+ * `resolve` is absent for a different reason: it claims the code is fixed, and
+ * Sonar decides that itself on the next analysis — an issue resolved by hand
+ * while the code still triggers it simply reopens. A button whose effect the next
+ * pipeline run undoes is worse than no button.
+ *
+ * `close`, `unconfirm` and the hotspot transitions are absent because nothing in
+ * this panel is in a state that allows them.
+ */
+export const SONAR_TRANSITIONS: readonly SonarResolution[] = [
+  { transition: 'accept', label: 'Accept', thread: 'wontFix' },
+  { transition: 'falsepositive', label: 'False positive', thread: 'wontFix' },
+  { transition: 'confirm', label: 'Confirm', thread: null },
+  { transition: 'reopen', label: 'Reopen', thread: 'active' },
+]
+
+/**
+ * What resolving one finding asks for.
+ *
+ * `comment` is Sonar's optional rationale. Nothing sends one yet — the panel has
+ * buttons and no composer — but the parameter is on the endpoint and a reviewer
+ * accepting an issue without saying why is a poor audit trail, so the field is
+ * here for the composer to fill rather than added later by widening a validator.
+ */
+export interface SonarResolveRequest {
+  readonly issueKey: string
+  readonly transition: SonarTransition
+  readonly comment?: string
+}
+
+/**
+ * How resolving one finding went — in two answers, because it was two writes.
+ *
+ * **Neither field implies the other.** `transitioned` is Sonar's verdict and the
+ * one that moves the quality gate; `thread` is what happened to the ADO comment
+ * afterwards. A transition that landed and a thread PATCH that failed is the
+ * interesting case: the finding *is* triaged, the conversation is still open, and
+ * collapsing that into one boolean would either hide a real failure or report a
+ * successful triage as a failure.
+ *
+ * `thread: 'none'` is not a failure. Most findings have no ADO thread — Sonar's
+ * comments are capped at 50 per pull request — and `confirm` deliberately leaves
+ * the thread alone.
+ */
+export interface SonarResolveResult {
+  readonly transitioned: boolean
+  /** `null` when the transition itself failed. */
+  readonly status: IssueStatus | null
+  /** `'updated'` and not `'resolved'`, because reopening writes to a thread too. */
+  readonly thread: 'updated' | 'none' | 'failed'
+  /** Why the transition failed, or `null`. Never carries a token. */
+  readonly error: string | null
+  /** Why the thread PATCH failed, when `thread` is `'failed'`. */
+  readonly threadError: string | null
+}
+
+// ---------------------------------------------------------------------------
 // Findings.
 // ---------------------------------------------------------------------------
 
@@ -134,6 +251,21 @@ export interface SonarFinding {
   readonly tags: readonly string[]
   /** Deep link into SonarCloud for this one issue. */
   readonly url: string
+  /**
+   * The transitions Sonar says this issue allows, right now, for this token.
+   *
+   * **Read this, never a fixed list.** The array is per-issue and empty is a real
+   * measured state: one sampled issue came back with `"transitions": []` and
+   * `"actions": ["comment"]`. It also narrows as an issue moves — an accepted
+   * issue stops offering `accept`. Buttons drawn from a constant would offer
+   * writes the API then refuses.
+   *
+   * Empty also means "no permission". `accept`, `wontfix` and `falsepositive`
+   * need **Administer Issues** on the project, and Sonar leaves them out of this
+   * array for a token that only has Browse rather than listing them and
+   * answering 403.
+   */
+  readonly transitions: readonly SonarTransition[]
 }
 
 /**

@@ -3,19 +3,24 @@ import { HugeiconsIcon } from '@hugeicons/react'
 import { useMemo, useState } from 'react'
 
 import { RuleDetail } from './rule-detail'
+import { Button } from '@/components/ui/button'
 import { scrollToFile } from '@/lib/file-anchor'
-import { SONAR_ISSUE_CEILING } from '@/lib/sonar-contract'
+import { SONAR_ISSUE_CEILING, SONAR_TRANSITIONS } from '@/lib/sonar-contract'
 import { cn } from '@/lib/utils'
 
 import type { ReactNode } from 'react'
 import type {
   GateStatus,
+  IssueStatus,
   QualityGate,
   RuleGroup,
   SonarFinding,
   SonarReport,
+  SonarResolveRequest,
+  SonarResolveResult,
   SonarRule,
   SonarSeverity,
+  SonarTransition,
   SonarTruncation,
 } from '@/lib/sonar-contract'
 
@@ -311,6 +316,117 @@ function Locator({ path, line }: { path: string; line: number | null }) {
 }
 
 /**
+ * What a finding's own status is worth saying, and what is not.
+ *
+ * `OPEN` is absent because it is the whole list's premise — a chip on every row
+ * saying "open" is a chip that says nothing. The other two are here because
+ * `accept` and `confirm` leave a finding *in* this list (`issueStatuses` asks for
+ * `OPEN,CONFIRMED,ACCEPTED`), so without a mark a triaged finding comes back
+ * looking exactly like an untouched one and the button reads as broken.
+ *
+ * `FALSE_POSITIVE` and `FIXED` never arrive here at all; they are the two statuses
+ * the query filters out.
+ */
+const STATUS_CHIP: Partial<Record<IssueStatus, string>> = {
+  CONFIRMED: 'confirmed',
+  ACCEPTED: 'accepted',
+}
+
+/**
+ * What resolving one finding needs from the page above.
+ *
+ * Handed in rather than called from here for the panel's stated reason: this
+ * component fetches nothing. The route owns the query keys, so it owns the
+ * invalidation — a resolve moves the finding list *and* the ADO thread list, and
+ * only the route knows both.
+ */
+export interface SonarActions {
+  onResolve: (request: SonarResolveRequest) => Promise<SonarResolveResult>
+}
+
+/**
+ * The buttons that triage one finding, and the sentence when half of it worked.
+ *
+ * **Drawn from `finding.transitions`, never from a fixed list.** The array is
+ * Sonar's own answer for this issue and this token: it narrows as the issue moves,
+ * it is `[]` for a token without **Administer Issues**, and one sampled issue
+ * allowed nothing at all. Buttons from a constant would offer writes the API then
+ * refuses with a 403, which reads to a reviewer as this app being broken.
+ *
+ * **Two outcomes, reported separately**, because the write was to two services. A
+ * transition that failed is a red line and nothing changed. A transition that
+ * landed while the ADO thread PATCH failed is *not* a failure of the triage — the
+ * decision is recorded and the gate will move — so it says which half is
+ * outstanding rather than inviting the whole thing to be done again.
+ */
+function FindingResolve({
+  finding,
+  onResolve,
+}: {
+  finding: SonarFinding
+  onResolve: SonarActions['onResolve']
+}) {
+  const [busy, setBusy] = useState<SonarTransition | null>(null)
+  const [note, setNote] = useState<{ readonly text: string; readonly failed: boolean } | null>(null)
+
+  const offered = SONAR_TRANSITIONS.filter((one) => finding.transitions.includes(one.transition))
+  if (offered.length === 0) return null
+
+  function resolve(transition: SonarTransition) {
+    setNote(null)
+    setBusy(transition)
+    onResolve({ issueKey: finding.key, transition })
+      .then((result) => {
+        if (!result.transitioned) {
+          setNote({ text: result.error ?? 'SonarCloud did not say why.', failed: true })
+        } else if (result.thread === 'failed') {
+          setNote({
+            text: `SonarCloud is updated. The comment in Azure DevOps is still open: ${result.threadError ?? 'no reason given'}`,
+            failed: false,
+          })
+        }
+      })
+      .catch((cause: unknown) => {
+        setNote({
+          text: cause instanceof Error ? cause.message : 'SonarCloud did not change that issue.',
+          failed: true,
+        })
+      })
+      .finally(() => setBusy(null))
+  }
+
+  return (
+    <>
+      {offered.map(({ transition, label }) => (
+        <Button
+          key={transition}
+          variant="ghost"
+          size="xs"
+          onPress={() => resolve(transition)}
+          isDisabled={busy !== null}
+          className="shrink-0 font-sans"
+        >
+          {busy === transition ? 'Saving…' : label}
+        </Button>
+      ))}
+      {note === null ? null : (
+        // Amber and not red for the half-done case, for `Short`'s reason: the
+        // triage worked, and a red line over it says the opposite.
+        <span
+          role="alert"
+          className={cn(
+            'w-full font-sans text-xs',
+            note.failed ? 'text-destructive' : 'text-ink',
+          )}
+        >
+          {note.text}
+        </span>
+      )}
+    </>
+  )
+}
+
+/**
  * One occurrence: where it is, and the two links out of it.
  *
  * Three shapes, because the data has three: a finding on a file this pull request
@@ -332,12 +448,15 @@ function FindingRow({
   changedPaths,
   showMessage,
   onJump,
+  actions,
 }: {
   finding: SonarFinding
   changedPaths: ReadonlySet<string>
   /** `false` when the group prints the message once above the list. */
   showMessage: boolean
   onJump: (jump: SonarJump) => void
+  /** Absent on a read-only page, and then no triage button is drawn. */
+  actions: SonarActions | undefined
 }) {
   // A local binding, not `finding.path`, so the narrowing survives into the
   // click handler below.
@@ -352,8 +471,10 @@ function FindingRow({
     <li className="border-border border-b px-2 py-1 last:border-b-0">
       {showMessage ? <p className="text-sm">{finding.message}</p> : null}
       {/* Mono for the whole line: it is a path, a duration and a destination —
-          every one of them a figure rather than prose. */}
-      <div className="flex items-baseline gap-2 font-mono text-xs">
+          every one of them a figure rather than prose. `flex-wrap` so the sentence
+          a half-finished write leaves takes its own line instead of squeezing the
+          path that says which finding it is about. */}
+      <div className="flex flex-wrap items-baseline gap-2 font-mono text-xs">
         {path === null || label === null ? (
           <span className="text-muted-foreground min-w-0 flex-1 font-sans">project-level</span>
         ) : changedPaths.has(path) ? (
@@ -384,6 +505,11 @@ function FindingRow({
         {finding.effort === null ? null : (
           <span className="text-muted-foreground shrink-0">{finding.effort}</span>
         )}
+        {STATUS_CHIP[finding.status] === undefined ? null : (
+          <span className="text-muted-foreground shrink-0 font-sans">
+            <Chip>{STATUS_CHIP[finding.status]}</Chip>
+          </span>
+        )}
         <a
           href={finding.url}
           target="_blank"
@@ -392,6 +518,9 @@ function FindingRow({
         >
           SonarCloud
         </a>
+        {actions === undefined ? null : (
+          <FindingResolve finding={finding} onResolve={actions.onResolve} />
+        )}
       </div>
     </li>
   )
@@ -410,12 +539,14 @@ function GroupRow({
   rule,
   changedPaths,
   onJump,
+  actions,
 }: {
   group: RuleGroup
   /** The rule's description, when Sonar would give one. */
   rule: SonarRule | undefined
   changedPaths: ReadonlySet<string>
   onJump: (jump: SonarJump) => void
+  actions: SonarActions | undefined
 }) {
   const [open, setOpen] = useState(false)
 
@@ -485,6 +616,7 @@ function GroupRow({
                 changedPaths={changedPaths}
                 showMessage={shared === null}
                 onJump={onJump}
+                actions={actions}
               />
             ))}
           </ul>
@@ -516,6 +648,7 @@ export function SonarPanel({
   rules = [],
   changedPaths,
   onJump = scrollToFinding,
+  actions,
 }: {
   /**
    * `sonarReport({...})` from `src/server/sonar-fn.ts`. `null` when the pull
@@ -541,6 +674,12 @@ export function SonarPanel({
    * see `scrollToFinding`.
    */
   onJump?: (jump: SonarJump) => void
+  /**
+   * What triaging a finding does. Optional, and the buttons only exist when it is
+   * given — the panel is also rendered from tests and from anywhere that has a
+   * report but no pull request to write a comment on.
+   */
+  actions?: SonarActions
 }) {
   const described = useMemo(() => new Map(rules.map((rule) => [rule.key, rule])), [rules])
 
@@ -635,6 +774,7 @@ export function SonarPanel({
                 rule={described.get(group.rule)}
                 changedPaths={changedPaths}
                 onJump={onJump}
+                actions={actions}
               />
             ))}
           </ul>

@@ -144,6 +144,14 @@ vi.mock('@/server/checks-fn', () => ({
   retryBuildRun: vi.fn(),
 }))
 
+// `useSonarResolve` for the same import-time reason as `checks-fn`: the header
+// closes over it on every render, and `sonar-fn` validates with the
+// `pullRequestRef` the mock above does not export.
+vi.mock('@/server/sonar-fn', () => ({
+  sonarReportQuery: vi.fn(),
+  resolveSonarFinding: vi.fn(),
+}))
+
 /**
  * What a write answers with when it worked.
  *
@@ -2172,6 +2180,7 @@ describe('PullRequestDetailView Sonar', () => {
               effort: '20min',
               tags: ['cwe'],
               url: 'https://sonarcloud.io/project/issues?id=Profisee_utilities&open=AY-1',
+              transitions: ['accept', 'confirm', 'falsepositive'],
             },
           ],
         },
@@ -2634,6 +2643,7 @@ describe('PullRequestDetailView on the keyboard', () => {
     effort: '20min',
     tags: [],
     url: 'https://sonarcloud.io/project/issues?id=Profisee_utilities&open=AY-1',
+    transitions: ['accept', 'confirm', 'falsepositive'],
   })
 
   const reported = (findings: readonly SonarFinding[]): SonarReportResult => ({

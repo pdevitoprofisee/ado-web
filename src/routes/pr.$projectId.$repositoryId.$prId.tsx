@@ -10,6 +10,7 @@ import { CADENCE, useCadence } from '@/lib/cadence'
 import { readLineTarget } from '@/lib/line-link'
 import { pageTitle } from '@/lib/page-title'
 import { pullRequestKey } from '@/lib/requeue'
+import { sonarKey } from '@/lib/sonar-resolve'
 import { useCommand } from '@/commands/command-provider'
 import { PullRequestDetailView } from '@/components/pr-detail'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -85,7 +86,9 @@ function PullRequestPage() {
   // which the page's own poll is already what tells you about. Sonar publishes no
   // rate-limit budget at all, so the cheapest thing to do with it is ask less.
   const sonar = useQuery({
-    queryKey: ['sonar', projectId, repositoryId, id],
+    // Shared with `useSonarResolve`, which invalidates this after a finding is
+    // triaged.
+    queryKey: sonarKey({ projectId, repositoryId, id }),
     queryFn: () => sonarReportQuery({ data: { projectId, repositoryId, id } }),
     enabled: addressable,
     staleTime: CADENCE.pullRequest,

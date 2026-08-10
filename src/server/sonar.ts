@@ -7,11 +7,13 @@ import {
   SONAR_BACKOFF_MS,
   SONAR_MAX_PAGES,
   SONAR_PAGE_SIZE,
+  SONAR_TRANSITIONS,
 } from '../lib/sonar-contract'
 
 import type { AdoClient, QueryValue } from './ado-client'
 import type { SonarCredential } from './credentials'
 import type { PullRequestRef } from './pull-request'
+import type { Thread } from '../lib/comment-contract'
 import type {
   GateCondition,
   GateStatus,
@@ -26,6 +28,7 @@ import type {
   SonarRule,
   SonarSeverity,
   SonarTextRange,
+  SonarTransition,
   SonarTruncation,
 } from '../lib/sonar-contract'
 
@@ -130,6 +133,16 @@ export class SonarNotConnectedError extends Error {
 export interface SonarClient {
   /** `path` is api-relative: `api/issues/search`. */
   get<T>(path: string, params?: Record<string, QueryValue>): Promise<T>
+  /**
+   * The one write. `params` go in a form-encoded body, which is what Sonar's POST
+   * endpoints read.
+   *
+   * **Never retried, and `null` is a success.** A write that times out may still
+   * have landed — the same reason `AdoClient.write` passes `retry: false` — so a
+   * second attempt can be a second transition. `null` means the response carried
+   * no body, which some writes do; the caller decides whether it needed one.
+   */
+  post<T>(path: string, params?: Record<string, QueryValue>): Promise<T | null>
 }
 
 export interface SonarClientOptions {
@@ -180,6 +193,13 @@ interface SonarIssue {
   readonly cleanCodeAttributeCategory?: string
   readonly effort?: string
   readonly tags?: readonly string[]
+  /**
+   * Only present because `additionalFields` asks for it, which `loadIssues`
+   * already did for `components[]`. Optional on the type all the same: an issue
+   * that allows nothing comes back with `[]`, and an unasked-for field comes back
+   * absent, and both have to read as "no buttons".
+   */
+  readonly transitions?: readonly string[]
   /**
    * The organization, on every issue — which is how the `rules` call gets its
    * mandatory parameter with no configuration anywhere. See `loadIssues`.
@@ -252,7 +272,11 @@ export function createSonarClient(
   /** Epoch ms before which this client will not send. Zero means open. */
   let closedUntil = 0
 
-  async function get<T>(path: string, params: Record<string, QueryValue> = {}): Promise<T> {
+  async function send<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    params: Record<string, QueryValue>,
+  ): Promise<T | null> {
     // Not a sleep. A 429 backs off for *minutes* (there is no `Retry-After` to
     // shorten it with), and a request that waits two minutes inside a page load
     // is a hung page — so the gate refuses instead, the caller records the
@@ -266,17 +290,29 @@ export function createSonarClient(
     }
 
     const url = new URL(`${SONAR}/${path.replace(/^\//, '')}`)
+    // A POST's parameters go in the body: `do_transition` is form-encoded, and a
+    // transition sitting in a URL would be in every log and proxy trace between
+    // here and Sonar.
+    const form = method === 'POST' ? new URLSearchParams() : url.searchParams
     for (const [key, value] of Object.entries(params)) {
       if (value === undefined) continue
-      url.searchParams.set(key, String(value))
+      form.set(key, String(value))
     }
 
     let response: Response
     try {
       response = await fetch(url.toString(), {
+        method,
         // Bearer, not Basic, and only a *personal* token can read issues
         // (`connection-test.ts` tests exactly this).
-        headers: { Authorization: `Bearer ${credential.token}`, Accept: 'application/json' },
+        headers: {
+          Authorization: `Bearer ${credential.token}`,
+          Accept: 'application/json',
+          ...(method === 'POST'
+            ? { 'Content-Type': 'application/x-www-form-urlencoded' }
+            : {}),
+        },
+        body: method === 'POST' ? form.toString() : undefined,
         // Same reason as note 4 on the ADO side: following a redirect would
         // forward the Authorization header to a host we did not choose.
         redirect: 'manual',
@@ -314,10 +350,32 @@ export function createSonarClient(
       )
     }
 
-    return (await response.json()) as T
+    // A write that answers 204, or 200 with nothing in it, still succeeded. Only
+    // a read has a caller that cannot proceed without a body, and `get` says so
+    // by throwing rather than by making every read handle a `null`.
+    const text = await response.text()
+    if (text === '') return null
+
+    try {
+      return JSON.parse(text) as T
+    } catch {
+      throw new SonarError(response.status, 'SonarCloud answered with something that is not JSON.')
+    }
   }
 
-  return { get }
+  async function get<T>(path: string, params: Record<string, QueryValue> = {}): Promise<T> {
+    const body = await send<T>('GET', path, params)
+    if (body === null) {
+      throw new SonarError(null, 'SonarCloud answered with an empty body where a result was expected.')
+    }
+
+    return body
+  }
+
+  return {
+    get,
+    post: (path, params = {}) => send('POST', path, params),
+  }
 }
 
 /**
@@ -440,6 +498,20 @@ const impacts = (
       softwareQuality: impact.softwareQuality as SonarImpact['softwareQuality'],
       severity: impact.severity,
     }))
+
+/** The transitions this app has a button for, which is fewer than Sonar offers. */
+const OFFERED: ReadonlySet<string> = new Set(SONAR_TRANSITIONS.map((one) => one.transition))
+
+/**
+ * Sonar's `transitions` array, narrowed to the ones with a button.
+ *
+ * Intersected here rather than in the panel so the wire's answer and this app's
+ * offer meet once. Sonar sends `wontfix` beside `accept` on every issue that
+ * allows either — the old name for the same decision — and dropping it here is
+ * what keeps the row from growing a second button that does the first one's job.
+ */
+const transitions = (raw: readonly string[] | undefined): readonly SonarTransition[] =>
+  (raw ?? []).filter((one): one is SonarTransition => OFFERED.has(one))
 
 /**
  * `textRange`, never `line`.
@@ -610,6 +682,7 @@ async function loadIssues(client: SonarClient, project: SonarProjectRef): Promis
       effort: issue.effort ?? null,
       tags: issue.tags ?? [],
       url: issueUrl(project, issue.key),
+      transitions: transitions(issue.transitions),
     }))
 
   const organization = issues.find(
@@ -932,4 +1005,117 @@ export async function loadSonarReport(
     // this call is not.
     rules,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Triaging one issue.
+// ---------------------------------------------------------------------------
+
+interface SonarTransitionResponse {
+  readonly issue?: { readonly issueStatus?: string }
+}
+
+/**
+ * Move one issue through a workflow transition.
+ *
+ * **Sonar first, always, and the caller resolves the ADO thread after.** Sonar
+ * owns the issue state and the quality gate. A thread closed over a finding Sonar
+ * still calls open is a claim the gate contradicts on the same screen, and the
+ * reverse order — triaged in Sonar, thread still open — is just an unfinished
+ * write that the next page load shows honestly.
+ *
+ * **Not retried.** `post` says why: a transition that timed out may have landed,
+ * and asking again can move the issue twice.
+ *
+ * The returned status is Sonar's own answer, not this app's guess at one. When
+ * the response carries no issue — measured never, but a POST that answers 204 is
+ * within the contract — the transition still happened and there is simply nothing
+ * to report, which is what `null` says.
+ */
+export async function applyTransition(
+  client: SonarClient,
+  issueKey: string,
+  transition: SonarTransition,
+  comment?: string,
+): Promise<IssueStatus | null> {
+  const body = await client.post<SonarTransitionResponse>('api/issues/do_transition', {
+    issue: issueKey,
+    transition,
+    // Sonar rejects an empty `comment`, so an absent rationale means an absent
+    // parameter rather than a blank one.
+    comment: comment !== undefined && comment.trim() !== '' ? comment.trim() : undefined,
+  })
+
+  const status = body?.issue?.issueStatus
+  return status !== undefined && ISSUE_STATUSES.has(status) ? (status as IssueStatus) : null
+}
+
+/**
+ * The issue key a Sonar comment is about, or `null`.
+ *
+ * This is the whole ADO↔Sonar bridge, and it exists because there is nothing
+ * better: the bot thread's `properties` carry only ADO's own `UniqueID` (7 of 7
+ * sampled), so no property names the issue. What the *comment body* ends with is
+ * a "See it in SonarQube Cloud" link, and that link carries the key in `issues=`:
+ *
+ *     https://sonarcloud.io/project/issues?id=profisee_matching&issues=AZ-lfWFRz3…
+ *
+ * **Parsed as a URL, host checked, `issues` read as a query parameter** — not
+ * matched with a regex over the markdown. The key is about to select which ADO
+ * thread gets written to, and a pattern loose enough to find a key in prose is
+ * loose enough to find one in a human's quoted text.
+ *
+ * `issues=` is plural on the wire and can hold a comma-separated list. A Sonar
+ * comment is per issue, so more than one key means this is not the comment this
+ * function is for, and it declines rather than picking the first.
+ */
+export function commentIssueKey(text: string): string | null {
+  for (const match of text.matchAll(/https:\/\/sonarcloud\.io\/[^\s)\]]*/g)) {
+    let url: URL
+    try {
+      url = new URL(match[0])
+    } catch {
+      continue
+    }
+    if (url.hostname !== 'sonarcloud.io') continue
+
+    const issues = url.searchParams.get('issues')
+    if (issues === null || issues === '' || issues.includes(',')) continue
+
+    return issues
+  }
+
+  return null
+}
+
+/**
+ * The ADO thread Sonar opened for one issue, or `null` when there is not one.
+ *
+ * **`null` is the ordinary answer, not a failure.** ADO caps Sonar's comments at
+ * 50 per pull request (note 5), so a pull request with more findings than that has
+ * threads for some of them and nothing for the rest.
+ *
+ * **Only `kind === 'bot'` threads are considered**, and that is a safety rule
+ * rather than an optimisation: the match is a link in a comment body, and a person
+ * who quotes a Sonar link in their own reply would otherwise nominate their own
+ * thread for a status write nobody asked for. `kind` is decided on the server from
+ * the Sonar author identity, so a human cannot set it.
+ *
+ * Only the **first** comment is read. The bridge is Sonar's own posting; a reply
+ * underneath it is a person talking, and a link they pasted is not a claim about
+ * what the thread is for.
+ */
+export function sonarThreadFor(
+  threads: readonly Thread[],
+  issueKey: string,
+): Thread | null {
+  for (const thread of threads) {
+    if (thread.kind !== 'bot' || thread.isDeleted) continue
+
+    const content = thread.comments[0]?.content
+    if (typeof content !== 'string') continue
+    if (commentIssueKey(content) === issueKey) return thread
+  }
+
+  return null
 }

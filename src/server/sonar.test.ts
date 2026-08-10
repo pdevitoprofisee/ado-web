@@ -1,10 +1,20 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { SonarError, createSonarClient, loadSonarProjects, loadSonarReport, sonarProjects } from './sonar'
+import {
+  SonarError,
+  applyTransition,
+  commentIssueKey,
+  createSonarClient,
+  loadSonarProjects,
+  loadSonarReport,
+  sonarProjects,
+  sonarThreadFor,
+} from './sonar'
 import { SONAR_BACKOFF_MS, SONAR_MAX_PAGES } from '../lib/sonar-contract'
 
 import type { AdoClient, QueryValue } from './ado-client'
+import type { Comment, Thread, ThreadKind } from '../lib/comment-contract'
 import type { PullRequestRef } from './pull-request'
 import type { AdoStatus, SonarClient } from './sonar'
 import type { SonarProjectRef } from '../lib/sonar-contract'
@@ -99,6 +109,8 @@ const GATE_OK = {
 interface Call {
   readonly path: string
   readonly params: Record<string, QueryValue>
+  /** Absent on a read, so a fixture that never writes reads the same as before. */
+  readonly method?: 'POST'
 }
 
 /** A function is handed the params and may throw; anything else is the body. */
@@ -108,15 +120,25 @@ type Reply = ((params: Record<string, QueryValue>) => unknown) | Record<string, 
 function fakeSonar(replies: Record<string, Reply>) {
   const calls: Call[] = []
 
+  function answer(path: string, params: Record<string, QueryValue>): unknown {
+    const match = Object.keys(replies).find((suffix) => path.endsWith(suffix))
+    if (match === undefined) throw new Error(`unexpected call: ${path}`)
+
+    const reply = replies[match]
+
+    return typeof reply === 'function' ? reply(params) : reply
+  }
+
   const client: SonarClient = {
     async get<T>(path: string, params: Record<string, QueryValue> = {}): Promise<T> {
       calls.push({ path, params })
-      const match = Object.keys(replies).find((suffix) => path.endsWith(suffix))
-      if (match === undefined) throw new Error(`unexpected call: ${path}`)
 
-      const reply = replies[match]
+      return answer(path, params) as T
+    },
+    async post<T>(path: string, params: Record<string, QueryValue> = {}): Promise<T | null> {
+      calls.push({ path, params, method: 'POST' })
 
-      return (typeof reply === 'function' ? reply(params) : reply) as T
+      return answer(path, params) as T
     },
   }
 
@@ -455,6 +477,179 @@ describe('a finding', () => {
       null,
     ])
   })
+
+  it('keeps only the transitions this app offers, and nothing at all from an issue with none', async () => {
+    const { client } = fakeSonar({
+      'issues/search': {
+        total: 2,
+        issues: [
+          // §10's wire array, verbatim. `resolve` and `wontfix` are real values
+          // that no button sends, so they must not survive the parse.
+          openIssue({
+            transitions: ['accept', 'confirm', 'resolve', 'falsepositive', 'wontfix'],
+          }),
+          // The issue §10 also sampled: `"transitions": []` with `comment` as the
+          // only action. A token without Administer Issues answers like this for
+          // every issue, and an empty array is the whole reason the panel asks.
+          openIssue({ key: 'no-actions', transitions: [] }),
+        ],
+        components: componentBlock('profisee_matching', 'Services.Matching.Infrastructure/Stats/StatTrakReader.cs'),
+      },
+      'rules/search': { rules: [] },
+      project_status: GATE_OK,
+    })
+
+    const { report } = await loadSonarReport(client, [MATCHING])
+    const findings = report.groups.flatMap((group) => group.findings)
+
+    expect(findings.map((finding) => finding.transitions)).toEqual([
+      ['accept', 'confirm', 'falsepositive'],
+      [],
+    ])
+  })
+
+  it('reads no transitions when the API does not send the field at all', async () => {
+    const { client } = fakeSonar({
+      'issues/search': { total: 1, issues: [FIXED_ISSUE], components: [] },
+      'rules/search': { rules: [] },
+      project_status: GATE_OK,
+    })
+
+    const { report } = await loadSonarReport(client, [REST_API])
+
+    expect('transitions' in FIXED_ISSUE).toBe(false)
+    expect(report.groups[0].findings[0].transitions).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Triage.
+// ---------------------------------------------------------------------------
+
+const AUTHOR = { id: 'a', displayName: 'SonarCloud', uniqueName: null, imageUrl: null }
+
+const comment = (content: string | null): Comment => ({
+  id: 1,
+  parentCommentId: null,
+  author: AUTHOR,
+  content,
+  publishedDate: '2026-01-01T00:00:00Z',
+  lastUpdatedDate: null,
+  lastContentUpdatedDate: null,
+  isDeleted: false,
+  commentType: 'text',
+  likedBy: [],
+  mentions: {},
+})
+
+const thread = (id: number, kind: ThreadKind, ...bodies: readonly (string | null)[]): Thread => ({
+  id,
+  status: 'active',
+  resolution: 'open',
+  kind,
+  publishedDate: '2026-01-01T00:00:00Z',
+  lastUpdatedDate: null,
+  isDeleted: false,
+  context: null,
+  iterationContext: null,
+  comments: bodies.map(comment),
+  properties: {},
+})
+
+/** What Sonar's bot posts: a sentence, then a link with the key in the query. */
+const botBody = (key: string) =>
+  `**Code Smell** Method has 8 parameters. [View in SonarCloud](https://sonarcloud.io/project/issues?id=profisee_matching&pullRequest=24809&open=${key}&issues=${key})`
+
+describe('applying a transition', () => {
+  it('posts the issue and the transition, and reports the status Sonar answers with', async () => {
+    const { client, calls } = fakeSonar({
+      do_transition: { issue: { key: 'AZ-pXh-nP-U4fPfm1RSA', issueStatus: 'ACCEPTED' } },
+    })
+
+    const status = await applyTransition(client, 'AZ-pXh-nP-U4fPfm1RSA', 'accept')
+
+    expect(status).toBe('ACCEPTED')
+    expect(calls).toEqual([
+      {
+        path: 'api/issues/do_transition',
+        params: { issue: 'AZ-pXh-nP-U4fPfm1RSA', transition: 'accept', comment: undefined },
+        method: 'POST',
+      },
+    ])
+  })
+
+  it('sends a comment only when there is one, and never a blank one', async () => {
+    const { client, calls } = fakeSonar({ do_transition: { issue: { issueStatus: 'ACCEPTED' } } })
+
+    await applyTransition(client, 'k1', 'accept', '  ')
+    await applyTransition(client, 'k2', 'accept', '  agreed debt  ')
+
+    expect(calls.map((call) => call.params.comment)).toEqual([undefined, 'agreed debt'])
+  })
+
+  it('answers null for a status it does not know, rather than passing it on', async () => {
+    const { client } = fakeSonar({ do_transition: { issue: { issueStatus: 'SOMETHING_NEW' } } })
+
+    // The transition landed. Only the *new state* is unknown, and the caller
+    // reports `transitioned: true` with `status: null` rather than inventing one.
+    await expect(applyTransition(client, 'k1', 'accept')).resolves.toBeNull()
+  })
+
+  it('survives an empty body, which a write is allowed to answer with', async () => {
+    const { client } = fakeSonar({ do_transition: () => null })
+
+    await expect(applyTransition(client, 'k1', 'confirm')).resolves.toBeNull()
+  })
+})
+
+describe('the issue key in a bot comment', () => {
+  it('reads it out of the SonarCloud link', () => {
+    expect(commentIssueKey(botBody('AZ-pXh-nP-U4fPfm1RSA'))).toBe('AZ-pXh-nP-U4fPfm1RSA')
+  })
+
+  it('refuses a link that names several issues', () => {
+    // This one is Sonar's summary comment, and the key that selects an ADO thread
+    // to write to must name exactly one issue.
+    expect(commentIssueKey('https://sonarcloud.io/project/issues?issues=one,two')).toBeNull()
+  })
+
+  it('refuses a link on another host, however it is spelled', () => {
+    expect(commentIssueKey('https://sonarcloud.io.evil.test/x?issues=k1')).toBeNull()
+    expect(commentIssueKey('https://example.test/?issues=k1')).toBeNull()
+    expect(commentIssueKey('no link here at all')).toBeNull()
+  })
+})
+
+describe('the thread a finding belongs to', () => {
+  it('finds the bot thread whose comment names the issue', () => {
+    const wanted = thread(102, 'bot', botBody('k2'))
+
+    expect(sonarThreadFor([thread(101, 'bot', botBody('k1')), wanted], 'k2')).toBe(wanted)
+  })
+
+  it('ignores a person who pasted the same link', () => {
+    // The write closes whatever thread this returns, so a colleague quoting a
+    // finding must not be the thread that gets resolved.
+    expect(sonarThreadFor([thread(101, 'human', botBody('k1'))], 'k1')).toBeNull()
+  })
+
+  it('reads the first comment only', () => {
+    // A reply under Sonar's own thread is a person talking in the bot's thread.
+    // The finding is whatever the bot opened it about.
+    const one = thread(101, 'bot', botBody('k1'), botBody('k2'))
+
+    expect(sonarThreadFor([one], 'k1')).toBe(one)
+    expect(sonarThreadFor([one], 'k2')).toBeNull()
+  })
+
+  it('answers null for a deleted thread, an empty one, and no thread at all', () => {
+    const deleted = { ...thread(101, 'bot', botBody('k1')), isDeleted: true }
+
+    expect(sonarThreadFor([deleted], 'k1')).toBeNull()
+    expect(sonarThreadFor([thread(102, 'bot')], 'k1')).toBeNull()
+    expect(sonarThreadFor([thread(103, 'bot', null)], 'k1')).toBeNull()
+    expect(sonarThreadFor([], 'k1')).toBeNull()
+  })
 })
 
 describe('grouping', () => {
@@ -662,6 +857,27 @@ describe('the request itself', () => {
     expect(calls[0].url).toBe(
       'https://sonarcloud.io/api/issues/search?componentKeys=profisee_matching&ps=500',
     )
+  })
+
+  it('sends a write as a form body with an empty query string', async () => {
+    const calls = stubFetch(() => json({ issue: { issueStatus: 'ACCEPTED' } }))
+    const client = createSonarClient(CREDENTIAL)
+
+    await client.post('api/issues/do_transition', { issue: 'k1', transition: 'accept' })
+
+    expect(calls[0].init.method).toBe('POST')
+    expect(calls[0].url).toBe('https://sonarcloud.io/api/issues/do_transition')
+    expect((calls[0].init.headers as Record<string, string>)['Content-Type']).toBe(
+      'application/x-www-form-urlencoded',
+    )
+    expect(calls[0].init.body).toBe('issue=k1&transition=accept')
+  })
+
+  it('answers null for a write that returns no body, and does not call it an error', async () => {
+    stubFetch(() => new Response(null, { status: 204 }))
+    const client = createSonarClient(CREDENTIAL)
+
+    await expect(client.post('api/issues/do_transition', { issue: 'k1' })).resolves.toBeNull()
   })
 
   it('drops an error body that echoes the token back', async () => {
