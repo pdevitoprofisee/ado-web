@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { MENTION_SUGGESTIONS, filterPeople } from './identity-query'
+import { MENTION_SUGGESTIONS, directoryNote, filterPeople } from './identity-query'
 
 import type { ReviewerCandidate } from './identity-contract'
+import type { DirectoryResult } from '@/server/identity-fn'
 
 // T-035. The matching half of the directory decision: the list is in memory, so
 // what "matches" means is this file's answer rather than Azure DevOps'.
@@ -76,5 +77,84 @@ describe('filterPeople', () => {
     const many = Array.from({ length: 40 }, (_, index) => person(`Person ${index}`))
 
     expect(filterPeople(many, 'person')).toHaveLength(MENTION_SUGGESTIONS)
+  })
+})
+
+const arrived: DirectoryResult = {
+  people: PEOPLE,
+  total: PEOPLE.length,
+  complete: true,
+  error: null,
+  connected: true,
+  rateLimit: null,
+}
+
+describe('directoryNote', () => {
+  it('says the browser is offline rather than looking up forever', () => {
+    // The bug this function was written for. A paused query is `pending` with no
+    // deadline on it, so "looking up…" is a sentence that never comes down and the
+    // picker looks broken instead of disconnected.
+    const note = directoryNote({
+      fetchStatus: 'paused',
+      status: 'pending',
+      error: null,
+      data: undefined,
+    })
+
+    expect(note).toBe('This browser says it is offline, so nobody can be looked up.')
+  })
+
+  it('says the read failed rather than that the org is empty', () => {
+    // The other half of the same bug: an errored query has no `data`, so a picker
+    // reading `data.error` finds nothing and falls through to the empty-list line.
+    const note = directoryNote({
+      fetchStatus: 'idle',
+      status: 'error',
+      error: new Error('Failed to fetch'),
+      data: undefined,
+    })
+
+    expect(note).toBe('The list of people could not be read. Failed to fetch')
+  })
+
+  it('still says something when the failure came with no message', () => {
+    const note = directoryNote({
+      fetchStatus: 'idle',
+      status: 'error',
+      error: new Error(''),
+      data: undefined,
+    })
+
+    expect(note).toBe('The list of people could not be read. No reason was given.')
+  })
+
+  it('looks up while it is genuinely in flight', () => {
+    const note = directoryNote({
+      fetchStatus: 'fetching',
+      status: 'pending',
+      error: null,
+      data: undefined,
+    })
+
+    expect(note).toBe('Looking up who is in the organisation…')
+  })
+
+  it('passes on what Azure DevOps said, which the server returns rather than throws', () => {
+    const note = directoryNote({
+      fetchStatus: 'idle',
+      status: 'success',
+      error: null,
+      data: { ...arrived, people: [], total: 0, error: 'Azure DevOps answered 401.' },
+    })
+
+    expect(note).toBe('Azure DevOps answered 401.')
+  })
+
+  it('has nothing to say once the directory is here', () => {
+    // `null` is what hands the picker back to its own notes — "nobody matches", and
+    // the two short-list admissions.
+    expect(
+      directoryNote({ fetchStatus: 'idle', status: 'success', error: null, data: arrived }),
+    ).toBeNull()
   })
 })

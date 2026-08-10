@@ -2,7 +2,9 @@ import { queryOptions, useQuery } from '@tanstack/react-query'
 
 import { directoryQuery } from '@/server/identity-fn'
 
+import type { FetchStatus } from '@tanstack/react-query'
 import type { ReviewerCandidate } from '@/lib/identity-contract'
+import type { DirectoryResult } from '@/server/identity-fn'
 
 // The org's directory, asked for once and matched locally — the client half of
 // the decision recorded in `src/server/identity.ts`.
@@ -49,6 +51,41 @@ export function directoryOptions() {
 
 export function useDirectory() {
   return useQuery(directoryOptions())
+}
+
+/** Only what `directoryNote` reads, so it stays a function over four fields. */
+interface DirectoryState {
+  readonly fetchStatus: FetchStatus
+  readonly status: 'pending' | 'error' | 'success'
+  readonly error: Error | null
+  readonly data: DirectoryResult | undefined
+}
+
+/**
+ * What to say about the read itself, or `null` when the directory arrived.
+ *
+ * Shared by both pickers because both got the same two states wrong. A *paused*
+ * query is `pending` forever — React Query's default `networkMode` holds it there
+ * for as long as the browser claims to be offline — so a picker that only asks
+ * `isPending` says "looking up…" until the tab is reloaded and never says why. An
+ * *errored* query is the same trap one step on: `data` is undefined then, so the
+ * next branch down reads the failure as an empty directory and says everybody is
+ * already on the pull request.
+ */
+export function directoryNote(directory: DirectoryState): string | null {
+  if (directory.fetchStatus === 'paused') {
+    return 'This browser says it is offline, so nobody can be looked up.'
+  }
+  if (directory.status === 'pending') return 'Looking up who is in the organisation…'
+  if (directory.status === 'error') {
+    // An empty message as well as a missing one: `Error('')` reads as a blank
+    // sentence under the field, which is worse than admitting there is no reason.
+    const reason = directory.error?.message ?? ''
+
+    return `The list of people could not be read. ${reason === '' ? 'No reason was given.' : reason}`
+  }
+
+  return directory.data?.error ?? null
 }
 
 /**

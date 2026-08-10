@@ -1,6 +1,6 @@
 import { useEffect, useImperativeHandle, useMemo, useState } from 'react'
 
-import { filterPeople, useDirectory } from '@/lib/identity-query'
+import { directoryNote, filterPeople, useDirectory } from '@/lib/identity-query'
 import { cn } from '@/lib/utils'
 
 import type { KeyboardEvent, Ref } from 'react'
@@ -143,8 +143,8 @@ export function MentionPicker({
   )
 
   const notes: string[] = []
-  if (directory.isPending) notes.push('Looking up who is in the organisation…')
-  else if (directory.data?.error != null) notes.push(directory.data.error)
+  const trouble = directoryNote(directory)
+  if (trouble !== null) notes.push(trouble)
   else if (people.length === 0) {
     notes.push(query === '' ? 'Nobody to show.' : `Nobody matches “${query}”.`)
   }

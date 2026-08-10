@@ -6,7 +6,7 @@ import { TextField } from 'react-aria-components'
 import { Avatar } from './avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { filterPeople, useDirectory } from '@/lib/identity-query'
+import { directoryNote, filterPeople, useDirectory } from '@/lib/identity-query'
 import { offerable, useInviteReviewer } from '@/lib/reviewers'
 import { cn } from '@/lib/utils'
 
@@ -158,8 +158,8 @@ function ReviewerField({
   }
 
   const notes: string[] = []
-  if (directory.isPending) notes.push('Looking up who is in the organisation…')
-  else if (directory.data?.error != null) notes.push(directory.data.error)
+  const trouble = directoryNote(directory)
+  if (trouble !== null) notes.push(trouble)
   else if (people.length === 0) {
     notes.push(
       query === '' ? 'Everybody in the list is already on this.' : `Nobody matches “${query}”.`,
