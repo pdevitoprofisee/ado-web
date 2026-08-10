@@ -7,6 +7,7 @@ import { HugeiconsIcon } from '@hugeicons/react'
 
 import { inboxQuery } from '@/server/inbox-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
+import { INBOX_KEY } from '@/lib/inbox-cache'
 import { pageTitle } from '@/lib/page-title'
 import { inReadingOrder, useGroupByRepository } from '@/lib/pr-grouping'
 import { SEARCHES, filterPullRequests } from '@/lib/pr-search'
@@ -172,7 +173,9 @@ function Home() {
   // says "ask Azure DevOps anyway".
   const [generation, refreshed] = useReducer((n: number) => n + 1, 0)
   const query = useQuery({
-    queryKey: ['inbox'],
+    // Shared with `useRename`, which corrects this row and marks it stale after
+    // a pull request is given a different title.
+    queryKey: INBOX_KEY,
     queryFn: () => {
       const fresh = forceFresh.current
       forceFresh.current = false

@@ -2,11 +2,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderHook } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import { INBOX_KEY } from './inbox-cache'
 import { useRename } from './rename'
 import { pullRequestKey } from './requeue'
 import { renamePullRequest } from '@/server/pull-request-fn'
 
 import type { ReactNode } from 'react'
+import type { PullRequestRow } from '@/server/inbox'
+import type { InboxResult } from '@/server/inbox-fn'
 import type { PullRequestRef } from '@/server/pull-request'
 
 // The two things this hook exists to get right, neither of which the header can be
@@ -22,6 +25,30 @@ const REF: PullRequestRef = {
   repositoryId: '22222222-2222-2222-2222-222222222222',
   id: 24698,
 }
+
+/** An inbox holding this pull request under the name it is about to lose. */
+function withInbox(title: string): QueryClient {
+  const client = new QueryClient()
+  const row = { id: REF.id, title } as PullRequestRow
+  client.setQueryData<InboxResult>(INBOX_KEY, {
+    inbox: {
+      identity: { id: 'me', displayName: 'Paul DeVito' },
+      teams: [],
+      mine: [row],
+      assignedToMe: [],
+      scanned: 1,
+      hidden: 0,
+    },
+    error: null,
+    connected: true,
+    rateLimit: null,
+  })
+
+  return client
+}
+
+const inboxTitle = (client: QueryClient) =>
+  client.getQueryData<InboxResult>(INBOX_KEY)?.inbox?.mine[0]?.title
 
 function mount(client: QueryClient) {
   const { result } = renderHook(() => useRename(REF), {
@@ -68,6 +95,36 @@ describe('useRename', () => {
     // Not belt-and-braces: a write can be refused on the way back after it landed,
     // so the only trustworthy title is the one that comes from a fresh read.
     expect(invalidated).toHaveBeenCalledWith({ queryKey: pullRequestKey(REF) })
+  })
+
+  it('puts the new title on the inbox row, so the table is not stale on the way back', async () => {
+    const client = withInbox('old name')
+    const invalidated = vi.spyOn(client, 'invalidateQueries')
+
+    await mount(client).current('move the logging sink off the shared account')
+
+    expect(inboxTitle(client)).toBe('move the logging sink off the shared account')
+    // Written *and* marked stale: the row above is this one field, and the poll
+    // is what answers for the rest of it.
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: INBOX_KEY })
+  })
+
+  it('keeps the old inbox row on a refusal, and still re-reads the inbox', async () => {
+    vi.mocked(renamePullRequest).mockResolvedValueOnce({
+      ok: false,
+      error: 'Azure DevOps answered 403.',
+      connected: true,
+    })
+
+    const client = withInbox('old name')
+    const invalidated = vi.spyOn(client, 'invalidateQueries')
+
+    await expect(mount(client).current('a title somebody else owns')).rejects.toThrow('403')
+
+    // Nothing here knows whether the write landed, so the row says what the last
+    // read said and the invalidation goes and finds out.
+    expect(inboxTitle(client)).toBe('old name')
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: INBOX_KEY })
   })
 
   it('rejects with something sayable when the refusal came with no reason', async () => {

@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 
+import { INBOX_KEY, retitleInboxRow } from './inbox-cache'
 import { pullRequestKey } from './requeue'
 import { renamePullRequest } from '@/server/pull-request-fn'
 
@@ -34,6 +35,11 @@ export function useRename(ref: PullRequestRef): (title: string) => Promise<void>
     try {
       const result = await renamePullRequest({ data: { ...ref, title } })
       if (!result.ok) throw new Error(result.error ?? 'Azure DevOps did not say why.')
+
+      // The header is not the only place this name is drawn. The inbox holds its
+      // own copy of the row and re-reads it every two minutes, so without this
+      // the table you go back to keeps the old title for as long as that takes.
+      retitleInboxRow(client, ref.id, title)
     } finally {
       // Re-read on failure as well as on success, `useRequeue`'s rule and for its
       // reason: a write that timed out on the way back may well have been applied
@@ -47,6 +53,13 @@ export function useRename(ref: PullRequestRef): (title: string) => Promise<void>
       // screen when the editor disappears, which reads as a rename that did
       // nothing.
       await client.invalidateQueries({ queryKey: pullRequestKey(ref) })
+
+      // The inbox as well, and for the same reason as the line above: a refused
+      // write can still have landed, and the row above is only written on the
+      // success path. Not awaited — the inbox is not on screen, and an org-wide
+      // list call is not something the field can stay busy through. It is
+      // inactive here, so this marks it stale and the table reads it on arrival.
+      void client.invalidateQueries({ queryKey: INBOX_KEY })
     }
   }
 }
