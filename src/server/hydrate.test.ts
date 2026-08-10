@@ -155,7 +155,7 @@ describe('readChecks', () => {
           { status: 'notApplicable' },
         ],
       }),
-    ).toEqual({ passed: 2, failed: 2, running: 1, waiting: 1 })
+    ).toEqual({ passed: 2, failed: 2, running: 1, waiting: 1, waitingOnPeople: 0 })
   })
 
   it('does not count a queued evaluation as one that is running', () => {
@@ -170,15 +170,34 @@ describe('readChecks', () => {
           { status: 'approved' },
           { status: 'queued' },
           { status: 'queued' },
-          { status: 'queued' },
-          { status: 'queued' },
+          { status: 'queued', configuration: { settings: { minimumApproverCount: 2 } } },
+          { status: 'queued', configuration: { settings: { requiredReviewerIds: ['a'] } } },
         ],
       }),
-    ).toEqual({ passed: 3, failed: 0, running: 0, waiting: 4 })
+    ).toEqual({ passed: 3, failed: 0, running: 0, waiting: 4, waitingOnPeople: 2 })
+  })
+
+  it('counts only the queued half of a reviewer policy as waiting on people', () => {
+    // The subset has to hold: an approved reviewer policy is nobody's job, and a
+    // row that counted it would send a reviewer to chase a vote already cast.
+    expect(
+      readChecks({
+        value: [
+          { status: 'approved', configuration: { settings: { minimumApproverCount: 2 } } },
+          { status: 'queued', configuration: { settings: { minimumApproverCount: 2 } } },
+        ],
+      }),
+    ).toEqual({ passed: 1, failed: 0, running: 0, waiting: 1, waitingOnPeople: 1 })
   })
 
   it('treats a PR with no policies as having no checks, not as passing', () => {
-    expect(readChecks({})).toEqual({ passed: 0, failed: 0, running: 0, waiting: 0 })
+    expect(readChecks({})).toEqual({
+      passed: 0,
+      failed: 0,
+      running: 0,
+      waiting: 0,
+      waitingOnPeople: 0,
+    })
   })
 })
 
@@ -286,7 +305,7 @@ describe('hydrate', () => {
       id: 24698,
       ok: true,
       data: {
-        checks: { passed: 1, failed: 1, running: 0, waiting: 0 },
+        checks: { passed: 1, failed: 1, running: 0, waiting: 0, waitingOnPeople: 0 },
         unresolved: 1,
         approvalReset: true,
         // The failing evaluation here carries no configuration, so nothing says

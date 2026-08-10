@@ -11,17 +11,20 @@ import {
   Message01Icon,
   RefreshIcon,
   Tick02Icon,
+  UserCheck01Icon,
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 
+import { Avatar } from '@/components/avatar'
 import { useCommand } from '@/commands/command-provider'
+import { voteWord } from '@/lib/people'
 import { groupByRepository } from '@/lib/pr-grouping'
 import { cn } from '@/lib/utils'
 
 import type { ReactNode } from 'react'
 
 import type { HydrationResult } from '@/server/hydrate'
-import type { PullRequestRow } from '@/server/inbox'
+import type { PullRequestRow, RowReviewer } from '@/server/inbox'
 
 // A list of pull requests as every page draws it — the inbox's two sections and
 // the history page's one — plus the keyboard selection that runs across whatever
@@ -72,11 +75,16 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
   const ready = result?.ok === true && result.data.readyToMerge
 
   // One pen per meaning, and the counts in mono because they are figures: at
-  // 6rem wide this column is read as a row of coloured marks, so the colour has
+  // 8rem wide this column is read as a row of coloured marks, so the colour has
   // to be the message. Red is something wrong, amber is something unfinished,
   // teal is something done, navy is something to look at.
+  //
+  // 8rem and not the 6rem it started at, because the unmet-policy badge became
+  // two. `overflow-hidden` with `justify-end` clips from the *left*, so a row
+  // holding every badge at once would have dropped the conflict mark — the one
+  // badge here that is free and the one that matters most.
   return (
-    <span className="text-muted-foreground flex w-24 shrink-0 items-center justify-end gap-1 overflow-hidden font-mono text-xs tabular-nums">
+    <span className="text-muted-foreground flex w-32 shrink-0 items-center justify-end gap-1 overflow-hidden font-mono text-xs tabular-nums">
       {/* Free from the list call, so it is the one badge that never waits. */}
       {row.conflicted ? (
         <Badge label="Merge conflicts">
@@ -98,8 +106,8 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
           It has to be told apart from the teal tick beside it, which says the
           much weaker "the checks that ran, passed" — so it is a different
           silhouette, not a second tick in a different weight, and the tick is
-          suppressed below while this is showing. Two teal marks in a 6rem column
-          would read as one emphatic thing rather than two different facts.
+          suppressed below while this is showing. Two teal marks in a column this
+          narrow would read as one emphatic thing rather than two different facts.
 
           The same teal pen as that tick, though, rather than a colour of its
           own: this column already spends red, amber, teal and navy, and a fifth
@@ -123,19 +131,44 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
           {checks.running}
         </Badge>
       ) : checks && checks.waiting > 0 ? (
-        /* The same amber pen as the clock above, because it is the same "not
-           finished" news — but a different glyph, because it is the opposite
-           instruction. A clock says wait and this will resolve itself; an
-           hourglass here says something has run out. `queued` is ADO's word for
-           an expired build, a build nobody queued, and a reviewer who has not
-           voted, and none of those clear up on their own. Ranked under the
-           clock so a pull request with one build running and four policies
-           unmet reads as running: that is the one of the two that is about to
-           change. */
-        <Badge label={`${checks.waiting} policies not satisfied yet`}>
-          <HugeiconsIcon icon={HourglassIcon} size={12} className="text-pen-amber" aria-hidden />
-          {checks.waiting}
-        </Badge>
+        /* Both in the same amber pen as the clock above, because it is the same
+           "not finished" news — but neither is a clock, because a clock says
+           wait and this will resolve itself. `queued` is ADO's word for an
+           expired build, a build nobody queued, and a reviewer who has not
+           voted, and none of those clear up on their own. Ranked under the clock
+           so a pull request with one build running and four policies unmet reads
+           as running: that is the one of the two that is about to change.
+
+           Two glyphs and not one, because a single count answered the wrong
+           question. "Three policies unmet" does not say whether to go and ask
+           somebody or to go and press a button, and those are the only two
+           things a reviewer can do about it. The face is the half a person
+           clears and the hourglass is the half a machine clears; the split comes
+           from the policy settings, per `policy-kind.ts`, so the badge and the
+           checklist it links to cannot disagree.
+
+           The face is first because it is the actionable half. Either can be
+           absent, and a row where every unmet policy is one kind draws one
+           badge — which is the same shape this column had before.
+
+           The hourglass keeps the plain label it always had rather than gaining
+           "build": its half is comment requirements and work item links too, and
+           the plain wording reads correctly whether or not the face is beside
+           it. */
+        <>
+          {checks.waitingOnPeople > 0 ? (
+            <Badge label={`${checks.waitingOnPeople} reviewer policies not satisfied yet`}>
+              <HugeiconsIcon icon={UserCheck01Icon} size={12} className="text-pen-amber" aria-hidden />
+              {checks.waitingOnPeople}
+            </Badge>
+          ) : null}
+          {checks.waiting > checks.waitingOnPeople ? (
+            <Badge label={`${checks.waiting - checks.waitingOnPeople} policies not satisfied yet`}>
+              <HugeiconsIcon icon={HourglassIcon} size={12} className="text-pen-amber" aria-hidden />
+              {checks.waiting - checks.waitingOnPeople}
+            </Badge>
+          ) : null}
+        </>
       ) : checks && checks.passed > 0 && !ready ? (
         // Not while the ready mark is up: it already implies this, and says more.
         <Badge label="All checks passed">
@@ -164,9 +197,9 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
  *
  * It sits in `Rich`'s box, at `Rich`'s width, because a closed PR never
  * hydrates: check state and comment counts are news about work you might still
- * act on, and there is none here. Reserving 6rem for badges that will never
- * arrive would leave a hole in every row of the page, so the one thing history
- * *does* have to say goes in it.
+ * act on, and there is none here. Reserving `Rich`'s width for badges that will
+ * never arrive would leave a hole in every row of the page, so the one thing
+ * history *does* have to say goes in it.
  *
  * Teal for landed, red for not. On this page the only question a row answers is
  * "did it ship", so the two answers take the two pens the eye already reads as
@@ -177,7 +210,7 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
  */
 function Outcome({ closed }: { closed: NonNullable<PullRequestRow['closed']> }) {
   return (
-    <span className="flex w-24 shrink-0 items-center justify-end overflow-hidden">
+    <span className="flex w-32 shrink-0 items-center justify-end overflow-hidden">
       <span
         className={cn(
           'prof-badge tracking-label px-1.5 py-0.5 text-2xs leading-none uppercase',
@@ -185,6 +218,81 @@ function Outcome({ closed }: { closed: NonNullable<PullRequestRow['closed']> }) 
         )}
       >
         {closed.outcome}
+      </span>
+    </span>
+  )
+}
+
+/**
+ * How many faces a row draws before it starts counting instead.
+ *
+ * Three, because the live org runs small review panels once the teams are set
+ * aside: 23 of the 150 reviewers measured across 30 pull requests were people.
+ * A fourth slot would be reserved on every row of the page to be used by almost
+ * none of them.
+ */
+const FACES = 3
+
+/**
+ * Which pen rings a face. `VOTE_TONES` in `pr-detail.tsx` reads the same scale
+ * the same way — both approvals teal, because this says one thing: is this
+ * person standing between the branch and the target.
+ *
+ * No vote keeps `.prof-avatar`'s own outline. It is the state most reviewers are
+ * in on most pull requests, so it is the one that must not draw the eye.
+ */
+const VOTE_RINGS = new Map<number, string>([
+  [10, 'border-pen-green'],
+  [5, 'border-pen-green'],
+  [-5, 'border-pen-amber'],
+  [-10, 'border-destructive'],
+])
+
+/**
+ * Who is on the review, as faces.
+ *
+ * **Teams are dropped, and that is the whole design.** 127 of the 150 reviewers
+ * measured on this org are groups, so a column that drew every reviewer would be
+ * a row of identical group glyphs on most pull requests — and a group is not
+ * somebody you can go and ask. The detail page lists them in full, one click
+ * away, which is where a question about a team belongs.
+ *
+ * Overlapped rather than spaced: the column has to hold three faces in the width
+ * a truncated name would have taken, and a review panel is read as a cluster
+ * rather than counted. The order is ADO's, so a vote cast between two polls
+ * changes a ring and never moves a face.
+ */
+function Faces({ reviewers }: { reviewers: readonly RowReviewer[] }) {
+  const people = reviewers.filter((reviewer) => !reviewer.isContainer)
+  const shown = people.slice(0, FACES)
+  const rest = people.length - shown.length
+
+  // Rendered even when empty, for `Rich`'s reason: the box is reserved so that a
+  // row with reviewers and a row without are the same shape.
+  return (
+    <span
+      // `self-center` because the row is `items-baseline` and these are blobs.
+      // A circle sitting on a text baseline hangs below the line.
+      className="hidden w-14 shrink-0 items-center self-center md:flex"
+      title={people.length === 0 ? undefined : people.map((one) => one.displayName).join(', ')}
+    >
+      {shown.map((reviewer, at) => (
+        <Avatar
+          key={reviewer.id}
+          href={reviewer.avatarHref}
+          name={reviewer.displayName}
+          // The overlap is stated by index rather than by a `:not(:first-child)`
+          // selector, because `Avatar` takes one class string and nothing else.
+          className={cn('size-4 text-2xs', at > 0 && '-ml-1', VOTE_RINGS.get(reviewer.vote))}
+        />
+      ))}
+      {rest > 0 ? <span className="annotation ml-0.5">+{rest}</span> : null}
+      {/* The faces are `aria-hidden` by `Avatar`'s own contract, and here there
+          is no name written beside them to read instead. */}
+      <span className="sr-only">
+        {people.length === 0
+          ? 'No reviewers'
+          : `Reviewers: ${people.map((one) => `${one.displayName} (${voteWord(one.vote)})`).join(', ')}`}
       </span>
     </span>
   )
@@ -238,6 +346,9 @@ function Row({
       <span className="text-muted-foreground hidden shrink-0 truncate text-xs md:block md:max-w-32">
         {row.author}
       </span>
+      {/* Next to the author, because the pair is the whole question a triage
+          pass asks of a row: who wrote it, and who is on the hook to read it. */}
+      <Faces reviewers={row.reviewers} />
       <span className="text-muted-foreground hidden shrink-0 truncate font-mono text-xs lg:block lg:max-w-28">
         →{row.targetBranch}
       </span>

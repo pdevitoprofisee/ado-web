@@ -221,6 +221,19 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
     // the licence at the top of this list.
     up: 'DELETE FROM pr_cache',
   },
+  {
+    version: 9,
+    name: 'pr-cache-waiting-on-people',
+    // Migration 8 again, one level down: `Checks.waiting` now carries
+    // `waitingOnPeople` beside it, so the inbox row can say whether it is a
+    // person or a machine that a pull request is stuck on.
+    //
+    // A row written before this has `waiting` but not the new field. It would
+    // draw every unmet policy as a machine's, which puts "go and ask somebody"
+    // rows in the pile you are entitled to ignore. Cleared, per the licence at
+    // the top of this list.
+    up: 'DELETE FROM pr_cache',
+  },
 ]
 
 /**

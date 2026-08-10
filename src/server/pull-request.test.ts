@@ -491,6 +491,20 @@ describe('the policy checklist', () => {
     expect(rows[3].url).toBeNull()
   })
 
+  it('marks the rows that a person has to satisfy', () => {
+    const rows = policies([
+      evaluation(101, 'Required reviewers', 'queued', {
+        requiredReviewerIds: [ME],
+        minimumApproverCount: 1,
+      }),
+      evaluation(102, 'Minimum number of reviewers', 'queued', { minimumApproverCount: 2 }),
+      evaluation(103, 'Build', 'queued', { buildDefinitionId: 320 }),
+      evaluation(104, 'Comment requirements', 'rejected', {}),
+    ])
+
+    expect(rows.map((row) => row.waitsOnPeople)).toEqual([true, true, false, false])
+  })
+
   it('does not invent a status vocabulary of its own', () => {
     const rows = policies([evaluation(101, 'Something new', 'somethingElse', {})])
 

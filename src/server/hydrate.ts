@@ -1,8 +1,10 @@
 import { noteActivity } from './notifications'
+import { waitsOnPeople } from './policy-kind'
 import { readPrCache, writePrCache } from './pr-cache'
 
 import type { DatabaseSync } from 'node:sqlite'
 import type { AdoClient } from './ado-client'
+import type { ReviewerPolicySettings } from './policy-kind'
 
 // Server-only. The per-PR half of the inbox: what a reviewer actually triages
 // on, which the one cheap list call cannot carry.
@@ -70,6 +72,8 @@ interface EvaluationList {
     readonly configuration?: {
       readonly isBlocking?: boolean
       readonly isEnabled?: boolean
+      /** Only the keys that say "people". See `policy-kind.ts`. */
+      readonly settings?: ReviewerPolicySettings
     }
   }>
 }
@@ -94,6 +98,16 @@ export interface Checks {
    * different instruction to the reviewer: waiting will not fix it.
    */
   readonly waiting: number
+  /**
+   * How many of `waiting` are waiting on a person — a *subset* of it, not a
+   * sibling, so the row draws `waiting - waitingOnPeople` for the rest.
+   *
+   * Split out because the two halves are different instructions and the single
+   * count hid which one a row was: an unmet reviewer policy needs somebody
+   * asked, and a build that never queued needs a button pressed. See
+   * `policy-kind.ts` for why the settings decide this and the name does not.
+   */
+  readonly waitingOnPeople: number
 }
 
 /**
@@ -228,6 +242,7 @@ export function readChecks(evaluations: EvaluationList): Checks {
   let failed = 0
   let running = 0
   let waiting = 0
+  let waitingOnPeople = 0
 
   for (const evaluation of evaluations.value ?? []) {
     switch (evaluation.status) {
@@ -243,11 +258,12 @@ export function readChecks(evaluations: EvaluationList): Checks {
         break
       case 'queued':
         waiting++
+        if (waitsOnPeople(evaluation.configuration?.settings)) waitingOnPeople++
         break
     }
   }
 
-  return { passed, failed, running, waiting }
+  return { passed, failed, running, waiting, waitingOnPeople }
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   PencilEdit02Icon,
   RefreshIcon,
   Tick02Icon,
+  UserCheck01Icon,
   UserMultipleIcon,
   UserRemove01Icon,
 } from '@hugeicons/core-free-icons'
@@ -51,6 +52,7 @@ import { buildFileTree, treeFiles } from '@/lib/file-tree'
 import { lifecycleAction, useAbandon, useReactivate } from '@/lib/lifecycle'
 import { readLineTarget } from '@/lib/line-link'
 import { commitMessage, defaultDraft, useSquashMerge } from '@/lib/merge'
+import { voteWord } from '@/lib/people'
 import { useRename } from '@/lib/rename'
 import { useRequeue } from '@/lib/requeue'
 import { useWithdrawReviewer, withdrawBlocker } from '@/lib/reviewers'
@@ -831,21 +833,58 @@ function Glyph({ icon, className }: { icon: IconSvgElement; className: string })
   return <HugeiconsIcon icon={icon} size={14} className={cn('shrink-0', className)} aria-hidden />
 }
 
-function PolicyIcon({ status }: { status: PolicyStatus }) {
+/** The pen, apart from the mark, so a row can keep one and change the other. */
+function pen(status: PolicyStatus): string {
   switch (status) {
     case 'approved':
-      return <Glyph icon={Tick02Icon} className="text-pen-green" />
+      return 'text-pen-green'
     case 'rejected':
     case 'broken':
-      return <Glyph icon={Cancel01Icon} className="text-destructive" />
+      return 'text-destructive'
     case 'queued':
     case 'running':
-      return <Glyph icon={Clock01Icon} className="text-pen-amber" />
+      return 'text-pen-amber'
     case 'notApplicable':
-      return <Glyph icon={MinusSignIcon} className="text-ink-300" />
+      return 'text-ink-300'
     default:
-      return <Glyph icon={HelpCircleIcon} className="text-muted-foreground" />
+      return 'text-muted-foreground'
   }
+}
+
+function verdictMark(status: PolicyStatus): IconSvgElement {
+  switch (status) {
+    case 'approved':
+      return Tick02Icon
+    case 'rejected':
+    case 'broken':
+      return Cancel01Icon
+    case 'queued':
+    case 'running':
+      return Clock01Icon
+    case 'notApplicable':
+      return MinusSignIcon
+    default:
+      return HelpCircleIcon
+  }
+}
+
+/**
+ * The mark on a policy row: what the row waits on, or its verdict.
+ *
+ * A reviewer policy draws a face instead of a verdict mark, because the two
+ * kinds of blocker are not equally interesting. "A build has not finished" is a
+ * thing that resolves itself. "Nobody has looked at this yet" is a thing you must
+ * go and ask a person for, and finding those rows must not need reading four
+ * policy names.
+ *
+ * The verdict survives the swap: the pen, the group heading, and the word at the
+ * end of the row all still carry it. Inside a group every row holds the same
+ * verdict anyway, so there the mark was saying the heading over again.
+ */
+function PolicyIcon({ policy }: { policy: Policy }) {
+  const icon = policy.waitsOnPeople ? UserCheck01Icon : verdictMark(policy.status)
+
+  return <Glyph icon={icon} className={pen(policy.status)} />
 }
 
 /**
@@ -893,7 +932,7 @@ function PolicyRow({
     // wide.
     <li className="border-border border-b px-2 py-1 text-sm last:border-b-0">
       <div className="flex items-baseline gap-2">
-        <PolicyIcon status={policy.status} />
+        <PolicyIcon policy={policy} />
         <span className="min-w-0 flex-1">
           {policy.name}
           {policy.detail === null ? null : (
@@ -1017,19 +1056,6 @@ function PolicyChecklist({
       )}
     </div>
   )
-}
-
-/** ADO's vote scale is five integers; this is what they mean. */
-const VOTES = new Map<number, string>([
-  [10, 'approved'],
-  [5, 'approved with suggestions'],
-  [0, 'no vote'],
-  [-5, 'waiting for author'],
-  [-10, 'rejected'],
-])
-
-export function voteWord(vote: number): string {
-  return VOTES.get(vote) ?? `vote ${vote}`
 }
 
 /**

@@ -1,4 +1,5 @@
 import { resolveIdentity } from './inbox'
+import { waitsOnPeople } from './policy-kind'
 
 import type { AdoClient } from './ado-client'
 
@@ -186,6 +187,8 @@ export interface Policy {
   readonly blocking: boolean
   /** The specific thing: a build number, an approval count, a required reviewer. */
   readonly detail: string | null
+  /** Whether people, and not a machine, satisfy this row. See `policy-kind.ts`. */
+  readonly waitsOnPeople: boolean
   /** A build result, when the policy has one to point at. */
   readonly url: string | null
   /**
@@ -663,6 +666,7 @@ export function toPolicies(
         configuration.isEnabled !== false &&
         !SATISFIED.has(status),
       detail: policyDetail(settings, evaluation.context),
+      waitsOnPeople: waitsOnPeople(settings),
       url:
         buildId === undefined
           ? null

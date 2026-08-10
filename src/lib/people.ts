@@ -1,9 +1,14 @@
 // A person, as Azure DevOps hands them over and as this app has to draw them.
 //
-// Two problems, one module, because they are the same problem twice: ADO gives
-// you an identity that a reader would not recognise, and something has to turn
-// it back into a person. A `displayName` with no usable image becomes a
-// monogram; an `@<GUID>` buried in a comment body becomes a name.
+// One problem three times: ADO gives you an identity a reader would not
+// recognise, and something has to turn it back into a person. A `displayName`
+// with no usable image becomes a monogram; an `@<GUID>` buried in a comment body
+// becomes a name; a vote of `-5` becomes "waiting for author".
+//
+// The vote scale is here rather than in `pr-detail.tsx`, where it started,
+// because the inbox row draws it too — as a ring round a face — and
+// `pr-detail.tsx` already value-imports `pr-list.tsx` for `age`. Reading it back
+// the other way would be a cycle.
 //
 // **Nothing here imports anything, and that is load-bearing.** `threads.ts`
 // value-imports this file, and every other import in that file is `import type`
@@ -27,6 +32,19 @@ export function initials(displayName: string): string {
 
   const last = words.length > 1 ? words[words.length - 1][0] : ''
   return (words[0][0] + last).toUpperCase()
+}
+
+/** ADO's vote scale is five integers; this is what they mean. */
+const VOTES = new Map<number, string>([
+  [10, 'approved'],
+  [5, 'approved with suggestions'],
+  [0, 'no vote'],
+  [-5, 'waiting for author'],
+  [-10, 'rejected'],
+])
+
+export function voteWord(vote: number): string {
+  return VOTES.get(vote) ?? `vote ${vote}`
 }
 
 /**

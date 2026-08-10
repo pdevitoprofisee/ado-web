@@ -67,6 +67,17 @@ interface AdoReviewer {
   readonly displayName?: string
   readonly vote?: number
   readonly isContainer?: boolean
+  /**
+   * `_links.avatar.href` — read for the same field, and for the same reason, as
+   * `Person.avatarHref` in `pull-request.ts`: `imageUrl` sits beside it on the
+   * wire and 302s to the sign-in page without a credential.
+   *
+   * T-030 counted this href on 30 of 30 reviewers, but on the *detail* endpoint.
+   * The list endpoint's reviewers array is the one part of the live inventory
+   * that came back truncated, so this is read optimistically: absent lands on a
+   * monogram, which is what the inbox drew before.
+   */
+  readonly _links?: { readonly avatar?: { readonly href?: string } }
 }
 
 /** Exported for `history.ts`, which lists the same shape with a different filter. */
@@ -113,6 +124,23 @@ export interface Team {
  */
 export type ClosedOutcome = 'completed' | 'abandoned'
 
+/**
+ * A reviewer as an inbox row can draw one: a face and whether they have voted.
+ *
+ * Narrower than `pull-request.ts`'s `Reviewer` on purpose. `isRequired` and
+ * `votedFor` answer questions a row has no space to ask, and the row that wants
+ * them is one click away.
+ */
+export interface RowReviewer {
+  readonly id: string
+  readonly displayName: string
+  /** Same scale as `PullRequestRow.myVote`. */
+  readonly vote: number
+  /** A team rather than a person, which gets a different fallback glyph. */
+  readonly isContainer: boolean
+  readonly avatarHref: string | null
+}
+
 export interface PullRequestRow {
   readonly id: number
   readonly title: string
@@ -157,6 +185,15 @@ export interface PullRequestRow {
   readonly conflicted: boolean
   /** My standing vote: 10 approved, 5 with suggestions, -5 waiting, -10 rejected. */
   readonly myVote: number
+  /**
+   * Everyone on the review, in the order ADO listed them — which is the order
+   * its own web UI draws, and the only stable one available. Sorting by vote
+   * would move a face every time somebody approved.
+   *
+   * Free: the list entry carries the whole array already, and `partition` walks
+   * it to find me. The row shows the faces it can and says nothing it cannot.
+   */
+  readonly reviewers: readonly RowReviewer[]
   /**
    * How and when this pull request stopped being open — `null` on the inbox,
    * where every row is `active` by construction.
@@ -331,6 +368,13 @@ export function toRow(
     repositoryId: pr.repository?.id ?? null,
     conflicted: pr.mergeStatus === 'conflicts',
     myVote,
+    reviewers: (pr.reviewers ?? []).map((reviewer) => ({
+      id: reviewer.id ?? '',
+      displayName: reviewer.displayName ?? 'unknown',
+      vote: reviewer.vote ?? 0,
+      isContainer: reviewer.isContainer === true,
+      avatarHref: reviewer._links?.avatar?.href ?? null,
+    })),
     closed,
   }
 }

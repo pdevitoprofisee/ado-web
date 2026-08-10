@@ -26,6 +26,7 @@ const row = (id: number, title: string): PullRequestRow => ({
   repositoryId: '22222222-2222-2222-2222-222222222222',
   conflicted: false,
   myVote: 0,
+  reviewers: [],
   closed: null,
 })
 

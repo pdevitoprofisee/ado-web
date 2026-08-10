@@ -62,6 +62,7 @@ const row = (over: Partial<PullRequestRow> = {}): PullRequestRow => ({
   repositoryId: '22222222-2222-2222-2222-222222222222',
   conflicted: false,
   myVote: 0,
+  reviewers: [],
   closed: null,
   ...over,
 })
@@ -70,7 +71,7 @@ const rich = (data: Partial<Hydration> = {}): HydrationResult => ({
   id: 3302,
   ok: true,
   data: {
-    checks: { passed: 0, failed: 0, running: 0, waiting: 0 },
+    checks: { passed: 0, failed: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
     unresolved: 0,
     approvalReset: false,
     // Not ready by default, so the strongest badge in the column only ever shows
@@ -195,7 +196,7 @@ describe('PullRequestSection', () => {
         empty="none"
         hydration={() =>
           rich({
-            checks: { passed: 4, failed: 2, running: 0, waiting: 0 },
+            checks: { passed: 4, failed: 2, running: 0, waiting: 0, waitingOnPeople: 0 },
             unresolved: 3,
             approvalReset: true,
           })
@@ -209,7 +210,7 @@ describe('PullRequestSection', () => {
   })
 
   it('collapses the checks to one badge: failures, else running, else waiting, else all-clear', () => {
-    // One glyph rather than four counts, because the column is 6rem wide and
+    // One glyph rather than four counts, because the column is narrow and
     // "something is red" is the whole decision a reviewer makes from a list.
     const section = (checks: Hydration['checks']) => (
       <PullRequestSection
@@ -220,24 +221,55 @@ describe('PullRequestSection', () => {
       />
     )
 
-    const { rerender } = render(section({ passed: 1, failed: 2, running: 3, waiting: 1 }))
+    const { rerender } = render(
+      section({ passed: 1, failed: 2, running: 3, waiting: 1, waitingOnPeople: 0 }),
+    )
     expect(screen.getByTitle('2 checks failed')).toBeVisible()
     expect(screen.queryByTitle(/checks running/)).toBeNull()
 
-    rerender(section({ passed: 1, failed: 0, running: 3, waiting: 4 }))
+    rerender(section({ passed: 1, failed: 0, running: 3, waiting: 4, waitingOnPeople: 0 }))
     expect(screen.getByTitle('3 checks running')).toBeVisible()
     // The count is what is moving, not what is outstanding: four policies are
     // unmet here and the badge deliberately says three.
     expect(screen.queryByTitle(/not satisfied/)).toBeNull()
 
-    rerender(section({ passed: 1, failed: 0, running: 0, waiting: 4 }))
+    rerender(section({ passed: 1, failed: 0, running: 0, waiting: 4, waitingOnPeople: 0 }))
     expect(screen.getByTitle('4 policies not satisfied yet')).toBeVisible()
     // The bug this split exists for: nothing is running, so nothing may claim to
     // be. An expired build and a reviewer who has not voted are not progress.
     expect(screen.queryByTitle(/checks running/)).toBeNull()
 
-    rerender(section({ passed: 5, failed: 0, running: 0, waiting: 0 }))
+    rerender(section({ passed: 5, failed: 0, running: 0, waiting: 0, waitingOnPeople: 0 }))
     expect(screen.getByTitle('All checks passed')).toBeVisible()
+  })
+
+  it('splits the unmet policies into the half a person clears and the half a machine does', () => {
+    const section = (checks: Hydration['checks']) => (
+      <PullRequestSection
+        title="Mine"
+        rows={[row()]}
+        empty="none"
+        hydration={() => rich({ checks })}
+      />
+    )
+
+    const { rerender } = render(
+      section({ passed: 1, failed: 0, running: 0, waiting: 5, waitingOnPeople: 2 }),
+    )
+    expect(screen.getByTitle('2 reviewer policies not satisfied yet')).toBeVisible()
+    // Three, not five: the reviewer half is already drawn and counting it twice
+    // would tell a reviewer there are eight things outstanding.
+    expect(screen.getByTitle('3 policies not satisfied yet')).toBeVisible()
+
+    // One kind only draws one badge, which is the shape this column had before
+    // the split. An empty badge saying nothing is worse than no badge.
+    rerender(section({ passed: 1, failed: 0, running: 0, waiting: 2, waitingOnPeople: 2 }))
+    expect(screen.getByTitle('2 reviewer policies not satisfied yet')).toBeVisible()
+    expect(screen.queryByTitle(/^\d+ policies not satisfied yet$/)).toBeNull()
+
+    rerender(section({ passed: 1, failed: 0, running: 0, waiting: 2, waitingOnPeople: 0 }))
+    expect(screen.getByTitle('2 policies not satisfied yet')).toBeVisible()
+    expect(screen.queryByTitle(/reviewer policies/)).toBeNull()
   })
 
   it('marks a row that is ready to merge, in place of the weaker all-clear tick', () => {
@@ -247,7 +279,10 @@ describe('PullRequestSection', () => {
         rows={[row()]}
         empty="none"
         hydration={() =>
-          rich({ checks: { passed: 5, failed: 0, running: 0, waiting: 0 }, readyToMerge: true })
+          rich({
+            checks: { passed: 5, failed: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
+            readyToMerge: true,
+          })
         }
       />,
     )
@@ -265,7 +300,10 @@ describe('PullRequestSection', () => {
         rows={[row()]}
         empty="none"
         hydration={() =>
-          rich({ checks: { passed: 5, failed: 0, running: 0, waiting: 0 }, blocked: true })
+          rich({
+            checks: { passed: 5, failed: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
+            blocked: true,
+          })
         }
       />,
     )
@@ -320,6 +358,73 @@ describe('PullRequestSection', () => {
     render(<PullRequestSection title="Mine" rows={[row({ id: 1 })]} total={1} empty="none" />)
 
     expect(screen.getByRole('heading')).toHaveAccessibleName('Mine, 1 pull requests')
+  })
+
+  describe('the reviewer faces', () => {
+    const person = (displayName: string, vote = 0) => ({
+      id: displayName,
+      displayName,
+      vote,
+      isContainer: false,
+      avatarHref: null,
+    })
+
+    it('draws a face per person and names each one with their vote', () => {
+      render(
+        <PullRequestSection
+          title="Mine"
+          rows={[row({ reviewers: [person('Naveen Angali', 10), person('Ana Ruiz', -5)] })]}
+          empty="none"
+        />,
+      )
+
+      // The faces are `aria-hidden` by `Avatar`'s contract, so the words are the
+      // only thing a reader who cannot see them gets.
+      expect(
+        screen.getByText('Reviewers: Naveen Angali (approved), Ana Ruiz (waiting for author)'),
+      ).toBeInTheDocument()
+      expect(screen.getByText('NA')).toBeInTheDocument()
+    })
+
+    it('leaves the teams out, because a team is not somebody you can go and ask', () => {
+      render(
+        <PullRequestSection
+          title="Mine"
+          rows={[
+            row({
+              reviewers: [
+                { ...person('[SaaS]\\DevOps Team'), isContainer: true },
+                person('Naveen Angali'),
+              ],
+            }),
+          ]}
+          empty="none"
+        />,
+      )
+
+      expect(screen.getByText('Reviewers: Naveen Angali (no vote)')).toBeInTheDocument()
+    })
+
+    it('counts the people it ran out of room for rather than dropping them silently', () => {
+      render(
+        <PullRequestSection
+          title="Mine"
+          rows={[row({ reviewers: ['A One', 'B Two', 'C Three', 'D Four', 'E Five'].map((n) => person(n)) })]}
+          empty="none"
+        />,
+      )
+
+      expect(screen.getByText('+2')).toBeVisible()
+      // Every name is still read out, including the two with no face: the cap is
+      // a width, not a decision about who is on the review.
+      expect(screen.getByText(/D Four \(no vote\), E Five \(no vote\)$/)).toBeInTheDocument()
+    })
+
+    it('says there are none rather than leaving a reader on an empty box', () => {
+      render(<PullRequestSection title="Mine" rows={[row({ reviewers: [] })]} empty="none" />)
+
+      expect(screen.getByText('No reviewers')).toBeInTheDocument()
+    })
   })
 })
 

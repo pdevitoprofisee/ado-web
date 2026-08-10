@@ -262,6 +262,59 @@ describe('partition', () => {
       closed: null,
     })
   })
+
+  it('carries every reviewer through, teams included, with the avatar href when ADO sent one', () => {
+    // Teams are kept rather than dropped here because dropping them is the
+    // *renderer's* decision: `partition` above reads `isContainer` to work out
+    // whose inbox this row belongs in, and a row that had lost its teams could
+    // not answer that if this ever ran twice.
+    const { assignedToMe } = split([
+      pr(3302, {
+        reviewers: [
+          { id: TEAM, displayName: '[SaaS]\\DevOps Team', isContainer: true },
+          {
+            id: COLLEAGUE,
+            displayName: 'Naveen Angali',
+            vote: 10,
+            _links: { avatar: { href: 'https://ado/_apis/GraphProfile/MemberAvatars/aad.abc' } },
+          },
+        ],
+      }),
+    ])
+
+    expect(assignedToMe[0].reviewers).toEqual([
+      {
+        id: TEAM,
+        displayName: '[SaaS]\\DevOps Team',
+        vote: 0,
+        isContainer: true,
+        avatarHref: null,
+      },
+      {
+        id: COLLEAGUE,
+        displayName: 'Naveen Angali',
+        vote: 10,
+        isContainer: false,
+        avatarHref: 'https://ado/_apis/GraphProfile/MemberAvatars/aad.abc',
+      },
+    ])
+  })
+
+  it('lands a reviewer with no avatar href on null, never on the other image field', () => {
+    // `imageUrl` sits beside `_links.avatar.href` on the wire and 302s to the
+    // sign-in page without a credential. Reading it would draw a broken image
+    // where the monogram belongs.
+    const { assignedToMe } = split([
+      pr(3302, {
+        reviewers: [
+          { id: TEAM, isContainer: true },
+          { id: COLLEAGUE, imageUrl: 'https://ado/_api/_common/identityImage' },
+        ],
+      }),
+    ])
+
+    expect(assignedToMe[0].reviewers[1].avatarHref).toBeNull()
+  })
 })
 
 /**
