@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import {
   Alert02Icon,
+  AlertDiamondIcon,
   Cancel01Icon,
   Clock01Icon,
   GitMergeConflictIcon,
@@ -74,6 +75,9 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
   const checks = result?.ok === true ? result.data.checks : null
   const ready = result?.ok === true && result.data.readyToMerge
 
+  // `failedBuilds` is a subset of `failed`, so this is everything else that broke.
+  const failedOther = checks === null ? 0 : checks.failed - checks.failedBuilds
+
   // One pen per meaning, and the counts in mono because they are figures: at
   // 8rem wide this column is read as a row of coloured marks, so the colour has
   // to be the message. Red is something wrong, amber is something unfinished,
@@ -121,10 +125,44 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
       ) : null}
 
       {checks && checks.failed > 0 ? (
-        <Badge label={`${checks.failed} checks failed`}>
-          <HugeiconsIcon icon={Cancel01Icon} size={12} className="text-destructive" aria-hidden />
-          {checks.failed}
-        </Badge>
+        /* Split by kind, exactly the way the unmet-policy badge below is, and for
+           the same reason one level down the scale: ADO reports a broken build
+           and a reviewer who pressed Reject under one status pair, and "2 checks
+           failed" does not say whether to go and read a pipeline or go and talk
+           to somebody. See `policy-kind.ts` for why the settings decide this.
+
+           **The build is the one mark in this column that is filled, and that is
+           the whole point.** Red was already spent here three ways — the conflict
+           glyph, the reset glyph, and this — so hue could not make a broken build
+           louder than the two marks beside it. Fill against outline can, the way
+           marker against pen can on the reviewer faces, and a filled shape is
+           read before any of the linework around it. It costs about 12px of the
+           128, which this column has since the failure branch and the waiting
+           branch are exclusive.
+
+           A build first, and not because more is broken: a rejection is already
+           written on the row as a red ring on that reviewer's face, and a build
+           that broke is written nowhere else. */
+        <>
+          {checks.failedBuilds > 0 ? (
+            <Badge label={`${checks.failedBuilds} build ${checks.failedBuilds === 1 ? 'check' : 'checks'} failed`}>
+              {/* `prof-badge--red` carries the pen, so the glyph takes no colour
+                  of its own — and the measurements are `Outcome`'s, not
+                  `.prof-badge`'s own 4px/10px, which would stand taller than
+                  every other row on the page. */}
+              <span className="prof-badge prof-badge--red gap-0.5 px-1.5 py-0.5 text-2xs leading-none">
+                <HugeiconsIcon icon={AlertDiamondIcon} size={12} aria-hidden />
+                {checks.failedBuilds}
+              </span>
+            </Badge>
+          ) : null}
+          {failedOther > 0 ? (
+            <Badge label={`${failedOther} ${failedOther === 1 ? 'check' : 'checks'} failed`}>
+              <HugeiconsIcon icon={Cancel01Icon} size={12} className="text-destructive" aria-hidden />
+              {failedOther}
+            </Badge>
+          ) : null}
+        </>
       ) : checks && checks.running > 0 ? (
         <Badge label={`${checks.running} checks running`}>
           <HugeiconsIcon icon={Clock01Icon} size={12} className="text-pen-amber" aria-hidden />

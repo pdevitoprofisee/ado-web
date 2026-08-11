@@ -234,6 +234,19 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
     // the top of this list.
     up: 'DELETE FROM pr_cache',
   },
+  {
+    version: 10,
+    name: 'pr-cache-failed-builds',
+    // Migration 9's split, on the other end of the scale: `Checks.failed` now
+    // carries `failedBuilds` beside it, so a red mark on the row can say a build
+    // broke rather than that some check somewhere did.
+    //
+    // A row written before this has `failed` but not the new field, so
+    // `failed - undefined` is `NaN` and `NaN > 0` is false — a stale row would
+    // draw *neither* half of its failures. Cleared, per the licence at the top of
+    // this list.
+    up: 'DELETE FROM pr_cache',
+  },
 ]
 
 /**

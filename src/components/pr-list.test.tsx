@@ -71,7 +71,7 @@ const rich = (data: Partial<Hydration> = {}): HydrationResult => ({
   id: 3302,
   ok: true,
   data: {
-    checks: { passed: 0, failed: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
+    checks: { passed: 0, failed: 0, failedBuilds: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
     unresolved: 0,
     approvalReset: false,
     // Not ready by default, so the strongest badge in the column only ever shows
@@ -196,7 +196,7 @@ describe('PullRequestSection', () => {
         empty="none"
         hydration={() =>
           rich({
-            checks: { passed: 4, failed: 2, running: 0, waiting: 0, waitingOnPeople: 0 },
+            checks: { passed: 4, failed: 2, failedBuilds: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
             unresolved: 3,
             approvalReset: true,
           })
@@ -222,24 +222,24 @@ describe('PullRequestSection', () => {
     )
 
     const { rerender } = render(
-      section({ passed: 1, failed: 2, running: 3, waiting: 1, waitingOnPeople: 0 }),
+      section({ passed: 1, failed: 2, failedBuilds: 0, running: 3, waiting: 1, waitingOnPeople: 0 }),
     )
     expect(screen.getByTitle('2 checks failed')).toBeVisible()
     expect(screen.queryByTitle(/checks running/)).toBeNull()
 
-    rerender(section({ passed: 1, failed: 0, running: 3, waiting: 4, waitingOnPeople: 0 }))
+    rerender(section({ passed: 1, failed: 0, failedBuilds: 0, running: 3, waiting: 4, waitingOnPeople: 0 }))
     expect(screen.getByTitle('3 checks running')).toBeVisible()
     // The count is what is moving, not what is outstanding: four policies are
     // unmet here and the badge deliberately says three.
     expect(screen.queryByTitle(/not satisfied/)).toBeNull()
 
-    rerender(section({ passed: 1, failed: 0, running: 0, waiting: 4, waitingOnPeople: 0 }))
+    rerender(section({ passed: 1, failed: 0, failedBuilds: 0, running: 0, waiting: 4, waitingOnPeople: 0 }))
     expect(screen.getByTitle('4 policies not satisfied yet')).toBeVisible()
     // The bug this split exists for: nothing is running, so nothing may claim to
     // be. An expired build and a reviewer who has not voted are not progress.
     expect(screen.queryByTitle(/checks running/)).toBeNull()
 
-    rerender(section({ passed: 5, failed: 0, running: 0, waiting: 0, waitingOnPeople: 0 }))
+    rerender(section({ passed: 5, failed: 0, failedBuilds: 0, running: 0, waiting: 0, waitingOnPeople: 0 }))
     expect(screen.getByTitle('All checks passed')).toBeVisible()
   })
 
@@ -254,7 +254,7 @@ describe('PullRequestSection', () => {
     )
 
     const { rerender } = render(
-      section({ passed: 1, failed: 0, running: 0, waiting: 5, waitingOnPeople: 2 }),
+      section({ passed: 1, failed: 0, failedBuilds: 0, running: 0, waiting: 5, waitingOnPeople: 2 }),
     )
     expect(screen.getByTitle('2 reviewer policies not satisfied yet')).toBeVisible()
     // Three, not five: the reviewer half is already drawn and counting it twice
@@ -263,13 +263,45 @@ describe('PullRequestSection', () => {
 
     // One kind only draws one badge, which is the shape this column had before
     // the split. An empty badge saying nothing is worse than no badge.
-    rerender(section({ passed: 1, failed: 0, running: 0, waiting: 2, waitingOnPeople: 2 }))
+    rerender(section({ passed: 1, failed: 0, failedBuilds: 0, running: 0, waiting: 2, waitingOnPeople: 2 }))
     expect(screen.getByTitle('2 reviewer policies not satisfied yet')).toBeVisible()
     expect(screen.queryByTitle(/^\d+ policies not satisfied yet$/)).toBeNull()
 
-    rerender(section({ passed: 1, failed: 0, running: 0, waiting: 2, waitingOnPeople: 0 }))
+    rerender(section({ passed: 1, failed: 0, failedBuilds: 0, running: 0, waiting: 2, waitingOnPeople: 0 }))
     expect(screen.getByTitle('2 policies not satisfied yet')).toBeVisible()
     expect(screen.queryByTitle(/reviewer policies/)).toBeNull()
+  })
+
+  it('splits the failures the same way, and says which of them is a build', () => {
+    const section = (checks: Hydration['checks']) => (
+      <PullRequestSection
+        title="Mine"
+        rows={[row()]}
+        empty="none"
+        hydration={() => rich({ checks })}
+      />
+    )
+
+    const { rerender } = render(
+      section({ passed: 1, failed: 3, failedBuilds: 2, running: 0, waiting: 0, waitingOnPeople: 0 }),
+    )
+    expect(screen.getByTitle('2 build checks failed')).toBeVisible()
+    // One, not three: the build half is already drawn beside it.
+    expect(screen.getByTitle('1 check failed')).toBeVisible()
+
+    // The filled chip is the whole signal, so it has to be a filled chip.
+    rerender(section({ passed: 1, failed: 1, failedBuilds: 1, running: 0, waiting: 0, waitingOnPeople: 0 }))
+    expect(screen.getByTitle('1 build check failed').firstElementChild).toHaveClass(
+      'prof-badge',
+      'prof-badge--red',
+    )
+    expect(screen.queryByTitle(/^\d+ checks? failed$/)).toBeNull()
+
+    // A rejected reviewer is not a broken build, and this is the row that used to
+    // report it as one.
+    rerender(section({ passed: 1, failed: 1, failedBuilds: 0, running: 0, waiting: 0, waitingOnPeople: 0 }))
+    expect(screen.getByTitle('1 check failed')).toBeVisible()
+    expect(screen.queryByTitle(/build/)).toBeNull()
   })
 
   it('marks a row that is ready to merge, in place of the weaker all-clear tick', () => {
@@ -280,7 +312,7 @@ describe('PullRequestSection', () => {
         empty="none"
         hydration={() =>
           rich({
-            checks: { passed: 5, failed: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
+            checks: { passed: 5, failed: 0, failedBuilds: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
             readyToMerge: true,
           })
         }
@@ -301,7 +333,7 @@ describe('PullRequestSection', () => {
         empty="none"
         hydration={() =>
           rich({
-            checks: { passed: 5, failed: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
+            checks: { passed: 5, failed: 0, failedBuilds: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
             blocked: true,
           })
         }

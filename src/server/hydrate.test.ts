@@ -155,7 +155,7 @@ describe('readChecks', () => {
           { status: 'notApplicable' },
         ],
       }),
-    ).toEqual({ passed: 2, failed: 2, running: 1, waiting: 1, waitingOnPeople: 0 })
+    ).toEqual({ passed: 2, failed: 2, failedBuilds: 0, running: 1, waiting: 1, waitingOnPeople: 0 })
   })
 
   it('does not count a queued evaluation as one that is running', () => {
@@ -174,7 +174,7 @@ describe('readChecks', () => {
           { status: 'queued', configuration: { settings: { requiredReviewerIds: ['a'] } } },
         ],
       }),
-    ).toEqual({ passed: 3, failed: 0, running: 0, waiting: 4, waitingOnPeople: 2 })
+    ).toEqual({ passed: 3, failed: 0, failedBuilds: 0, running: 0, waiting: 4, waitingOnPeople: 2 })
   })
 
   it('counts only the queued half of a reviewer policy as waiting on people', () => {
@@ -187,13 +187,31 @@ describe('readChecks', () => {
           { status: 'queued', configuration: { settings: { minimumApproverCount: 2 } } },
         ],
       }),
-    ).toEqual({ passed: 1, failed: 0, running: 0, waiting: 1, waitingOnPeople: 1 })
+    ).toEqual({ passed: 1, failed: 0, failedBuilds: 0, running: 0, waiting: 1, waitingOnPeople: 1 })
+  })
+
+  it('counts only the build half of the failures as a build', () => {
+    // The subset has to hold the same way `waitingOnPeople` does, and for a
+    // sharper reason: a reviewer who pressed Reject and a build that broke arrive
+    // under the same two words, so a row that counted the rejection as a build
+    // would send somebody to read a pipeline that is green.
+    expect(
+      readChecks({
+        value: [
+          { status: 'broken', configuration: { settings: { buildDefinitionId: 172 } } },
+          { status: 'rejected', configuration: { settings: { buildDefinitionId: 172 } } },
+          { status: 'rejected', configuration: { settings: { minimumApproverCount: 2 } } },
+          { status: 'approved', configuration: { settings: { buildDefinitionId: 340 } } },
+        ],
+      }),
+    ).toEqual({ passed: 1, failed: 3, failedBuilds: 2, running: 0, waiting: 0, waitingOnPeople: 0 })
   })
 
   it('treats a PR with no policies as having no checks, not as passing', () => {
     expect(readChecks({})).toEqual({
       passed: 0,
       failed: 0,
+      failedBuilds: 0,
       running: 0,
       waiting: 0,
       waitingOnPeople: 0,
@@ -305,7 +323,7 @@ describe('hydrate', () => {
       id: 24698,
       ok: true,
       data: {
-        checks: { passed: 1, failed: 1, running: 0, waiting: 0, waitingOnPeople: 0 },
+        checks: { passed: 1, failed: 1, failedBuilds: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
         unresolved: 1,
         approvalReset: true,
         // The failing evaluation here carries no configuration, so nothing says

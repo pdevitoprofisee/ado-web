@@ -1,10 +1,10 @@
 import { noteActivity } from './notifications'
-import { waitsOnPeople } from './policy-kind'
+import { isBuild, waitsOnPeople } from './policy-kind'
 import { readPrCache, writePrCache } from './pr-cache'
 
 import type { DatabaseSync } from 'node:sqlite'
 import type { AdoClient } from './ado-client'
-import type { ReviewerPolicySettings } from './policy-kind'
+import type { BuildPolicySettings, ReviewerPolicySettings } from './policy-kind'
 
 // Server-only. The per-PR half of the inbox: what a reviewer actually triages
 // on, which the one cheap list call cannot carry.
@@ -72,8 +72,8 @@ interface EvaluationList {
     readonly configuration?: {
       readonly isBlocking?: boolean
       readonly isEnabled?: boolean
-      /** Only the keys that say "people". See `policy-kind.ts`. */
-      readonly settings?: ReviewerPolicySettings
+      /** Only the keys that say "people" and "a build". See `policy-kind.ts`. */
+      readonly settings?: ReviewerPolicySettings & BuildPolicySettings
     }
   }>
 }
@@ -81,6 +81,18 @@ interface EvaluationList {
 export interface Checks {
   readonly passed: number
   readonly failed: number
+  /**
+   * How many of `failed` are a build — a *subset* of it, not a sibling, so the
+   * row draws `failed - failedBuilds` for the rest.
+   *
+   * Split out for `waitingOnPeople`'s reason, one status pair later: ADO calls a
+   * broken build and a reviewer who pressed Reject the same two words
+   * (`rejected`, `broken`), so a single red count could not say whether to go and
+   * read a pipeline or go and talk to somebody. A failing build is also the one
+   * of the two that is not already written somewhere else on the row — a
+   * rejection rings that reviewer's face.
+   */
+  readonly failedBuilds: number
   /**
    * ADO's `running`: a build that is in flight *right now*. The only state in
    * this shape the inbox is entitled to call "running".
@@ -240,6 +252,7 @@ export function countUnresolved(
 export function readChecks(evaluations: EvaluationList): Checks {
   let passed = 0
   let failed = 0
+  let failedBuilds = 0
   let running = 0
   let waiting = 0
   let waitingOnPeople = 0
@@ -252,6 +265,7 @@ export function readChecks(evaluations: EvaluationList): Checks {
       case 'rejected':
       case 'broken':
         failed++
+        if (isBuild(evaluation.configuration?.settings)) failedBuilds++
         break
       case 'running':
         running++
@@ -263,7 +277,7 @@ export function readChecks(evaluations: EvaluationList): Checks {
     }
   }
 
-  return { passed, failed, running, waiting, waitingOnPeople }
+  return { passed, failed, failedBuilds, running, waiting, waitingOnPeople }
 }
 
 /**

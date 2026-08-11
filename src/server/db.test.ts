@@ -63,6 +63,7 @@ describe('migrations', () => {
       { version: 7, name: 'local-viewed-files' },
       { version: 8, name: 'pr-cache-check-states' },
       { version: 9, name: 'pr-cache-waiting-on-people' },
+      { version: 10, name: 'pr-cache-failed-builds' },
     ])
 
     db.close()
@@ -114,7 +115,7 @@ describe('migrations', () => {
     const second = openDatabase(path)
     migrate(second) // and again, in-process, for good measure
 
-    expect(second.prepare('SELECT count(*) c FROM schema_migrations').get()?.c).toBe(9)
+    expect(second.prepare('SELECT count(*) c FROM schema_migrations').get()?.c).toBe(10)
     expect(readPrCache(7, 'a'.repeat(40), second)).toEqual({ checks: 'green' })
 
     second.close()

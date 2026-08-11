@@ -27,3 +27,24 @@ export interface ReviewerPolicySettings {
  */
 export const waitsOnPeople = (settings: ReviewerPolicySettings | undefined): boolean =>
   settings?.requiredReviewerIds !== undefined || typeof settings?.minimumApproverCount === 'number'
+
+/** The one settings key that says "a build ran". */
+export interface BuildPolicySettings {
+  readonly buildDefinitionId?: number
+}
+
+/**
+ * Whether a build, and not anything else, satisfies this policy.
+ *
+ * Keyed off `buildDefinitionId` for {@link waitsOnPeople}'s reason: `displayName`
+ * is the definition's name, which is display text somebody can rename, and
+ * `type.displayName` is the word "Build" on every build policy and also collides
+ * with the other types. The id is data.
+ *
+ * This is what lets a failed check say *which* failed. ADO reports a rejected
+ * reviewer and a broken build under one status pair (`rejected`, `broken`), and
+ * the two are opposite instructions: one is somebody to go and talk to, the other
+ * is a pipeline to go and read.
+ */
+export const isBuild = (settings: BuildPolicySettings | undefined): boolean =>
+  typeof settings?.buildDefinitionId === 'number'
