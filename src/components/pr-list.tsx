@@ -238,12 +238,22 @@ const FACES = 3
  * the same way — both approvals teal, because this says one thing: is this
  * person standing between the branch and the target.
  *
+ * **The approvals are drawn in marker, and the other votes are not.** Colour
+ * alone failed here, and only for the approvals: `--pen-green` is `#00897a` and
+ * `--line-strong` is `#105270`, so at pen weight an approved face and a face
+ * with no vote are two dark blue-green circles and the eye cannot separate them
+ * across a table. `--pen-amber` and `--pen-red` do not have that problem, so
+ * they keep pen weight — which leaves thickness carrying one fact, "somebody
+ * said yes", and thickness is read before hue. 2.5px is `--stroke-marker`,
+ * written literally the way `button.tsx` writes `border-[1.5px]`, because a
+ * `length:` arbitrary value is not a Tailwind v4 form.
+ *
  * No vote keeps `.prof-avatar`'s own outline. It is the state most reviewers are
  * in on most pull requests, so it is the one that must not draw the eye.
  */
 const VOTE_RINGS = new Map<number, string>([
-  [10, 'border-pen-green'],
-  [5, 'border-pen-green'],
+  [10, 'border-[2.5px] border-pen-green'],
+  [5, 'border-[2.5px] border-pen-green'],
   [-5, 'border-pen-amber'],
   [-10, 'border-destructive'],
 ])

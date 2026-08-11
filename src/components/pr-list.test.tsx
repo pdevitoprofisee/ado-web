@@ -386,6 +386,21 @@ describe('PullRequestSection', () => {
       expect(screen.getByText('NA')).toBeInTheDocument()
     })
 
+    // The ring is the whole signal for "somebody said yes", and it was invisible
+    // while it was a 1.5px teal stroke standing next to a 1.5px navy one.
+    it('draws an approved face in marker and leaves the rest in pen', () => {
+      render(
+        <PullRequestSection
+          title="Mine"
+          rows={[row({ reviewers: [person('Naveen Angali', 10), person('Ana Ruiz', 0)] })]}
+          empty="none"
+        />,
+      )
+
+      expect(screen.getByText('NA')).toHaveClass('border-[2.5px]', 'border-pen-green')
+      expect(screen.getByText('AR')).not.toHaveClass('border-[2.5px]')
+    })
+
     it('leaves the teams out, because a team is not somebody you can go and ask', () => {
       render(
         <PullRequestSection
