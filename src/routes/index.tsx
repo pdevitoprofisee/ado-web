@@ -9,6 +9,7 @@ import { inboxQuery } from '@/server/inbox-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
 import { INBOX_KEY } from '@/lib/inbox-cache'
 import { pageTitle } from '@/lib/page-title'
+import { useResolveCallout } from '@/lib/pipeline-callout'
 import { inReadingOrder, useGroupByRepository } from '@/lib/pr-grouping'
 import { SEARCHES, filterPullRequests } from '@/lib/pr-search'
 import { toggleTheme, useTheme } from '@/lib/theme'
@@ -234,7 +235,11 @@ function Home() {
     () => [...(inbox?.mine ?? []), ...(inbox?.assignedToMe ?? [])],
     [inbox],
   )
-  const { hydrationOf, registerList } = useHydration(rows, generation, query.dataUpdatedAt)
+  const { hydrationOf, registerList, refresh } = useHydration(rows, generation, query.dataUpdatedAt)
+  // The inbox's one write, and it is wired here rather than inside the list
+  // because `refresh` is what the write owes the row afterwards — the button is in
+  // `pr-list`, the cache it invalidates is this hook's.
+  const onResolveCallout = useResolveCallout(refresh)
 
   /**
    * Said the same way in both sections: what was searched, and what it was
@@ -410,6 +415,7 @@ function Home() {
               hydration={hydrationOf}
               listRef={registerList}
               selectedId={selectedId}
+              onResolveCallout={onResolveCallout}
             />
             <PullRequestSection
               title="Assigned to me"
@@ -424,6 +430,7 @@ function Home() {
               hydration={hydrationOf}
               listRef={registerList}
               selectedId={selectedId}
+              onResolveCallout={onResolveCallout}
             />
           </div>
 

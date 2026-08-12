@@ -247,6 +247,19 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
     // this list.
     up: 'DELETE FROM pr_cache',
   },
+  {
+    version: 11,
+    name: 'pr-cache-pipeline-threads',
+    // Migration 10 again, for a field that is a list rather than a number:
+    // `Hydration` now carries the ids of the Azure Pipelines callout threads, so
+    // an inbox row can resolve that comment without opening the pull request.
+    //
+    // A row written before this has no such field, and the row reads its length —
+    // so one stale entry would throw where the table draws and cost the whole
+    // section its render, not one badge. Cleared, per the licence at the top of
+    // this list.
+    up: 'DELETE FROM pr_cache',
+  },
 ]
 
 /**

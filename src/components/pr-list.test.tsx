@@ -73,6 +73,7 @@ const rich = (data: Partial<Hydration> = {}): HydrationResult => ({
   data: {
     checks: { passed: 0, failed: 0, failedBuilds: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
     unresolved: 0,
+    pipelineThreads: [],
     approvalReset: false,
     // Not ready by default, so the strongest badge in the column only ever shows
     // up in the tests that ask for it. Unblocked *and* unready is a real
@@ -390,6 +391,106 @@ describe('PullRequestSection', () => {
     render(<PullRequestSection title="Mine" rows={[row({ id: 1 })]} total={1} empty="none" />)
 
     expect(screen.getByRole('heading')).toHaveAccessibleName('Mine, 1 pull requests')
+  })
+
+  describe('the pipeline callout action', () => {
+    const section = (props: {
+      hydration?: () => HydrationResult
+      onResolveCallout?: (row: PullRequestRow, threads: readonly number[]) => Promise<void>
+    }) =>
+      render(
+        <PullRequestSection
+          title="Mine"
+          rows={[row()]}
+          empty="none"
+          hydration={props.hydration}
+          onResolveCallout={props.onResolveCallout}
+        />,
+      )
+
+    const resolve = () => screen.getByRole('button', { name: /Resolve/ })
+
+    it('appears only on a row that carries one', () => {
+      section({ hydration: () => rich(), onResolveCallout: vi.fn() })
+
+      expect(screen.queryByRole('button')).toBeNull()
+    })
+
+    it('names how many comments it will close', () => {
+      const { rerender } = section({
+        hydration: () => rich({ pipelineThreads: [9] }),
+        onResolveCallout: vi.fn(),
+      })
+
+      expect(resolve()).toHaveAccessibleName('Resolve the Azure Pipelines comment')
+
+      rerender(
+        <PullRequestSection
+          title="Mine"
+          rows={[row()]}
+          empty="none"
+          hydration={() => rich({ pipelineThreads: [9, 12, 15] })}
+          onResolveCallout={vi.fn()}
+        />,
+      )
+      expect(resolve()).toHaveAccessibleName('Resolve 3 Azure Pipelines comments')
+    })
+
+    // The history page and every standalone render: a section that was not given
+    // the write must not draw a control that cannot do anything.
+    it('is absent when the section was given no way to write', () => {
+      section({ hydration: () => rich({ pipelineThreads: [9] }) })
+
+      expect(screen.queryByRole('button')).toBeNull()
+    })
+
+    it('hands the write the row and the threads hydration found', async () => {
+      const onResolveCallout = vi.fn().mockResolvedValue(undefined)
+      section({ hydration: () => rich({ pipelineThreads: [9, 12] }), onResolveCallout })
+
+      await userEvent.click(resolve())
+
+      expect(onResolveCallout).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 3302 }),
+        [9, 12],
+      )
+    })
+
+    // A second press would start the same sequence of writes over threads the
+    // first press is still closing.
+    it('stays disabled until the write comes back', async () => {
+      let finish = () => {}
+      const onResolveCallout = vi.fn(
+        () =>
+          new Promise<void>((done) => {
+            finish = done
+          }),
+      )
+      section({ hydration: () => rich({ pipelineThreads: [9] }), onResolveCallout })
+
+      await userEvent.click(resolve())
+      expect(resolve()).toBeDisabled()
+      expect(resolve()).toHaveAttribute('aria-busy', 'true')
+
+      finish()
+      await waitFor(() => expect(resolve()).toBeEnabled())
+      expect(onResolveCallout).toHaveBeenCalledTimes(1)
+    })
+
+    // On the button and not in the row: the row's width is reserved so badges
+    // cannot move the rows under it, and a legible error message would.
+    it('says what Azure DevOps refused, without changing the shape of the row', async () => {
+      const onResolveCallout = vi.fn().mockRejectedValue(new Error('Thread 9 is already closed.'))
+      section({ hydration: () => rich({ pipelineThreads: [9] }), onResolveCallout })
+
+      await userEvent.click(resolve())
+
+      await waitFor(() =>
+        expect(screen.getByTitle('Thread 9 is already closed.')).toBeInTheDocument(),
+      )
+      expect(screen.getByRole('alert')).toHaveTextContent('Thread 9 is already closed.')
+      expect(resolve()).toBeEnabled()
+    })
   })
 
   describe('the reviewer faces', () => {

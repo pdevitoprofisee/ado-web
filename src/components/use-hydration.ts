@@ -37,6 +37,26 @@ const hydratable = (
   row.commitId !== null && row.projectId !== null && row.repositoryId !== null
 
 /**
+ * One row as the server asks about it.
+ *
+ * Module scope rather than inside the effect that used to hold it, because the
+ * per-row re-ask below needs the same shape and two spellings of "what this row
+ * is" would be two places for the readiness inputs to drift.
+ */
+const targetOf = (row: PullRequestRow): HydrationTarget => ({
+  id: row.id,
+  commitId: row.commitId as string,
+  projectId: row.projectId as string,
+  repositoryId: row.repositoryId as string,
+  myVote: row.myVote,
+  // Free on the row, and the other half of the readiness judgement the server
+  // makes — sending them saves it a detail call it would otherwise need for facts
+  // we already have.
+  isDraft: row.isDraft,
+  conflicted: row.conflicted,
+})
+
+/**
  * Which rows are above the fold, read straight off the DOM after paint.
  *
  * Deliberately one measurement rather than an IntersectionObserver: this runs
@@ -63,6 +83,21 @@ export interface Hydrating {
   hydrationOf: (row: PullRequestRow) => HydrationResult | undefined
   /** Ref callback for each `<ul>`; how the hook finds rows to measure. */
   registerList: (element: HTMLUListElement | null) => (() => void) | undefined
+  /**
+   * Re-ask Azure DevOps about one row, now, past both halves of the server's
+   * cache — what a write made from the table has to do afterwards.
+   *
+   * Neither of the two things that normally refresh a row can serve that. The
+   * commit has not moved, so the fingerprint below is unchanged; and the row is
+   * settled, so the server would hold its answer for fifteen minutes. Resolving a
+   * comment and watching the badge sit there for a quarter of an hour reads as a
+   * button that did nothing.
+   *
+   * Resolves once the row on screen is the row Azure DevOps holds, so the control
+   * that called it can stay busy until then. A row missing any of its ids resolves
+   * immediately, because there is nothing to ask about.
+   */
+  refresh: (row: PullRequestRow) => Promise<void>
 }
 
 /**
@@ -116,26 +151,13 @@ export function useHydration(
     const fresh = generation !== hydrated.current
     hydrated.current = generation
 
-    const target = (row: PullRequestRow): HydrationTarget => ({
-      id: row.id,
-      commitId: row.commitId as string,
-      projectId: row.projectId as string,
-      repositoryId: row.repositoryId as string,
-      myVote: row.myVote,
-      // Free on the row, and the other half of the readiness judgement the
-      // server makes — sending them saves it a detail call it would otherwise
-      // need for facts we already have.
-      isDraft: row.isDraft,
-      conflicted: row.conflicted,
-    })
-
     async function run(batch: readonly PullRequestRow[]): Promise<void> {
       for (let at = 0; at < batch.length && !cancelled; at += CHUNK) {
         const slice = batch.slice(at, at + CHUNK)
         // A transport failure is turned into per-row failures rather than being
         // swallowed: the ticket's rule is that a row whose data did not arrive
         // says so, and a row stuck plain forever says nothing.
-        const answers = await hydrateQuery({ data: { targets: slice.map(target), fresh } }).catch(
+        const answers = await hydrateQuery({ data: { targets: slice.map(targetOf), fresh } }).catch(
           (error: unknown): HydrationResult[] =>
             slice.map((row) => ({ id: row.id, ok: false, error: message(error) })),
         )
@@ -171,8 +193,24 @@ export function useHydration(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fingerprint, generation, polledAt])
 
+  const refresh = useCallback(async (row: PullRequestRow): Promise<void> => {
+    if (!hydratable(row)) return
+
+    // A failure is stored as this row's failure, exactly as the poll above stores
+    // one: the amber "could not load" mark is the honest state, and it is a
+    // smaller lie than leaving the badges the write just invalidated on screen.
+    const answers = await hydrateQuery({ data: { targets: [targetOf(row)], fresh: true } }).catch(
+      (error: unknown): HydrationResult[] => [{ id: row.id, ok: false, error: message(error) }],
+    )
+    const answer = answers.find((one) => one.id === row.id)
+    if (answer === undefined) return
+
+    setResults((previous) => new Map(previous).set(keyOf(row), answer))
+  }, [])
+
   return {
     hydrationOf: (row) => results.get(keyOf(row)),
     registerList,
+    refresh,
   }
 }

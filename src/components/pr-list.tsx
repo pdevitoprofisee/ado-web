@@ -10,6 +10,7 @@ import {
   HourglassIcon,
   LinkSquare02Icon,
   Message01Icon,
+  MessageDone01Icon,
   RefreshIcon,
   Tick02Icon,
   UserCheck01Icon,
@@ -24,6 +25,7 @@ import { cn } from '@/lib/utils'
 
 import type { ReactNode } from 'react'
 
+import type { ResolveCallout } from '@/lib/pipeline-callout'
 import type { HydrationResult } from '@/server/hydrate'
 import type { PullRequestRow, RowReviewer } from '@/server/inbox'
 
@@ -353,14 +355,87 @@ function addressable(
   return row.projectId !== null && row.repositoryId !== null
 }
 
+/**
+ * The one control in this table that changes something, rather than going
+ * somewhere: it closes the Azure Pipelines coverage callout on this row.
+ *
+ * See `pipeline-callout.ts` for why that comment in particular earns a button
+ * here. Shown only on a row that has one, so it is absent from most rows and its
+ * presence is itself the news.
+ *
+ * A plain `<button>` and not `Button` from `ui/`, for the same reason the Azure
+ * DevOps link beside it is a plain `<a>`: these two are a pair of 14px glyphs in
+ * the gutter of a dense row, and a variant's padding and border would make one of
+ * them a control and the other a mark.
+ *
+ * A failure is drawn *on the button* — red glyph, message in the `title` — rather
+ * than as text in the row. `Rich` reserves its width so a badge cannot move the
+ * rows under it, and an error message wide enough to read would move all of them.
+ * The message still reaches a screen reader, once, through the alert beside it.
+ */
+function ResolveCalloutButton({
+  row,
+  threads,
+  onResolve,
+}: {
+  row: PullRequestRow
+  threads: readonly number[]
+  onResolve: ResolveCallout
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const label =
+    threads.length === 1
+      ? 'Resolve the Azure Pipelines comment'
+      : `Resolve ${threads.length} Azure Pipelines comments`
+
+  return (
+    <>
+      <button
+        type="button"
+        // Busy is disabled here rather than merely announced: the write is a
+        // sequence of one PATCH per thread, and a second press would start that
+        // sequence again over threads the first press is already closing.
+        disabled={busy}
+        aria-busy={busy || undefined}
+        title={error ?? label}
+        onClick={() => {
+          setBusy(true)
+          setError(null)
+          void onResolve(row, threads)
+            .catch((reason: unknown) =>
+              setError(reason instanceof Error ? reason.message : String(reason)),
+            )
+            .finally(() => setBusy(false))
+        }}
+        className={cn(
+          'flex shrink-0 items-center rounded-sm px-2 disabled:opacity-50',
+          error === null ? 'text-muted-foreground hover:text-pen-green' : 'text-destructive',
+        )}
+      >
+        <HugeiconsIcon icon={MessageDone01Icon} size={14} aria-hidden />
+        <span className="sr-only">{label}</span>
+      </button>
+      {error === null ? null : (
+        <span role="alert" className="sr-only">
+          {error}
+        </span>
+      )}
+    </>
+  )
+}
+
 function Row({
   row,
   result,
   isSelected = false,
+  onResolveCallout,
 }: {
   row: PullRequestRow
   result: HydrationResult | undefined
   isSelected?: boolean
+  onResolveCallout?: ResolveCallout
 }) {
   // Every other column is truncated or hidden at narrow widths, so the
   // accessible name has to carry what the eye might not get — including the
@@ -370,6 +445,10 @@ function Row({
   // keyboard focuses all day, and Prof's focus ring is a box-shadow that follows
   // whatever radius it finds. On a square link it would be a square ring.
   const columns = 'flex min-w-0 flex-1 items-baseline gap-x-3 rounded-sm px-2 py-1.5 text-sm'
+  // Empty on a plain row, on a closed one, and on a row whose hydration failed —
+  // all three read the same way here, which is the point of asking the hydration
+  // rather than the row.
+  const callouts = result?.ok === true ? result.data.pipelineThreads : []
   const body = (
     <>
       <span className="text-muted-foreground w-14 shrink-0 text-right font-mono text-xs tabular-nums">
@@ -445,6 +524,9 @@ function Row({
           >
             {body}
           </Link>
+          {onResolveCallout !== undefined && callouts.length > 0 ? (
+            <ResolveCalloutButton row={row} threads={callouts} onResolve={onResolveCallout} />
+          ) : null}
           {/* Demoted, not removed: this app replaces the ADO tab for reading a
               PR, and there will always be something only ADO can do. */}
           <a
@@ -546,6 +628,7 @@ export function PullRequestSection({
   hydration,
   listRef,
   selectedId,
+  onResolveCallout,
 }: {
   title: string
   rows: readonly PullRequestRow[]
@@ -564,6 +647,11 @@ export function PullRequestSection({
   listRef?: (element: HTMLUListElement | null) => (() => void) | undefined
   /** The inbox-wide selection; at most one section holds it at a time. */
   selectedId?: number | null
+  /**
+   * Given, a row that carries an Azure Pipelines callout draws a button to close
+   * it. Omitted — on the history page, and in a standalone test — no row does.
+   */
+  onResolveCallout?: ResolveCallout
 }) {
   const of = total !== undefined && total !== rows.length ? total : null
   const list = (subset: readonly PullRequestRow[]) => (
@@ -576,7 +664,13 @@ export function PullRequestSection({
     // them exactly as it measured them across the page's two sections.
     <ul ref={listRef} className="sketch-box sketch-box--quiet p-1">
       {subset.map((row) => (
-        <Row key={row.id} row={row} result={hydration?.(row)} isSelected={row.id === selectedId} />
+        <Row
+          key={row.id}
+          row={row}
+          result={hydration?.(row)}
+          isSelected={row.id === selectedId}
+          onResolveCallout={onResolveCallout}
+        />
       ))}
     </ul>
   )

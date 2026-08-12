@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import { openDatabase } from './db'
-import { approvalWasReset, countUnresolved, hydrate, readBlocked, readChecks } from './hydrate'
+import {
+  approvalWasReset,
+  countUnresolved,
+  hydrate,
+  readBlocked,
+  readChecks,
+  readPipelineThreads,
+} from './hydrate'
 import { listNotifications, watch } from './notifications'
 
 import type { DatabaseSync } from 'node:sqlite'
@@ -138,6 +145,47 @@ describe('countUnresolved', () => {
 
   it('counts a bot that posted no status on this PR, rather than risk hiding a person', () => {
     expect(countUnresolved([thread({ comments: [{ commentType: 'text', author: { id: SONAR } }] })], new Set())).toBe(1)
+  })
+})
+
+describe('readPipelineThreads', () => {
+  // The real id, not a fixture: it is fixed in every organisation, and it is the
+  // whole of the detection.
+  const PIPELINE = '00000054-0000-8888-8000-000000000000'
+  const callout = (id: number, over: Record<string, unknown> = {}) =>
+    thread({ id, comments: [{ commentType: 'text', author: { id: PIPELINE } }], ...over })
+
+  it('gives back the ids of the open callouts, which is what the write needs', () => {
+    expect(readPipelineThreads([callout(9), thread({ id: 4 }), callout(12)])).toEqual([9, 12])
+  })
+
+  // The reason this is not `botIds`: on the pull requests where the callout shows
+  // up as a colleague's comment, the pipeline posted no status of its own.
+  it('finds it without any help from the bot set', () => {
+    expect(readPipelineThreads([callout(9)])).toEqual([9])
+  })
+
+  it('leaves out a thread that has nothing left to resolve', () => {
+    expect(
+      readPipelineThreads([
+        callout(9, { status: 'fixed' }),
+        callout(12, { status: 'closed' }),
+        callout(15, { isDeleted: true }),
+      ]),
+    ).toEqual([])
+  })
+
+  it('ignores every other author, Sonar included', () => {
+    expect(
+      readPipelineThreads([
+        thread({ id: 9, comments: [{ commentType: 'text', author: { id: SONAR } }] }),
+        thread({ id: 12, comments: [{ commentType: 'text', author: { id: COLLEAGUE } }] }),
+      ]),
+    ).toEqual([])
+  })
+
+  it('skips a thread ADO sent without an id, because there is nothing to address', () => {
+    expect(readPipelineThreads([callout(9, { id: undefined })])).toEqual([])
   })
 })
 
@@ -325,6 +373,9 @@ describe('hydrate', () => {
       data: {
         checks: { passed: 1, failed: 1, failedBuilds: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
         unresolved: 1,
+        // No pipeline comment in this fixture, and an empty list rather than an
+        // absent field: the row reads its length.
+        pipelineThreads: [],
         approvalReset: true,
         // The failing evaluation here carries no configuration, so nothing says
         // it is required — and an optional policy failing does not stop a merge.

@@ -134,6 +134,16 @@ const SATISFIED = new Set(['approved', 'notApplicable'])
 export interface Hydration {
   readonly checks: Checks
   readonly unresolved: number
+  /**
+   * The Azure Pipelines callout threads this row can close from the table, by id.
+   * See `readPipelineThreads` for why they are found by identity rather than by
+   * the bot rule beside it.
+   *
+   * Left *inside* `unresolved` on purpose: until the button is pressed the thread
+   * is open, and a count that quietly omitted it would disagree with the
+   * conversation on the detail page. The button is the way to make both drop.
+   */
+  readonly pipelineThreads: readonly number[]
   /** I approved, then someone pushed, and my vote is no longer standing. */
   readonly approvalReset: boolean
   /**
@@ -216,6 +226,50 @@ function botIds(statuses: StatusList): ReadonlySet<string> {
   for (const status of statuses.value ?? []) {
     const id = key(status.createdBy?.id)
     if (id !== null) ids.add(id)
+  }
+
+  return ids
+}
+
+/**
+ * The Azure Pipelines Test Service, by the fixed id Azure DevOps gives it in
+ * every organisation — `00000054-…`, measured on this one in
+ * `docs/research/live-inventory.md` and again in the checks inventory.
+ *
+ * Matched by id and not through `botIds`, which cannot see it. That rule calls an
+ * identity a machine when it also posted a *status on this pull request*, and
+ * this one posts its coverage callout on pull requests where SonarCloud is the
+ * only status author: 12 of the 56 threads sampled in T-022 were this identity's,
+ * with no status of its own to give it away. Those are the threads that read as a
+ * colleague's comment on an inbox row, and they are what the row's button clears.
+ */
+const PIPELINE_AUTHOR = '00000054-0000-8888-8000-000000000000'
+
+/**
+ * The pipeline's own open threads on this pull request, by id.
+ *
+ * Ids and not a count, because they are what the write needs — the inbox row
+ * closes these without opening the pull request, and a second call to find out
+ * which threads it meant would undo the point of caching this. Usually one; a
+ * pull request that has been pushed to repeatedly can hold one callout per run,
+ * so this is a list.
+ *
+ * Deliberately the same three exclusions `countUnresolved` applies, minus the bot
+ * test it replaces: a deleted thread has nothing to resolve, a `fixed` one is
+ * already resolved, and a system thread is ADO's own bookkeeping.
+ */
+export function readPipelineThreads(threads: readonly AdoThread[]): readonly number[] {
+  const ids: number[] = []
+  for (const thread of threads) {
+    if (thread.isDeleted === true) continue
+    if (!UNRESOLVED.has(thread.status ?? '')) continue
+    if (thread.id === undefined) continue
+
+    const first = thread.comments?.[0]
+    if (first === undefined || first.commentType === 'system') continue
+    if (key(first.author?.id) !== PIPELINE_AUTHOR) continue
+
+    ids.push(thread.id)
   }
 
   return ids
@@ -439,6 +493,7 @@ export async function hydrate(
     const data: Hydration = {
       checks: readChecks(evaluations),
       unresolved: countUnresolved(all, bots),
+      pipelineThreads: readPipelineThreads(all),
       approvalReset: approvalWasReset(all, identity, target.myVote),
       blocked,
       readyToMerge: ready({ blocked }, target),
