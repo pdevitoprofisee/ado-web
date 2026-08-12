@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 
 import { changeThreadStatus } from '@/server/threads-fn'
 
+import type { RefreshRow } from '@/components/use-hydration'
 import type { PullRequestRow } from '@/server/inbox'
 
 // The inbox's one write: close the Azure Pipelines callout on a row without
@@ -40,9 +41,7 @@ export type ResolveCallout = (
  * on a commit that has not moved, so nothing else on the page would correct them
  * for fifteen minutes.
  */
-export function useResolveCallout(
-  refresh: (row: PullRequestRow) => Promise<void>,
-): ResolveCallout {
+export function useResolveCallout(refresh: RefreshRow): ResolveCallout {
   return useCallback(
     async (row, threads) => {
       // The button only exists on a row the detail route can address, so this is

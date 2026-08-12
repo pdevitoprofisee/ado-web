@@ -78,6 +78,13 @@ function visibleIds(lists: ReadonlySet<HTMLElement>): ReadonlySet<number> {
   return ids
 }
 
+/**
+ * The re-read a write made from the table owes the row afterwards. Named because
+ * both write hooks take it, and one of them ({@link Hydrating.refresh}'s note)
+ * reads the answer rather than only awaiting it.
+ */
+export type RefreshRow = (row: PullRequestRow) => Promise<HydrationResult | undefined>
+
 export interface Hydrating {
   /** What a row should render, or `undefined` while it is still plain. */
   hydrationOf: (row: PullRequestRow) => HydrationResult | undefined
@@ -96,8 +103,12 @@ export interface Hydrating {
    * Resolves once the row on screen is the row Azure DevOps holds, so the control
    * that called it can stay busy until then. A row missing any of its ids resolves
    * immediately, because there is nothing to ask about.
+   *
+   * It resolves *with* the answer it stored, which is what lets a caller tell one
+   * re-read from the next. A requeue needs that: the write is an instruction to a
+   * queue, so the row it changes is not the row the next read returns.
    */
-  refresh: (row: PullRequestRow) => Promise<void>
+  refresh: RefreshRow
 }
 
 /**
@@ -193,8 +204,8 @@ export function useHydration(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fingerprint, generation, polledAt])
 
-  const refresh = useCallback(async (row: PullRequestRow): Promise<void> => {
-    if (!hydratable(row)) return
+  const refresh = useCallback<RefreshRow>(async (row) => {
+    if (!hydratable(row)) return undefined
 
     // A failure is stored as this row's failure, exactly as the poll above stores
     // one: the amber "could not load" mark is the honest state, and it is a
@@ -203,9 +214,11 @@ export function useHydration(
       (error: unknown): HydrationResult[] => [{ id: row.id, ok: false, error: message(error) }],
     )
     const answer = answers.find((one) => one.id === row.id)
-    if (answer === undefined) return
+    if (answer === undefined) return undefined
 
     setResults((previous) => new Map(previous).set(keyOf(row), answer))
+
+    return answer
   }, [])
 
   return {

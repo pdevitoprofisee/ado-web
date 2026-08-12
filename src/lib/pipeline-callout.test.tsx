@@ -30,12 +30,12 @@ const row = {
   repositoryId: '22222222-2222-2222-2222-222222222222',
 } as PullRequestRow
 
-const mount = (refresh: (row: PullRequestRow) => Promise<void>) =>
+const mount = (refresh: (row: PullRequestRow) => Promise<undefined>) =>
   renderHook(() => useResolveCallout(refresh)).result
 
 describe('useResolveCallout', () => {
   it('closes every callout on the row, then waits for the row to be re-read', async () => {
-    const refresh = vi.fn(async () => {})
+    const refresh = vi.fn(async () => undefined)
 
     await mount(refresh).current(row, [9, 12])
 
@@ -59,7 +59,7 @@ describe('useResolveCallout', () => {
     vi.mocked(changeThreadStatus).mockResolvedValueOnce(
       refused('Azure DevOps answered 403. (TF401027: You need the Contribute permission.)'),
     )
-    const refresh = vi.fn(async () => {})
+    const refresh = vi.fn(async () => undefined)
 
     await expect(mount(refresh).current(row, [9])).rejects.toThrow('TF401027')
 
@@ -70,7 +70,7 @@ describe('useResolveCallout', () => {
 
   it('stops at the first refusal rather than writing over the rest', async () => {
     vi.mocked(changeThreadStatus).mockResolvedValueOnce(refused('Azure DevOps answered 403.'))
-    const refresh = vi.fn(async () => {})
+    const refresh = vi.fn(async () => undefined)
     vi.mocked(changeThreadStatus).mockClear()
 
     await expect(mount(refresh).current(row, [9, 12, 15])).rejects.toThrow('403')
@@ -81,13 +81,13 @@ describe('useResolveCallout', () => {
   it('rejects with something sayable when the refusal came with no reason', async () => {
     vi.mocked(changeThreadStatus).mockResolvedValueOnce(refused(null))
 
-    await expect(mount(async () => {}).current(row, [9])).rejects.toThrow(
+    await expect(mount(async () => undefined).current(row, [9])).rejects.toThrow(
       'Azure DevOps did not say why.',
     )
   })
 
   it('refuses a row Azure DevOps sent without its ids, rather than writing to nowhere', async () => {
-    const refresh = vi.fn(async () => {})
+    const refresh = vi.fn(async () => undefined)
     vi.mocked(changeThreadStatus).mockClear()
 
     await expect(

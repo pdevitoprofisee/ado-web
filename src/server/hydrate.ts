@@ -63,6 +63,12 @@ interface StatusList {
 
 interface EvaluationList {
   readonly value?: ReadonlyArray<{
+    /**
+     * ADO's id for *this evaluation of this policy on this pull request*, which
+     * is what the requeue route addresses. Read here for one reason: without it
+     * the row could see that a build broke and not say which one to run again.
+     */
+    readonly evaluationId?: string
     readonly status?: string
     /**
      * Whether the policy is required, and whether it is switched on at all —
@@ -144,6 +150,12 @@ export interface Hydration {
    * conversation on the detail page. The button is the way to make both drop.
    */
   readonly pipelineThreads: readonly number[]
+  /**
+   * The build policies this row can run again, by evaluation id. See
+   * `readRequeueable` for which ones those are and why the table offers fewer of
+   * them than the checklist does.
+   */
+  readonly requeueIds: readonly string[]
   /** I approved, then someone pushed, and my vote is no longer standing. */
   readonly approvalReset: boolean
   /**
@@ -335,6 +347,49 @@ export function readChecks(evaluations: EvaluationList): Checks {
 }
 
 /**
+ * The build policies on this pull request that are worth running again, by
+ * evaluation id.
+ *
+ * Ids and not a count, for `readPipelineThreads`' reason: they are what the write
+ * needs, and finding them again would undo the point of caching this.
+ *
+ * Three of `requeueTarget`'s four conditions, which is the rule the detail page's
+ * checklist offers a requeue under (`pull-request.ts` — it is not exported, so it
+ * is restated here as `checks.ts` restates it). A build policy, because the route
+ * documents that nothing else acts on a requeue. Not `running`, because a requeue
+ * cancels the build it is running. And an id, because there is nothing to address
+ * without one.
+ *
+ * The fourth condition is dropped on purpose: the checklist also offers a requeue
+ * on a policy that *passed on an earlier commit*, and this list does not. The
+ * table has no mark for a stale green build — the row draws as ready — so that
+ * button would appear on a row with nothing visible to explain it. Narrower than
+ * the checklist and never wider, so the two cannot contradict each other: every
+ * requeue the table offers, the page offers too.
+ *
+ * `rejected`, `broken` and `queued` by name rather than "not satisfied", because
+ * this decides a *write*. An unrecognised status is not offered a button, which
+ * is the opposite of `readBlocked`'s guess and right for the same reason: being
+ * told to look again is cheap, queueing a build on a state we cannot read is not.
+ */
+const REQUEUEABLE = new Set(['rejected', 'broken', 'queued'])
+
+export function readRequeueable(evaluations: EvaluationList): readonly string[] {
+  const ids: string[] = []
+  for (const evaluation of evaluations.value ?? []) {
+    if (!REQUEUEABLE.has(evaluation.status ?? '')) continue
+    if (!isBuild(evaluation.configuration?.settings)) continue
+
+    const id = evaluation.evaluationId
+    if (typeof id !== 'string' || id === '') continue
+
+    ids.push(id)
+  }
+
+  return ids
+}
+
+/**
  * Whether any required policy is still standing in the way.
  *
  * Not derivable from `readChecks`: a failing *optional* policy makes `failed`
@@ -494,6 +549,7 @@ export async function hydrate(
       checks: readChecks(evaluations),
       unresolved: countUnresolved(all, bots),
       pipelineThreads: readPipelineThreads(all),
+      requeueIds: readRequeueable(evaluations),
       approvalReset: approvalWasReset(all, identity, target.myVote),
       blocked,
       readyToMerge: ready({ blocked }, target),

@@ -8,6 +8,7 @@ import {
   readBlocked,
   readChecks,
   readPipelineThreads,
+  readRequeueable,
 } from './hydrate'
 import { listNotifications, watch } from './notifications'
 
@@ -186,6 +187,56 @@ describe('readPipelineThreads', () => {
 
   it('skips a thread ADO sent without an id, because there is nothing to address', () => {
     expect(readPipelineThreads([callout(9, { id: undefined })])).toEqual([])
+  })
+})
+
+describe('readRequeueable', () => {
+  const build = (status: string, evaluationId: string) => ({
+    status,
+    evaluationId,
+    configuration: { settings: { buildDefinitionId: 172 } },
+  })
+
+  it('gives back the evaluation ids of the builds worth running again', () => {
+    expect(
+      readRequeueable({
+        value: [build('broken', 'a'), build('rejected', 'b'), build('queued', 'c')],
+      }),
+    ).toEqual(['a', 'b', 'c'])
+  })
+
+  it('leaves out a build that is running, which a requeue would cancel', () => {
+    expect(readRequeueable({ value: [build('running', 'a')] })).toEqual([])
+  })
+
+  it('leaves out a build that passed, because the table draws that row as ready', () => {
+    // The narrowing the checklist does not make: it offers a requeue on a green
+    // build whose commit moved on. Nothing in the row says so, so the button
+    // would appear with no visible cause.
+    expect(readRequeueable({ value: [build('approved', 'a')] })).toEqual([])
+  })
+
+  it('is not tempted by a status it has never heard of, because this decides a write', () => {
+    expect(readRequeueable({ value: [build('somethingNew', 'a'), build('', 'b')] })).toEqual([])
+  })
+
+  it('ignores a reviewer policy, which has no build to queue', () => {
+    expect(
+      readRequeueable({
+        value: [
+          { status: 'rejected', evaluationId: 'a', configuration: { settings: { minimumApproverCount: 2 } } },
+          { status: 'broken', evaluationId: 'b' },
+        ],
+      }),
+    ).toEqual([])
+  })
+
+  it('skips an evaluation ADO sent without an id, because there is nothing to address', () => {
+    expect(readRequeueable({ value: [build('broken', ''), { status: 'broken' }] })).toEqual([])
+  })
+
+  it('treats a PR with no policies as having nothing to requeue', () => {
+    expect(readRequeueable({})).toEqual([])
   })
 })
 
@@ -376,6 +427,9 @@ describe('hydrate', () => {
         // No pipeline comment in this fixture, and an empty list rather than an
         // absent field: the row reads its length.
         pipelineThreads: [],
+        // The failing evaluation is not a build policy, so there is nothing on
+        // this row to run again.
+        requeueIds: [],
         approvalReset: true,
         // The failing evaluation here carries no configuration, so nothing says
         // it is required — and an optional policy failing does not stop a merge.

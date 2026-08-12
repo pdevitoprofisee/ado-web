@@ -74,6 +74,7 @@ const rich = (data: Partial<Hydration> = {}): HydrationResult => ({
     checks: { passed: 0, failed: 0, failedBuilds: 0, running: 0, waiting: 0, waitingOnPeople: 0 },
     unresolved: 0,
     pipelineThreads: [],
+    requeueIds: [],
     approvalReset: false,
     // Not ready by default, so the strongest badge in the column only ever shows
     // up in the tests that ask for it. Unblocked *and* unready is a real
@@ -490,6 +491,122 @@ describe('PullRequestSection', () => {
       )
       expect(screen.getByRole('alert')).toHaveTextContent('Thread 9 is already closed.')
       expect(resolve()).toBeEnabled()
+    })
+  })
+
+  describe('the requeue action', () => {
+    const EVALUATION = '44444444-4444-4444-4444-444444444444'
+
+    const section = (props: {
+      hydration?: () => HydrationResult
+      onRequeue?: (row: PullRequestRow, evaluations: readonly string[]) => Promise<void>
+    }) =>
+      render(
+        <PullRequestSection
+          title="Mine"
+          rows={[row()]}
+          empty="none"
+          hydration={props.hydration}
+          onRequeue={props.onRequeue}
+        />,
+      )
+
+    const requeue = () => screen.getByRole('button', { name: /Requeue/ })
+
+    it('appears only on a row with a build to run again', () => {
+      section({ hydration: () => rich(), onRequeue: vi.fn() })
+
+      expect(screen.queryByRole('button')).toBeNull()
+    })
+
+    it('is absent when the section was given no way to write', () => {
+      section({ hydration: () => rich({ requeueIds: [EVALUATION] }) })
+
+      expect(screen.queryByRole('button')).toBeNull()
+    })
+
+    it('names how many policies it will queue', () => {
+      const { rerender } = section({
+        hydration: () => rich({ requeueIds: [EVALUATION] }),
+        onRequeue: vi.fn(),
+      })
+
+      expect(requeue()).toHaveAccessibleName('Requeue the build policy')
+
+      rerender(
+        <PullRequestSection
+          title="Mine"
+          rows={[row()]}
+          empty="none"
+          hydration={() => rich({ requeueIds: [EVALUATION, 'b', 'c'] })}
+          onRequeue={vi.fn()}
+        />,
+      )
+      expect(requeue()).toHaveAccessibleName('Requeue 3 build policies')
+    })
+
+    it('hands the write the row and the evaluations hydration found', async () => {
+      const onRequeue = vi.fn().mockResolvedValue(undefined)
+      section({ hydration: () => rich({ requeueIds: [EVALUATION] }), onRequeue })
+
+      await userEvent.click(requeue())
+
+      expect(onRequeue).toHaveBeenCalledWith(expect.objectContaining({ id: 3302 }), [EVALUATION])
+    })
+
+    it('stays disabled until the write comes back', async () => {
+      let finish = () => {}
+      const onRequeue = vi.fn(
+        () =>
+          new Promise<void>((done) => {
+            finish = done
+          }),
+      )
+      section({ hydration: () => rich({ requeueIds: [EVALUATION] }), onRequeue })
+
+      await userEvent.click(requeue())
+      expect(requeue()).toBeDisabled()
+      expect(requeue()).toHaveAttribute('aria-busy', 'true')
+
+      finish()
+      await waitFor(() => expect(requeue()).toBeEnabled())
+      expect(onRequeue).toHaveBeenCalledTimes(1)
+    })
+
+    it('says what Azure DevOps refused, without changing the shape of the row', async () => {
+      const onRequeue = vi.fn().mockRejectedValue(new Error('TF401027: You need Contribute.'))
+      section({ hydration: () => rich({ requeueIds: [EVALUATION] }), onRequeue })
+
+      await userEvent.click(requeue())
+
+      await waitFor(() =>
+        expect(screen.getByTitle('TF401027: You need Contribute.')).toBeInTheDocument(),
+      )
+      expect(screen.getByRole('alert')).toHaveTextContent('TF401027: You need Contribute.')
+      expect(requeue()).toBeEnabled()
+    })
+
+    // A pull request whose build broke and whose pipeline commented on the
+    // coverage carries both, and the two acts are not the same act.
+    it('stands beside the callout button rather than replacing it', async () => {
+      const onRequeue = vi.fn().mockResolvedValue(undefined)
+      const onResolveCallout = vi.fn().mockResolvedValue(undefined)
+      render(
+        <PullRequestSection
+          title="Mine"
+          rows={[row()]}
+          empty="none"
+          hydration={() => rich({ pipelineThreads: [9], requeueIds: [EVALUATION] })}
+          onResolveCallout={onResolveCallout}
+          onRequeue={onRequeue}
+        />,
+      )
+
+      await userEvent.click(requeue())
+
+      expect(onRequeue).toHaveBeenCalledTimes(1)
+      expect(onResolveCallout).not.toHaveBeenCalled()
+      expect(screen.getByRole('button', { name: /Resolve/ })).toBeEnabled()
     })
   })
 

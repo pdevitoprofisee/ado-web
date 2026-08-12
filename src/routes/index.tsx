@@ -12,6 +12,7 @@ import { pageTitle } from '@/lib/page-title'
 import { useResolveCallout } from '@/lib/pipeline-callout'
 import { inReadingOrder, useGroupByRepository } from '@/lib/pr-grouping'
 import { SEARCHES, filterPullRequests } from '@/lib/pr-search'
+import { useRequeueRow } from '@/lib/requeue'
 import { toggleTheme, useTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import { PullRequestSection, useInboxSelection } from '@/components/pr-list'
@@ -236,10 +237,11 @@ function Home() {
     [inbox],
   )
   const { hydrationOf, registerList, refresh } = useHydration(rows, generation, query.dataUpdatedAt)
-  // The inbox's one write, and it is wired here rather than inside the list
-  // because `refresh` is what the write owes the row afterwards — the button is in
-  // `pr-list`, the cache it invalidates is this hook's.
+  // The inbox's two writes, wired here rather than inside the list because
+  // `refresh` is what each one owes the row afterwards — the buttons are in
+  // `pr-list`, the cache they correct is this hook's.
   const onResolveCallout = useResolveCallout(refresh)
+  const onRequeue = useRequeueRow(refresh)
 
   /**
    * Said the same way in both sections: what was searched, and what it was
@@ -416,6 +418,7 @@ function Home() {
               listRef={registerList}
               selectedId={selectedId}
               onResolveCallout={onResolveCallout}
+              onRequeue={onRequeue}
             />
             <PullRequestSection
               title="Assigned to me"
@@ -431,6 +434,7 @@ function Home() {
               listRef={registerList}
               selectedId={selectedId}
               onResolveCallout={onResolveCallout}
+              onRequeue={onRequeue}
             />
           </div>
 

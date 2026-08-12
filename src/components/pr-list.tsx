@@ -12,6 +12,7 @@ import {
   Message01Icon,
   MessageDone01Icon,
   RefreshIcon,
+  ReloadIcon,
   Tick02Icon,
   UserCheck01Icon,
 } from '@hugeicons/core-free-icons'
@@ -24,8 +25,10 @@ import { groupByRepository } from '@/lib/pr-grouping'
 import { cn } from '@/lib/utils'
 
 import type { ReactNode } from 'react'
+import type { IconSvgElement } from '@hugeicons/react'
 
 import type { ResolveCallout } from '@/lib/pipeline-callout'
+import type { RequeueRow } from '@/lib/requeue'
 import type { HydrationResult } from '@/server/hydrate'
 import type { PullRequestRow, RowReviewer } from '@/server/inbox'
 
@@ -356,54 +359,49 @@ function addressable(
 }
 
 /**
- * The one control in this table that changes something, rather than going
- * somewhere: it closes the Azure Pipelines coverage callout on this row.
+ * A control in this table that changes something, rather than going somewhere.
  *
- * See `pipeline-callout.ts` for why that comment in particular earns a button
- * here. Shown only on a row that has one, so it is absent from most rows and its
- * presence is itself the news.
+ * Two rows carry one — the Azure Pipelines callout a row can close, and the build
+ * policy a row can run again — and both are drawn only where the act applies, so
+ * most rows have neither and the button's presence is itself the news.
  *
  * A plain `<button>` and not `Button` from `ui/`, for the same reason the Azure
- * DevOps link beside it is a plain `<a>`: these two are a pair of 14px glyphs in
- * the gutter of a dense row, and a variant's padding and border would make one of
- * them a control and the other a mark.
+ * DevOps link beside it is a plain `<a>`: these are 14px glyphs in the gutter of a
+ * dense row, and a variant's padding and border would make one of them a control
+ * and the other a mark. The same green hover on both, because what they have in
+ * common is the thing worth marking: this one writes.
  *
  * A failure is drawn *on the button* — red glyph, message in the `title` — rather
  * than as text in the row. `Rich` reserves its width so a badge cannot move the
  * rows under it, and an error message wide enough to read would move all of them.
  * The message still reaches a screen reader, once, through the alert beside it.
  */
-function ResolveCalloutButton({
-  row,
-  threads,
-  onResolve,
+function RowAction({
+  icon,
+  label,
+  run,
 }: {
-  row: PullRequestRow
-  threads: readonly number[]
-  onResolve: ResolveCallout
+  icon: IconSvgElement
+  label: string
+  run: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  const label =
-    threads.length === 1
-      ? 'Resolve the Azure Pipelines comment'
-      : `Resolve ${threads.length} Azure Pipelines comments`
 
   return (
     <>
       <button
         type="button"
-        // Busy is disabled here rather than merely announced: the write is a
-        // sequence of one PATCH per thread, and a second press would start that
-        // sequence again over threads the first press is already closing.
+        // Busy is disabled here rather than merely announced: each of these
+        // writes is a sequence of one call per thread or per policy, and a second
+        // press would start that sequence again over what the first is doing.
         disabled={busy}
         aria-busy={busy || undefined}
         title={error ?? label}
         onClick={() => {
           setBusy(true)
           setError(null)
-          void onResolve(row, threads)
+          void run()
             .catch((reason: unknown) =>
               setError(reason instanceof Error ? reason.message : String(reason)),
             )
@@ -414,7 +412,7 @@ function ResolveCalloutButton({
           error === null ? 'text-muted-foreground hover:text-pen-green' : 'text-destructive',
         )}
       >
-        <HugeiconsIcon icon={MessageDone01Icon} size={14} aria-hidden />
+        <HugeiconsIcon icon={icon} size={14} aria-hidden />
         <span className="sr-only">{label}</span>
       </button>
       {error === null ? null : (
@@ -431,11 +429,13 @@ function Row({
   result,
   isSelected = false,
   onResolveCallout,
+  onRequeue,
 }: {
   row: PullRequestRow
   result: HydrationResult | undefined
   isSelected?: boolean
   onResolveCallout?: ResolveCallout
+  onRequeue?: RequeueRow
 }) {
   // Every other column is truncated or hidden at narrow widths, so the
   // accessible name has to carry what the eye might not get — including the
@@ -449,6 +449,7 @@ function Row({
   // all three read the same way here, which is the point of asking the hydration
   // rather than the row.
   const callouts = result?.ok === true ? result.data.pipelineThreads : []
+  const requeueable = result?.ok === true ? result.data.requeueIds : []
   const body = (
     <>
       <span className="text-muted-foreground w-14 shrink-0 text-right font-mono text-xs tabular-nums">
@@ -525,7 +526,28 @@ function Row({
             {body}
           </Link>
           {onResolveCallout !== undefined && callouts.length > 0 ? (
-            <ResolveCalloutButton row={row} threads={callouts} onResolve={onResolveCallout} />
+            <RowAction
+              icon={MessageDone01Icon}
+              label={
+                callouts.length === 1
+                  ? 'Resolve the Azure Pipelines comment'
+                  : `Resolve ${callouts.length} Azure Pipelines comments`
+              }
+              run={() => onResolveCallout(row, callouts)}
+            />
+          ) : null}
+          {/* `ReloadIcon` and not the `RefreshIcon` in the badge column, which
+              already means "a push reset your approval" on these same rows. */}
+          {onRequeue !== undefined && requeueable.length > 0 ? (
+            <RowAction
+              icon={ReloadIcon}
+              label={
+                requeueable.length === 1
+                  ? 'Requeue the build policy'
+                  : `Requeue ${requeueable.length} build policies`
+              }
+              run={() => onRequeue(row, requeueable)}
+            />
           ) : null}
           {/* Demoted, not removed: this app replaces the ADO tab for reading a
               PR, and there will always be something only ADO can do. */}
@@ -629,6 +651,7 @@ export function PullRequestSection({
   listRef,
   selectedId,
   onResolveCallout,
+  onRequeue,
 }: {
   title: string
   rows: readonly PullRequestRow[]
@@ -652,6 +675,12 @@ export function PullRequestSection({
    * it. Omitted — on the history page, and in a standalone test — no row does.
    */
   onResolveCallout?: ResolveCallout
+  /**
+   * Given, a row with a build policy to run again draws a button that runs it.
+   * Omitted on the same two grounds as `onResolveCallout` — a closed pull request
+   * has no policy left to requeue.
+   */
+  onRequeue?: RequeueRow
 }) {
   const of = total !== undefined && total !== rows.length ? total : null
   const list = (subset: readonly PullRequestRow[]) => (
@@ -670,6 +699,7 @@ export function PullRequestSection({
           result={hydration?.(row)}
           isSelected={row.id === selectedId}
           onResolveCallout={onResolveCallout}
+          onRequeue={onRequeue}
         />
       ))}
     </ul>

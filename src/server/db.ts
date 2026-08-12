@@ -260,6 +260,18 @@ const MIGRATIONS: ReadonlyArray<Migration> = [
     // this list.
     up: 'DELETE FROM pr_cache',
   },
+  {
+    version: 12,
+    name: 'pr-cache-requeue-ids',
+    // Migration 11's shape, for the row's second write: `Hydration` now carries
+    // the policy evaluations this row can run again, so a broken build can be
+    // requeued from the table.
+    //
+    // A row written before this has no such field, and the row reads its length,
+    // so migration 11's reason applies unchanged — one stale entry throws where
+    // the table draws. Cleared, per the licence at the top of this list.
+    up: 'DELETE FROM pr_cache',
+  },
 ]
 
 /**
