@@ -4,7 +4,8 @@ import { render as renderBare, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-import { PullRequestDetailView as Detail, mergeBlocker } from './pr-detail'
+import { PullRequestDetailView as Detail } from './pr-detail'
+import { mergeBlocker } from '@/lib/merge'
 import { CommandProvider } from '@/commands/command-provider'
 import { fileAnchor } from '@/lib/file-anchor'
 import { voteWord } from '@/lib/people'

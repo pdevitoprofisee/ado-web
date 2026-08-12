@@ -1,13 +1,13 @@
 import { useId, useMemo, useReducer, useRef, useState } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { TextField, ToggleButton } from 'react-aria-components'
 import { BoardMathIcon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 
 import { inboxQuery } from '@/server/inbox-fn'
 import { CADENCE, useCadence } from '@/lib/cadence'
-import { INBOX_KEY } from '@/lib/inbox-cache'
+import { INBOX_KEY, dropInboxRow, settleMergedRow } from '@/lib/inbox-cache'
 import { pageTitle } from '@/lib/page-title'
 import { useResolveCallout } from '@/lib/pipeline-callout'
 import { inReadingOrder, useGroupByRepository } from '@/lib/pr-grouping'
@@ -15,6 +15,7 @@ import { SEARCHES, filterPullRequests } from '@/lib/pr-search'
 import { useRequeueRow } from '@/lib/requeue'
 import { toggleTheme, useTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
+import { MergeDialog } from '@/components/merge-dialog'
 import { PullRequestSection, useInboxSelection } from '@/components/pr-list'
 import { useHydration } from '@/components/use-hydration'
 import { useObserve } from '@/components/notifications/use-notifications'
@@ -24,6 +25,7 @@ import { Input } from '@/components/ui/input'
 import { Kbd } from '@/components/ui/kbd'
 
 import type { KeyboardEvent, ReactNode } from 'react'
+import type { AddressableRow } from '@/components/pr-list'
 import type { PullRequestRow } from '@/server/inbox'
 import type { Role, WatchedPullRequest } from '@/server/notifications'
 
@@ -243,6 +245,13 @@ function Home() {
   const onResolveCallout = useResolveCallout(refresh)
   const onRequeue = useRequeueRow(refresh)
 
+  // The third write is a dialog rather than a press, so the row it was opened on
+  // is state and not an argument. One dialog for the page: a merge needs the
+  // pull request read and a commit message written, and hundreds of rows each
+  // holding a query for that would read the whole table to draw one button.
+  const [merging, setMerging] = useState<AddressableRow | null>(null)
+  const client = useQueryClient()
+
   /**
    * Said the same way in both sections: what was searched, and what it was
    * searched in. Without the second half a missing row reads as the app being
@@ -419,6 +428,7 @@ function Home() {
               selectedId={selectedId}
               onResolveCallout={onResolveCallout}
               onRequeue={onRequeue}
+              onMerge={setMerging}
             />
             <PullRequestSection
               title="Assigned to me"
@@ -435,8 +445,26 @@ function Home() {
               selectedId={selectedId}
               onResolveCallout={onResolveCallout}
               onRequeue={onRequeue}
+              onMerge={setMerging}
             />
           </div>
+
+          {/* Outside both sections, and mounted whether or not a row is chosen:
+              the dialog holds the message somebody typed, and Escape has to be
+              able to close it without throwing that away.
+
+              The one write on this page that changes the list rather than a row.
+              The callout and the requeue correct a row in place; a merged pull
+              request is not open any more, so it leaves the table. */}
+          <MergeDialog
+            row={merging}
+            onClose={() => setMerging(null)}
+            onMerged={(merged) => {
+              setMerging(null)
+              dropInboxRow(client, merged.id)
+              void settleMergedRow(client, merged.id)
+            }}
+          />
 
           {/* The metadata under the inbox is divided from it by a drawn rule; a
               1px border here would be the one printed line on the page. */}

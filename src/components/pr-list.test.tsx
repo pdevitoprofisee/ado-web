@@ -610,6 +610,57 @@ describe('PullRequestSection', () => {
     })
   })
 
+  describe('the squash merge action', () => {
+    const section = (props: {
+      hydration?: () => HydrationResult
+      onMerge?: (row: PullRequestRow) => void
+    }) =>
+      render(
+        <PullRequestSection
+          title="Mine"
+          rows={[row()]}
+          empty="none"
+          hydration={props.hydration}
+          onMerge={props.onMerge}
+        />,
+      )
+
+    const merge = () => screen.getByRole('button', { name: 'Squash and merge' })
+
+    it('appears only on a row the table calls ready to merge', () => {
+      section({ hydration: () => rich(), onMerge: vi.fn() })
+
+      expect(screen.queryByRole('button')).toBeNull()
+    })
+
+    it('is absent when the page offers no dialog to open', () => {
+      section({ hydration: () => rich({ readyToMerge: true }) })
+
+      expect(screen.queryByRole('button')).toBeNull()
+    })
+
+    it('hands the page the row it was pressed on', async () => {
+      const onMerge = vi.fn()
+      section({ hydration: () => rich({ readyToMerge: true }), onMerge })
+
+      await userEvent.click(merge())
+
+      expect(onMerge).toHaveBeenCalledWith(expect.objectContaining({ id: 3302 }))
+    })
+
+    // It opens a dialog rather than completing anything, so there is no write to
+    // wait for and nothing on the row to go busy. A row that disabled itself here
+    // would be a row waiting on a press that already finished.
+    it('writes nothing itself, and leaves the row as it found it', async () => {
+      section({ hydration: () => rich({ readyToMerge: true }), onMerge: vi.fn() })
+
+      await userEvent.click(merge())
+
+      expect(merge()).toBeEnabled()
+      expect(screen.queryByRole('alert')).toBeNull()
+    })
+  })
+
   describe('the reviewer faces', () => {
     const person = (displayName: string, vote = 0) => ({
       id: displayName,

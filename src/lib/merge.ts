@@ -4,7 +4,7 @@ import { squashMerge } from '@/server/pull-request-fn'
 
 import { pullRequestKey } from './requeue'
 
-import type { PullRequestDetail, PullRequestRef } from '@/server/pull-request'
+import type { PullRequestDetail, PullRequestRef, Reviewer } from '@/server/pull-request'
 
 // The page's other write: complete the pull request, squashed, with a commit
 // message the reviewer wrote and the source branch deleted.
@@ -15,6 +15,10 @@ import type { PullRequestDetail, PullRequestRef } from '@/server/pull-request'
 // as completed before it says so would be inventing the one fact the reviewer
 // came to the page to establish. The page goes quiet, the write goes out, the
 // page re-reads.
+//
+// `mergeBlocker` is here rather than beside one of the two places that draw the
+// button, because both of them ask it — the detail page and the inbox row — and a
+// second copy of "may this merge" is a second copy that can drift.
 
 /**
  * The two halves of a git commit message, as two fields on the page.
@@ -58,6 +62,160 @@ export function commitMessage(draft: CommitDraft): string {
   const body = draft.body.trim()
 
   return body === '' ? subject : `${subject}\n\n${body}`
+}
+
+/**
+ * Which sections came back empty because their fetch failed rather than because
+ * there is nothing in them — an empty array cannot say which, and only one of
+ * the two means the section can be trusted.
+ *
+ * `pullRequestDetail({...}).failed` from `pull-request-fn.ts` is assignable
+ * straight to this, so the route hands it over untranslated. Optional here so a
+ * section still renders standalone, plain, in a test.
+ *
+ * Reviewers and conflict state are absent because they ride on the detail call,
+ * the page's one hard dependency. The conflicting *paths* can fail on their own
+ * and are read from `pr.errors.conflicts` instead.
+ */
+export interface FailedSections {
+  readonly policies?: boolean
+  readonly commits?: boolean
+  readonly files?: boolean
+}
+
+/** ADO says `refs/heads/foo`; nobody else does. */
+export function branch(ref: string): string {
+  return ref.replace(/^refs\/heads\//, '')
+}
+
+/**
+ * ADO's words for "nobody has attempted this merge yet". Neither was seen once
+ * in 21,133 live PRs, and an empty `status` — ADO having omitted the field — is
+ * deliberately not in here: not saying is not the same as saying "not tested".
+ */
+export const UNTESTED = new Set(['queued', 'notSet'])
+
+/**
+ * A vote that counts as an approval.
+ *
+ * Both of ADO's approvals do — "approved with suggestions" satisfies a reviewer
+ * requirement, which is the whole difference between it and "waiting for author".
+ * So the test is `>=` against the lower of the two rather than a set of the
+ * values that pass, and a sixth positive integer on the scale would count.
+ */
+const APPROVES = 5
+
+/**
+ * The required reviewers standing between this branch and its target, as a
+ * sentence — or `null` when none are.
+ *
+ * **This is not in the policy list, and that is the bug it exists to fix.** On
+ * PR 24949 all seven policy evaluations read `approved` while Azure DevOps' own
+ * header said "Patrick Mize must approve": a reviewer marked required *on the
+ * pull request* produces no evaluation at all, so a page that reads only
+ * `policies` sees an entirely green checklist and offers a merge ADO will not
+ * take. ADO's Complete button gates on policies **and** on these; so does this.
+ *
+ * Containers are counted the same way people are, because ADO rolls a member's
+ * vote up onto the group: measured on the same pull request, `[Products]\
+ * Contributors` carried `vote: 10` of its own once Chuck Thompson approved on its
+ * behalf. Skipping groups would drop the requirement that a team look at this.
+ *
+ * Named while there are one or two, counted after that. "One required reviewer
+ * has not approved" sends the reader off to find out who, and the payload already
+ * knows; past two the names stop being a sentence.
+ */
+function awaitedReviewers(reviewers: readonly Reviewer[]): string | null {
+  const names = reviewers
+    .filter((reviewer) => reviewer.isRequired && reviewer.vote < APPROVES)
+    .map((reviewer) => reviewer.displayName)
+
+  if (names.length === 0) return null
+  if (names.length === 1) return `${names[0]} is a required reviewer and has not approved.`
+  if (names.length === 2) {
+    return `${names[0]} and ${names[1]} are required reviewers and have not approved.`
+  }
+
+  return `${names.length} required reviewers have not approved.`
+}
+
+/**
+ * Why this pull request cannot be squash-merged from here, or `null` when it can
+ * be.
+ *
+ * A pure function, exported, and every branch is a whole sentence, because a
+ * disabled button that will not say why is worse than no button at all — the
+ * reason is drawn beside the control rather than left for the reviewer to guess.
+ *
+ * It answers "not from here", not "not possible". Azure DevOps re-checks every
+ * one of these on the write and owns the real answer, so where this is unsure it
+ * refuses: a policy list that failed to load and a source tip ADO did not name
+ * both read as "we do not know", which is a reason to keep the button off.
+ *
+ * The order is the order the question is actually asked in — is this open, is it
+ * still a draft, does it merge at all, do we know about the policies, do the
+ * policies allow it, have the people who must approve approved, and do we know
+ * what we would be merging.
+ */
+export function mergeBlocker(
+  pr: Pick<
+    PullRequestDetail,
+    'status' | 'isDraft' | 'merge' | 'policies' | 'reviewers' | 'lastMergeSourceCommit'
+  >,
+  failed: FailedSections,
+): string | null {
+  if (pr.status !== 'active') {
+    if (pr.status === 'completed') return 'This pull request has already been completed.'
+    if (pr.status === 'abandoned') return 'This pull request has been abandoned.'
+
+    // An unrecognised status is not narrowed into one of the two above: ADO's
+    // word is shown as-is, because guessing which of them a fourth value means
+    // is how a page tells somebody their merged PR is still open.
+    return `Azure DevOps says this pull request is ${pr.status === '' ? 'in a state it did not name' : pr.status}, not active.`
+  }
+  if (pr.isDraft) return 'This is a draft. Publish it in Azure DevOps before merging.'
+  // Ahead of the status because a conflicted PR *has* a status, `conflicts`, and
+  // the conflict is the sentence worth saying. Same reason `MergeBanner` keys on
+  // this flag rather than on the word.
+  if (pr.merge.conflicted) return 'This branch conflicts with its target.'
+  // Not the banner's sentence word for word, which is deliberate: the banner
+  // reports the state, and a reason attached to a disabled control owes the
+  // consequence as well. Repeating it verbatim would also put the same string on
+  // the page twice, two lines apart.
+  if (UNTESTED.has(pr.merge.status)) {
+    return 'Azure DevOps has not tested this merge yet, so it cannot be completed from here.'
+  }
+  if (pr.merge.status !== 'succeeded') {
+    return pr.merge.status === ''
+      ? 'Azure DevOps did not say whether this branch merges cleanly.'
+      : `Azure DevOps says the merge is ${pr.merge.status}.`
+  }
+  if (failed.policies === true) {
+    return 'The branch policies could not be loaded, so whether this may merge is unknown.'
+  }
+
+  // `Policy.blocking` already means "required and not yet satisfied", so a
+  // passing required policy does not count itself here.
+  const blocking = pr.policies.filter((policy) => policy.blocking).length
+  if (blocking > 0) {
+    return blocking === 1
+      ? 'One blocking policy is not satisfied yet.'
+      : `${blocking} blocking policies are not satisfied yet.`
+  }
+
+  // After the policies, because a required reviewer is the same class of question
+  // and the policy rows are the ones with a build behind them; before the source
+  // tip, because "somebody still has to look at this" is the more useful sentence
+  // of the two. The reviewers come from the detail call, which is this page's one
+  // hard dependency, so there is no "did the list load" case to answer here.
+  const awaited = awaitedReviewers(pr.reviewers)
+  if (awaited !== null) return awaited
+
+  if (pr.lastMergeSourceCommit === null) {
+    return 'Azure DevOps did not say which commit the source branch is on, so merging from here could merge work this page never showed.'
+  }
+
+  return null
 }
 
 /** One button's worth of state: what pressing it does, and what came back. */

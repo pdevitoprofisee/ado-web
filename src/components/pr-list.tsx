@@ -5,6 +5,7 @@ import {
   AlertDiamondIcon,
   Cancel01Icon,
   Clock01Icon,
+  GitCommitIcon,
   GitMergeConflictIcon,
   GitMergeIcon,
   HourglassIcon,
@@ -351,10 +352,14 @@ function Faces({ reviewers }: { reviewers: readonly RowReviewer[] }) {
   )
 }
 
+/**
+ * A row Azure DevOps sent both of its GUIDs for, and so the only kind a write can
+ * be aimed at. Exported because a page that acts on a row has to hold one.
+ */
+export type AddressableRow = PullRequestRow & { projectId: string; repositoryId: string }
+
 /** Whether the detail route can address this PR: it is keyed by the two GUIDs. */
-function addressable(
-  row: PullRequestRow,
-): row is PullRequestRow & { projectId: string; repositoryId: string } {
+function addressable(row: PullRequestRow): row is AddressableRow {
   return row.projectId !== null && row.repositoryId !== null
 }
 
@@ -430,12 +435,14 @@ function Row({
   isSelected = false,
   onResolveCallout,
   onRequeue,
+  onMerge,
 }: {
   row: PullRequestRow
   result: HydrationResult | undefined
   isSelected?: boolean
   onResolveCallout?: ResolveCallout
   onRequeue?: RequeueRow
+  onMerge?: (row: AddressableRow) => void
 }) {
   // Every other column is truncated or hidden at narrow widths, so the
   // accessible name has to carry what the eye might not get — including the
@@ -450,6 +457,7 @@ function Row({
   // rather than the row.
   const callouts = result?.ok === true ? result.data.pipelineThreads : []
   const requeueable = result?.ok === true ? result.data.requeueIds : []
+  const mergeable = result?.ok === true && result.data.readyToMerge
   const body = (
     <>
       <span className="text-muted-foreground w-14 shrink-0 text-right font-mono text-xs tabular-nums">
@@ -548,6 +556,24 @@ function Row({
               }
               run={() => onRequeue(row, requeueable)}
             />
+          ) : null}
+          {/* Not a `RowAction`: this one writes nothing on its own. It opens the
+              page's merge dialog, where the commit message is written and the
+              real answer to "may this merge" is asked of the pull request — so
+              there is no busy state and no failure to draw here.
+
+              `GitCommitIcon` rather than the `GitMergeIcon` the badge column
+              already spends on the ready state, and a squash is one commit. */}
+          {onMerge !== undefined && mergeable ? (
+            <button
+              type="button"
+              title={`Squash and merge !${row.id}`}
+              onClick={() => onMerge(row)}
+              className="text-muted-foreground hover:text-pen-green flex shrink-0 items-center rounded-sm px-2"
+            >
+              <HugeiconsIcon icon={GitCommitIcon} size={14} aria-hidden />
+              <span className="sr-only">Squash and merge</span>
+            </button>
           ) : null}
           {/* Demoted, not removed: this app replaces the ADO tab for reading a
               PR, and there will always be something only ADO can do. */}
@@ -652,6 +678,7 @@ export function PullRequestSection({
   selectedId,
   onResolveCallout,
   onRequeue,
+  onMerge,
 }: {
   title: string
   rows: readonly PullRequestRow[]
@@ -681,6 +708,13 @@ export function PullRequestSection({
    * has no policy left to requeue.
    */
   onRequeue?: RequeueRow
+  /**
+   * Given, a row the table calls ready to merge draws a button that asks the page
+   * to open its merge dialog. The row itself writes nothing — `readyToMerge` is
+   * the inbox's weaker "worth opening to merge", and the dialog reads the pull
+   * request before it offers the write.
+   */
+  onMerge?: (row: AddressableRow) => void
 }) {
   const of = total !== undefined && total !== rows.length ? total : null
   const list = (subset: readonly PullRequestRow[]) => (
@@ -700,6 +734,7 @@ export function PullRequestSection({
           isSelected={row.id === selectedId}
           onResolveCallout={onResolveCallout}
           onRequeue={onRequeue}
+          onMerge={onMerge}
         />
       ))}
     </ul>
