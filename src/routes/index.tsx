@@ -418,6 +418,7 @@ function Home() {
               rows={mine}
               total={inbox.mine.length}
               grouped={grouped}
+              mine
               empty={
                 inbox.mine.length === 0
                   ? 'You have no open pull requests.'

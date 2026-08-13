@@ -113,6 +113,17 @@ describe('PullRequestSection', () => {
     expect(link).toHaveAccessibleDescription(/SaaS\/PC\.IAC\.Modules · Naveen Angali · via SaaS/)
   })
 
+  it('leaves the author out of a section you wrote every row of', () => {
+    render(
+      <PullRequestSection title="Mine" rows={[row({ author: 'Paul DeVito' })]} empty="none" mine />,
+    )
+
+    expect(screen.queryByText('Paul DeVito')).not.toBeInTheDocument()
+    // Out of the accessible name as well, and not at the cost of the rest of it.
+    const link = screen.getByRole('link', { name: /disable sql auditing/ })
+    expect(link).toHaveAccessibleDescription('SaaS/PC.IAC.Modules · via SaaS \\ DevOps Team')
+  })
+
   it('keeps Azure DevOps one gesture away, as a second labelled link', () => {
     render(<PullRequestSection title="Assigned to me" rows={[row()]} empty="none" />)
 

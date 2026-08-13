@@ -467,6 +467,7 @@ function Row({
   row,
   result,
   isSelected = false,
+  mine = false,
   onResolveCallout,
   onRequeue,
   onMerge,
@@ -474,6 +475,7 @@ function Row({
   row: PullRequestRow
   result: HydrationResult | undefined
   isSelected?: boolean
+  mine?: boolean
   onResolveCallout?: ResolveCallout
   onRequeue?: RequeueRow
   onMerge?: (row: AddressableRow) => void
@@ -481,7 +483,7 @@ function Row({
   // Every other column is truncated or hidden at narrow widths, so the
   // accessible name has to carry what the eye might not get — including the
   // outcome, which is otherwise a coloured pill and a relative date.
-  const label = `${row.project}/${row.repository} · ${row.author}${row.viaTeam ? ` · via ${row.viaTeam}` : ''}${row.closed ? ` · ${row.closed.outcome}${row.closed.at ? ` ${row.closed.at.slice(0, 10)}` : ''}` : ''}`
+  const label = `${row.project}/${row.repository}${mine ? '' : ` · ${row.author}`}${row.viaTeam ? ` · via ${row.viaTeam}` : ''}${row.closed ? ` · ${row.closed.outcome}${row.closed.at ? ` ${row.closed.at.slice(0, 10)}` : ''}` : ''}`
   // `rounded-sm` on the link, not just on the row: this is the element the
   // keyboard focuses all day, and Prof's focus ring is a box-shadow that follows
   // whatever radius it finds. On a square link it would be a square ring.
@@ -523,9 +525,15 @@ function Row({
       <span className="text-muted-foreground hidden shrink-0 truncate font-mono text-xs sm:block sm:max-w-40">
         {row.repository}
       </span>
-      <span className="text-muted-foreground hidden shrink-0 truncate text-xs md:block md:max-w-32">
-        {row.author}
-      </span>
+      {/* Dropped, not blanked, on a section that is all your own work: your name
+          on every row answers a question nobody asked there, and the space goes
+          to the title. The column does then sit one step right of the same
+          column in "Assigned to me", which is the trade. */}
+      {mine ? null : (
+        <span className="text-muted-foreground hidden shrink-0 truncate text-xs md:block md:max-w-32">
+          {row.author}
+        </span>
+      )}
       {/* Next to the author, because the pair is the whole question a triage
           pass asks of a row: who wrote it, and who is on the hook to read it. */}
       <Faces reviewers={row.reviewers} />
@@ -724,6 +732,7 @@ export function PullRequestSection({
   empty,
   total,
   grouped = false,
+  mine = false,
   hydration,
   listRef,
   selectedId,
@@ -743,6 +752,12 @@ export function PullRequestSection({
   total?: number
   /** Whether to break the section into one sheet per repository. */
   grouped?: boolean
+  /**
+   * Whether you wrote every pull request in this section. Given, the rows drop
+   * the author column and leave the name out of their accessible names too — the
+   * section heading already says whose these are.
+   */
+  mine?: boolean
   /** All optional so a section still renders standalone, plain, in a test. */
   hydration?: (row: PullRequestRow) => HydrationResult | undefined
   listRef?: (element: HTMLUListElement | null) => (() => void) | undefined
@@ -783,6 +798,7 @@ export function PullRequestSection({
           row={row}
           result={hydration?.(row)}
           isSelected={row.id === selectedId}
+          mine={mine}
           onResolveCallout={onResolveCallout}
           onRequeue={onRequeue}
           onMerge={onMerge}
