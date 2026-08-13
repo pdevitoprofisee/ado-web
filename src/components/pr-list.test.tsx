@@ -829,6 +829,63 @@ describe('a grouped section', () => {
   })
 })
 
+describe('a two-line row', () => {
+  const roomy = (over: Partial<PullRequestRow> = {}, mine = false) =>
+    render(<PullRequestSection title="Mine" rows={[row(over)]} empty="none" roomy mine={mine} />)
+
+  // The three facts that move, and the whole reason to spend a second line on
+  // them: on one line each of them waits for a breakpoint wide enough to afford
+  // it, so a narrow window shows the title and nothing else.
+  it('draws the repository, the author and the branch at every width', () => {
+    roomy()
+
+    for (const cell of ['PC.IAC.Modules', 'Naveen Angali', '→main']) {
+      expect(screen.getByText(cell)).not.toHaveClass('hidden')
+    }
+  })
+
+  it('hides the same three behind breakpoints when the row is one line', () => {
+    render(<PullRequestSection title="Mine" rows={[row()]} empty="none" />)
+
+    for (const cell of ['PC.IAC.Modules', 'Naveen Angali', '→main']) {
+      expect(screen.getByText(cell)).toHaveClass('hidden')
+    }
+  })
+
+  it('groups the three under the title rather than beside it', () => {
+    roomy()
+
+    const caption = screen.getByText('PC.IAC.Modules').parentElement
+    expect(caption).toContainElement(screen.getByText('Naveen Angali'))
+    expect(caption).toContainElement(screen.getByText('→main'))
+    expect(caption).not.toContainElement(screen.getByText('disable sql auditing'))
+  })
+
+  // The faces answer "who is on the hook", which is a triage question, so they
+  // belong on the line the title is on.
+  it('keeps the reviewer faces on the first line', () => {
+    roomy({
+      reviewers: [
+        { id: 'na', displayName: 'Naveen Angali', vote: 10, isContainer: false, avatarHref: null },
+      ],
+    })
+
+    const faces = screen.getByText('Reviewers: Naveen Angali (approved)')
+    const first = screen.getByText('disable sql auditing').parentElement
+    expect(first).toContainElement(faces)
+    expect(screen.getByText('PC.IAC.Modules').parentElement).not.toContainElement(faces)
+  })
+
+  it('drops your own name from the caption too', () => {
+    roomy({ author: 'Paul DeVito' }, true)
+
+    expect(screen.queryByText('Paul DeVito')).not.toBeInTheDocument()
+    expect(screen.getByText('PC.IAC.Modules').parentElement).toContainElement(
+      screen.getByText('→main'),
+    )
+  })
+})
+
 describe('a closed pull request', () => {
   // Exactly 26 days before `NOW`, so the age below is not sitting on a rounding
   // boundary.

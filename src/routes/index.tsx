@@ -13,6 +13,7 @@ import { useResolveCallout } from '@/lib/pipeline-callout'
 import { inReadingOrder, useGroupByRepository } from '@/lib/pr-grouping'
 import { SEARCHES, filterPullRequests } from '@/lib/pr-search'
 import { useRequeueRow } from '@/lib/requeue'
+import { useRoomyRows } from '@/lib/row-density'
 import { toggleTheme, useTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import { MergeDialog } from '@/components/merge-dialog'
@@ -85,12 +86,25 @@ function ThemeToggle() {
 }
 
 /**
- * The two controls that decide what the sections below show: what has been typed
- * and how the rows are arranged.
+ * How a remembered view preference is drawn in this toolbar.
  *
- * One row, above both sections, because both controls act on both sections — a
- * search box per section would be two boxes asking the same question, and a
- * grouping toggle per section would let the page hold two answers to "how is
+ * `data-selected` is React Aria's, and it is styled up to the filled `default`
+ * variant rather than left as an outline with a wash: these are the controls on
+ * the page that stay switched on across sessions, and they have to be legible as
+ * "on" at a glance the next morning.
+ */
+const TOGGLE = cn(
+  buttonVariants({ variant: 'outline', size: 'sm' }),
+  'data-[selected]:border-primary data-[selected]:bg-primary data-[selected]:text-primary-foreground data-[selected]:hover:border-ink-900 data-[selected]:hover:bg-ink-900',
+)
+
+/**
+ * The controls that decide what the sections below show: what has been typed, how
+ * the rows are arranged, and how much room each one gets.
+ *
+ * One row, above both sections, because every control here acts on both sections
+ * — a search box per section would be two boxes asking the same question, and an
+ * arrangement toggle per section would let the page hold two answers to "how is
  * this arranged".
  */
 function InboxControls({
@@ -98,12 +112,16 @@ function InboxControls({
   onQuery,
   grouped,
   onGrouped,
+  roomy,
+  onRoomy,
   listId,
 }: {
   query: string
   onQuery: (next: string) => void
   grouped: boolean
   onGrouped: (next: boolean) => void
+  roomy: boolean
+  onRoomy: (next: boolean) => void
   /** What the box controls, for anyone who cannot see the sections move. */
   listId: string
 }) {
@@ -142,25 +160,24 @@ function InboxControls({
         />
       </TextField>
 
-      {/* A toggle button rather than the header's `dark mode` link, and the
+      {/* Toggle buttons rather than the header's `dark mode` link, and the
           difference is on purpose: that one names where a press *goes*, because
           a theme has no state to show — the sheet you are on already tells you.
-          This one has state worth showing, so it names the arrangement and holds
-          `aria-pressed`. Naming the destination here would give the same control
-          two labels for one setting.
+          These have state worth showing, so each names its arrangement and holds
+          `aria-pressed`. Naming the destination here would give one control two
+          labels for one setting.
 
-          `data-selected` is React Aria's, and it is styled up to the filled
-          `default` variant rather than left as an outline with a wash: this is
-          the one control on the page that stays switched on across sessions, and
-          it has to be legible as "on" at a glance the next morning. */}
-      <ToggleButton
-        isSelected={grouped}
-        onChange={onGrouped}
-        className={cn(
-          buttonVariants({ variant: 'outline', size: 'sm' }),
-          'ml-auto data-[selected]:border-primary data-[selected]:bg-primary data-[selected]:text-primary-foreground data-[selected]:hover:border-ink-900 data-[selected]:hover:bg-ink-900',
-        )}
-      >
+          Both name what they do to the rows rather than which of two views is
+          on, because both are off by default: a label that read `Condensed rows`
+          would be a control that is switched off while describing what you are
+          looking at.
+
+          Grouping keeps the right-hand end it has always had, and the newer
+          toggle takes the space that opened up to its left. */}
+      <ToggleButton isSelected={roomy} onChange={onRoomy} className={cn(TOGGLE, 'ml-auto')}>
+        Two-line rows
+      </ToggleButton>
+      <ToggleButton isSelected={grouped} onChange={onGrouped} className={TOGGLE}>
         Group by repository
       </ToggleButton>
     </div>
@@ -196,6 +213,7 @@ function Home() {
 
   const [search, setSearch] = useState('')
   const [grouped, setGrouped] = useGroupByRepository()
+  const [roomy, setRoomy] = useRoomyRows()
   const searched = useId()
 
   // What each section actually draws. The unfiltered arrays stay reachable as
@@ -402,6 +420,8 @@ function Home() {
             onQuery={setSearch}
             grouped={grouped}
             onGrouped={setGrouped}
+            roomy={roomy}
+            onRoomy={setRoomy}
             listId={searched}
           />
 
@@ -419,6 +439,7 @@ function Home() {
               total={inbox.mine.length}
               grouped={grouped}
               mine
+              roomy={roomy}
               empty={
                 inbox.mine.length === 0
                   ? 'You have no open pull requests.'
@@ -436,6 +457,7 @@ function Home() {
               rows={assigned}
               total={inbox.assignedToMe.length}
               grouped={grouped}
+              roomy={roomy}
               empty={
                 inbox.assignedToMe.length === 0
                   ? 'Nothing waiting on you.'

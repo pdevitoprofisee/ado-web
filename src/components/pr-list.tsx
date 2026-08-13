@@ -387,6 +387,17 @@ function Faces({ reviewers }: { reviewers: readonly RowReviewer[] }) {
 }
 
 /**
+ * What every glyph in the row's right-hand gutter aligns to: the first line of
+ * the row, wherever the rest of the row ends.
+ *
+ * `self-start` because these are flex children of the row and would otherwise
+ * stretch to its full height, and `h-8` because that is the height of one line of
+ * the row's own type — a 20px `text-sm` line box in a link that pads 6px above
+ * and below it.
+ */
+const GUTTER = 'self-start h-8'
+
+/**
  * A row Azure DevOps sent both of its GUIDs for, and so the only kind a write can
  * be aimed at. Exported because a page that acts on a row has to hold one.
  */
@@ -468,6 +479,7 @@ function Row({
   result,
   isSelected = false,
   mine = false,
+  roomy = false,
   onResolveCallout,
   onRequeue,
   onMerge,
@@ -476,6 +488,7 @@ function Row({
   result: HydrationResult | undefined
   isSelected?: boolean
   mine?: boolean
+  roomy?: boolean
   onResolveCallout?: ResolveCallout
   onRequeue?: RequeueRow
   onMerge?: (row: AddressableRow) => void
@@ -504,53 +517,109 @@ function Row({
   // build can be broken, and requeueable, while the pull request is still ready
   // to merge on the policies that block.
   const writes = onResolveCallout !== undefined || onRequeue !== undefined || onMerge !== undefined
-  const body = (
+
+  // Both arrangements draw the same facts and differ only in where they put
+  // three of them, so everything that does not move is built once. What moves is
+  // the repository, the author and the target branch: columns beside the title
+  // when the row is one line, a caption under it when the row is two.
+  const identifier = (
+    <span className="text-muted-foreground w-14 shrink-0 text-right font-mono text-xs tabular-nums">
+      {row.id}
+    </span>
+  )
+  const heading = (
     <>
-      <span className="text-muted-foreground w-14 shrink-0 text-right font-mono text-xs tabular-nums">
-        {row.id}
+      {/* Amber is the waiting pen, and a draft is a pull request waiting on its
+          own author. Sized to stay inside the row's line box so a draft row is
+          not taller than its neighbours. */}
+      {row.isDraft ? (
+        <span className="prof-badge prof-badge--amber tracking-label mr-1.5 px-1.5 py-0.5 text-2xs leading-none uppercase">
+          draft
+        </span>
+      ) : null}
+      {row.title}
+    </>
+  )
+  // Next to the badges in both arrangements, because the pair is the whole
+  // question a triage pass asks of a row: who is on the hook to read it, and
+  // what is holding it up.
+  const faces = <Faces reviewers={row.reviewers} />
+  const status = row.closed ? (
+    <Outcome closed={row.closed} />
+  ) : (
+    <Rich row={row} result={result} />
+  )
+  // The same column, measuring the thing you triage on. On an open PR that is
+  // how long it has been waiting; on a closed one it is how long ago it stopped,
+  // and its creation date is trivia. The exact date goes in the `title`, because
+  // a history page is the one place someone asks for it.
+  const when = (
+    <span
+      className="text-muted-foreground w-16 shrink-0 text-right font-mono text-xs tabular-nums"
+      title={row.closed?.at || undefined}
+    >
+      {age(row.closed ? row.closed.at : row.createdAt)}
+    </span>
+  )
+  const body = roomy ? (
+    <>
+      {identifier}
+      {/* Two lines, split by question. Line one is what you triage on — which
+          pull request, who is reviewing it, what is holding it up. Line two is
+          how you place it: whose repository, whose work, where it lands. Set
+          quiet and small it reads as a caption under the title, rather than as
+          three more columns beside it — which is what they were when the title
+          had to truncate to make room for them.
+
+          The indent is free: this box starts where the title starts, so line two
+          hangs under the title and clear of the id. */}
+      <span className="min-w-0 flex-1">
+        {/* The faces stay up here with the title, and they cannot make this line
+            taller: a 16px blob centred in the 20px line box `text-sm` already
+            reserves. `Faces` is `self-center` for that centring — on a baseline
+            it would hang below the line. */}
+        <span className="flex min-w-0 items-baseline gap-x-3">
+          <span className="min-w-0 flex-1 truncate">{heading}</span>
+          {faces}
+        </span>
+        {/* Repository and branch are identifiers, so the line is set in mono; the
+            author is a person and takes the prose face back.
+
+            Neither name is hidden at narrow widths any more. They were, because
+            each one took width off the title — and on a line of their own they
+            do not. A narrow window shortens them to an ellipsis instead. */}
+        <span className="text-muted-foreground flex min-w-0 items-baseline gap-x-3 font-mono text-xs">
+          <span className="truncate">{row.repository}</span>
+          {/* Dropped, not blanked, on a section that is all your own work: your
+              name on every row answers a question nobody asked there. */}
+          {mine ? null : <span className="truncate font-sans">{row.author}</span>}
+          <span className="truncate">→{row.targetBranch}</span>
+        </span>
       </span>
-      <span className="min-w-0 flex-1 truncate">
-        {/* Amber is the waiting pen, and a draft is a pull request waiting on its
-            own author. Sized to stay inside the row's line box so a draft row is
-            not taller than its neighbours. */}
-        {row.isDraft ? (
-          <span className="prof-badge prof-badge--amber tracking-label mr-1.5 px-1.5 py-0.5 text-2xs leading-none uppercase">
-            draft
-          </span>
-        ) : null}
-        {row.title}
-      </span>
-      {/* Repository and branch are identifiers, so they are set in mono; the
-          author is a person and stays in the prose face. */}
+      {status}
+      {when}
+    </>
+  ) : (
+    <>
+      {identifier}
+      <span className="min-w-0 flex-1 truncate">{heading}</span>
+      {/* One line has to spend its width on the title first, so each of these
+          three waits for a breakpoint wide enough to afford it. That ranking is
+          the reason the roomy arrangement exists. */}
       <span className="text-muted-foreground hidden shrink-0 truncate font-mono text-xs sm:block sm:max-w-40">
         {row.repository}
       </span>
-      {/* Dropped, not blanked, on a section that is all your own work: your name
-          on every row answers a question nobody asked there, and the space goes
-          to the title. The column does then sit one step right of the same
-          column in "Assigned to me", which is the trade. */}
       {mine ? null : (
         <span className="text-muted-foreground hidden shrink-0 truncate text-xs md:block md:max-w-32">
           {row.author}
         </span>
       )}
-      {/* Next to the author, because the pair is the whole question a triage
-          pass asks of a row: who wrote it, and who is on the hook to read it. */}
-      <Faces reviewers={row.reviewers} />
+      {faces}
       <span className="text-muted-foreground hidden shrink-0 truncate font-mono text-xs lg:block lg:max-w-28">
         →{row.targetBranch}
       </span>
-      {row.closed ? <Outcome closed={row.closed} /> : <Rich row={row} result={result} />}
-      {/* The same column, measuring the thing you triage on. On an open PR that
-          is how long it has been waiting; on a closed one it is how long ago it
-          stopped, and its creation date is trivia. The exact date goes in the
-          `title`, because a history page is the one place someone asks for it. */}
-      <span
-        className="text-muted-foreground w-16 shrink-0 text-right font-mono text-xs tabular-nums"
-        title={row.closed?.at || undefined}
-      >
-        {age(row.closed ? row.closed.at : row.createdAt)}
-      </span>
+      {status}
+      {when}
     </>
   )
 
@@ -589,7 +658,14 @@ function Row({
             // Right-packed, like `Rich`: the act nearest the Azure DevOps link
             // lands on the same column on every row, and a second or third one
             // grows leftward into space that was already spent.
-            <span className="flex w-[90px] shrink-0 items-center justify-end">
+            //
+            // `h-8` is the gutter's whole vertical claim: the link's own 20px line
+            // box plus its 6px of padding, top and bottom. A one-line row is
+            // exactly that tall, so this is what the row always did; on a two-line
+            // row it holds the glyphs beside the title rather than letting them
+            // drift down to the middle of a taller row, away from the badge column
+            // they read with.
+            <span className={cn('flex w-[90px] shrink-0 items-center justify-end', GUTTER)}>
               {onResolveCallout !== undefined && callouts.length > 0 ? (
                 <RowAction
                   icon={MessageDone01Icon}
@@ -641,7 +717,10 @@ function Row({
             target="_blank"
             rel="noreferrer"
             title={`Open !${row.id} in Azure DevOps`}
-            className="text-muted-foreground hover:text-teal-600 flex shrink-0 items-center rounded-sm px-2"
+            className={cn(
+              'text-muted-foreground hover:text-teal-600 flex shrink-0 items-center rounded-sm px-2',
+              GUTTER,
+            )}
           >
             <HugeiconsIcon icon={LinkSquare02Icon} size={14} aria-hidden />
             <span className="sr-only">Open in Azure DevOps</span>
@@ -733,6 +812,7 @@ export function PullRequestSection({
   total,
   grouped = false,
   mine = false,
+  roomy = false,
   hydration,
   listRef,
   selectedId,
@@ -758,6 +838,11 @@ export function PullRequestSection({
    * section heading already says whose these are.
    */
   mine?: boolean
+  /**
+   * Whether to give each row two lines instead of one. The row draws the same
+   * facts either way — see `Row` for which three of them move.
+   */
+  roomy?: boolean
   /** All optional so a section still renders standalone, plain, in a test. */
   hydration?: (row: PullRequestRow) => HydrationResult | undefined
   listRef?: (element: HTMLUListElement | null) => (() => void) | undefined
@@ -799,6 +884,7 @@ export function PullRequestSection({
           result={hydration?.(row)}
           isSelected={row.id === selectedId}
           mine={mine}
+          roomy={roomy}
           onResolveCallout={onResolveCallout}
           onRequeue={onRequeue}
           onMerge={onMerge}
