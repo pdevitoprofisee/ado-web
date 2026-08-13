@@ -64,6 +64,7 @@ import { useRename } from '@/lib/rename'
 import { useRequeue } from '@/lib/requeue'
 import { useWithdrawReviewer, withdrawBlocker } from '@/lib/reviewers'
 import { useSonarResolve } from '@/lib/sonar-resolve'
+import { NO_THREADS, countThreads } from '@/lib/thread-counts'
 import { cn } from '@/lib/utils'
 import { useViewedFiles } from '@/lib/viewed'
 import { fileViewedKey } from '@/lib/viewed-key'
@@ -1746,6 +1747,19 @@ function ChangedFiles({
   const read = changes.files.filter((file) => isViewed(viewed, file)).length
   const isRead = (file: ChangedFile) => isViewed(viewed, file)
 
+  // The tree's bubbles, off the map the panels are already reading. Counted per
+  // row rather than once for the whole tree because most rows are a miss: a map
+  // lookup on 294 files is cheaper than a second pass building a table of the
+  // twelve that have comments.
+  //
+  // `hideDone` is applied here and not in the tree, so the tree stays a thing
+  // that draws the counts it is handed. A file whose every thread is resolved has
+  // nothing left to say to a reader who asked for the resolved ones to go away.
+  const commentsOn = (file: ChangedFile) => {
+    const count = countThreads(threads.get(file.path) ?? null)
+    return hideDone && count.open === 0 ? NO_THREADS : count
+  }
+
   const source = adoDiffSource(ref)
 
   const [term, setTerm] = useState('')
@@ -1836,7 +1850,7 @@ function ChangedFiles({
       )}
 
       <div className="flex w-full items-start gap-6">
-        <FileTree nodes={nodes} viewed={isRead} conflicted={conflicted} />
+        <FileTree nodes={nodes} viewed={isRead} conflicted={conflicted} comments={commentsOn} />
 
         {/* `min-w-0` because the diff inside is wide and a flex child defaults to
             its content's width, which would push the tree off the screen. */}

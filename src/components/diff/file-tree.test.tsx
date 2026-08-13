@@ -99,6 +99,47 @@ describe('FileTree', () => {
     expect(tree().getByTitle('/src/lib/sink.ts')).not.toHaveTextContent('!')
   })
 
+  it('says how many comments a file is carrying, and whether any are open', () => {
+    // The point of the bubble: a reader scanning the sidebar can see which files
+    // are being talked about without opening any of them. The number is every
+    // thread and the tone is whether any of them still wants an answer.
+    draw({
+      comments: (candidate) =>
+        candidate.path === '/src/lib/log.ts'
+          ? { open: 1, done: 2 }
+          : candidate.path === '/src/new.ts'
+            ? { open: 0, done: 1 }
+            : { open: 0, done: 0 },
+    })
+
+    expect(tree().getByLabelText('3 comments, 1 unresolved')).toBeVisible()
+    expect(tree().getByLabelText('1 comment, all resolved')).toBeVisible()
+    // A file nobody has commented on gets nothing, not a zero.
+    expect(within(tree().getByTitle('/src/lib/sink.ts')).queryByLabelText(/comment/)).toBeNull()
+  })
+
+  it('rolls a shut directory’s comments up onto its own row', async () => {
+    // Shutting a directory must not be a way to lose the signal. Open, the files
+    // inside say it for themselves and the parent stays quiet.
+    draw({ comments: (candidate) => (candidate.path === '/src/lib/log.ts' ? { open: 2, done: 1 } : { open: 0, done: 0 }) })
+
+    expect(within(tree().getByTitle('/src/lib')).queryByLabelText(/comment/)).toBeNull()
+
+    await userEvent.click(tree().getByTitle('/src/lib'))
+
+    expect(
+      within(tree().getByTitle('/src/lib')).getByLabelText('3 comments, 2 unresolved'),
+    ).toBeVisible()
+  })
+
+  it('draws no bubbles at all for a view with no conversation behind it', () => {
+    // A branch or a commit diff has no pull request, so it passes no counts and
+    // must not get a column of zeroes for it.
+    draw()
+
+    expect(tree().queryByLabelText(/comment/)).toBeNull()
+  })
+
   it('moves the page to the panel a file belongs to', async () => {
     // The panels are somebody else's children, so the jump goes through the id
     // `changed-file.tsx` puts on each of them rather than through a ref.

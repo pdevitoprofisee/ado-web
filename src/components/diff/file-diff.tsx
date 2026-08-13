@@ -4,6 +4,7 @@ import { HugeiconsIcon } from '@hugeicons/react'
 
 import { DiffView, blobNotice } from './diff-view'
 import { FileThreadList } from '@/components/comments/file-thread-list'
+import { anyThreads, countThreads } from '@/lib/thread-counts'
 import { cn } from '@/lib/utils'
 
 import type { ChangeKind } from './file-tree'
@@ -57,6 +58,37 @@ const KIND_BADGE: Partial<Record<ChangeKind, { label: string; tone: string }>> =
   add: { label: 'added', tone: 'prof-badge--teal' },
   delete: { label: 'deleted', tone: 'prof-badge--red' },
   rename: { label: 'renamed', tone: 'prof-badge--navy' },
+}
+
+/**
+ * The pill that says this file is being talked about, or nothing when it is not.
+ *
+ * A pill and not the sidebar's bubble, because this row is a row of pills and one
+ * bubble among them would read as a stray glyph. It earns the outline on the same
+ * test `KIND_BADGE` sets: a comment is a reason to open a file that the `+`/`−`
+ * counts beside it cannot state. Amber while anything is unresolved, plain ink
+ * once it is all answered — the file still has a conversation, it just has no
+ * question left in it.
+ *
+ * `hideDone` silences the plain one. A reader who asked not to see resolved
+ * threads did not ask to see a badge counting them instead.
+ */
+function CommentBadge({ threads, hideDone }: { threads: FileThreads | null; hideDone: boolean }) {
+  const count = countThreads(threads)
+  if (!anyThreads(count)) return null
+  if (hideDone && count.open === 0) return null
+
+  const total = count.open + count.done
+
+  return (
+    <span
+      className={cn('prof-badge shrink-0 self-center', count.open > 0 && 'prof-badge--amber')}
+    >
+      {count.open > 0
+        ? `${total} ${total === 1 ? 'comment' : 'comments'}, ${count.open} open`
+        : `${total} ${total === 1 ? 'comment' : 'comments'}, resolved`}
+    </span>
+  )
 }
 
 /** `+12 −3`, or nothing at all for a file whose bytes did not move. */
@@ -290,6 +322,8 @@ export function FileDiffPanel({
         {conflicted ? (
           <span className="prof-badge prof-badge--red shrink-0 self-center">conflict</span>
         ) : null}
+
+        <CommentBadge threads={threads} hideDone={hideDone} />
 
         <Counts added={diff.added} removed={diff.removed} />
 

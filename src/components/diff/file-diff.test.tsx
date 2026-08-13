@@ -329,6 +329,39 @@ describe('a file with conversations on it', () => {
     expect(screen.queryByText('A comment on line one.')).toBeNull()
   })
 
+  it('says in the header how many there are, so a shut panel still advertises them', () => {
+    // The header is the one part of a collapsed file that is still on screen, so
+    // it is the only place a comment on a read-and-shut file can be seen from.
+    const { rerender } = render(
+      <FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" threads={threads} />,
+    )
+    // Both buckets counted: the one on a line and the one no line could hold.
+    expect(screen.getByText('2 comments, 2 open')).toBeVisible()
+
+    rerender(<FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" />)
+    expect(screen.queryByText(/comment/)).toBeNull()
+  })
+
+  it('drops the badge to plain ink once every thread is answered', () => {
+    const done: FileThreads = {
+      path: BLOBS.path,
+      byRightLine: new Map([[1, [{ ...thread(7, 'Answered.'), resolution: 'done' as const }]]]),
+      unanchored: [],
+    }
+
+    const { rerender } = render(
+      <FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" threads={done} />,
+    )
+    expect(screen.getByText('1 comment, resolved')).not.toHaveClass('prof-badge--amber')
+
+    // And it goes away entirely for a reader who asked not to see resolved
+    // threads — a badge counting them is the same interruption in smaller type.
+    rerender(
+      <FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" threads={done} hideDone />,
+    )
+    expect(screen.queryByText(/comment/)).toBeNull()
+  })
+
   it('still shows every one of them on a file it cannot render a diff for', () => {
     // A comment on a binary file is still a comment.
     render(
