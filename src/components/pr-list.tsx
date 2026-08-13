@@ -59,11 +59,35 @@ export function age(iso: string, now: number = Date.now()): string {
   return 'just now'
 }
 
-/** `title` for the mouse, `sr-only` for everything else; the icon carries neither. */
-function Badge({ label, children }: { label: string; children: ReactNode }) {
+/**
+ * `title` for the mouse, `sr-only` for everything else; the icon carries neither.
+ *
+ * The count is a prop rather than a child, and the slot it sits in is reserved on
+ * the badges that have no count. That is what puts the glyphs on one grid when
+ * you read the column downward: the badge nearest the column's right edge ends in
+ * a digit on one row and in a glyph on the next, so without the slot those two
+ * glyphs sit a character apart.
+ *
+ * `filled` is the red build pill, which carries its own count inside its fill and
+ * so takes no slot. It is the one mark here that is a shape rather than a line,
+ * and its edge is what the eye lines up.
+ */
+function Badge({
+  label,
+  count,
+  filled = false,
+  children,
+}: {
+  label: string
+  count?: number
+  filled?: boolean
+  children: ReactNode
+}) {
   return (
     <span className="flex items-center gap-0.5" title={label}>
       {children}
+      {/* `min-w` and not `w`: a two-digit count is rare and must not be clipped. */}
+      {filled ? null : <span className="min-w-2 text-left">{count}</span>}
       <span className="sr-only">{label}</span>
     </span>
   )
@@ -85,16 +109,19 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
   const failedOther = checks === null ? 0 : checks.failed - checks.failedBuilds
 
   // One pen per meaning, and the counts in mono because they are figures: at
-  // 8rem wide this column is read as a row of coloured marks, so the colour has
+  // 9rem wide this column is read as a row of coloured marks, so the colour has
   // to be the message. Red is something wrong, amber is something unfinished,
   // teal is something done, navy is something to look at.
   //
-  // 8rem and not the 6rem it started at, because the unmet-policy badge became
-  // two. `overflow-hidden` with `justify-end` clips from the *left*, so a row
-  // holding every badge at once would have dropped the conflict mark — the one
+  // 9rem and not the 8rem it grew to, because every badge now reserves a digit's
+  // worth of space whether it counts anything or not — see `Badge`, which is what
+  // lines the glyphs up down the column. The widest row this column can draw is
+  // the conflict mark, both failure badges, the comment count and the reset mark,
+  // which comes to 142px. `overflow-hidden` with `justify-end` clips from the
+  // *left*, so at 8rem that row would have dropped the conflict mark — the one
   // badge here that is free and the one that matters most.
   return (
-    <span className="text-muted-foreground flex w-32 shrink-0 items-center justify-end gap-1 overflow-hidden font-mono text-xs tabular-nums">
+    <span className="text-muted-foreground flex w-36 shrink-0 items-center justify-end gap-1 overflow-hidden font-mono text-xs tabular-nums">
       {/* Free from the list call, so it is the one badge that never waits. */}
       {row.conflicted ? (
         <Badge label="Merge conflicts">
@@ -143,7 +170,7 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
            louder than the two marks beside it. Fill against outline can, the way
            marker against pen can on the reviewer faces, and a filled shape is
            read before any of the linework around it. It costs about 12px of the
-           128, which this column has since the failure branch and the waiting
+           144, which this column has since the failure branch and the waiting
            branch are exclusive.
 
            A build first, and not because more is broken: a rejection is already
@@ -151,7 +178,10 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
            that broke is written nowhere else. */
         <>
           {checks.failedBuilds > 0 ? (
-            <Badge label={`${checks.failedBuilds} build ${checks.failedBuilds === 1 ? 'check' : 'checks'} failed`}>
+            <Badge
+              label={`${checks.failedBuilds} build ${checks.failedBuilds === 1 ? 'check' : 'checks'} failed`}
+              filled
+            >
               {/* `prof-badge--red` carries the pen, so the glyph takes no colour
                   of its own — and the measurements are `Outcome`'s, not
                   `.prof-badge`'s own 4px/10px, which would stand taller than
@@ -163,16 +193,17 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
             </Badge>
           ) : null}
           {failedOther > 0 ? (
-            <Badge label={`${failedOther} ${failedOther === 1 ? 'check' : 'checks'} failed`}>
+            <Badge
+              label={`${failedOther} ${failedOther === 1 ? 'check' : 'checks'} failed`}
+              count={failedOther}
+            >
               <HugeiconsIcon icon={Cancel01Icon} size={12} className="text-destructive" aria-hidden />
-              {failedOther}
             </Badge>
           ) : null}
         </>
       ) : checks && checks.running > 0 ? (
-        <Badge label={`${checks.running} checks running`}>
+        <Badge label={`${checks.running} checks running`} count={checks.running}>
           <HugeiconsIcon icon={Clock01Icon} size={12} className="text-pen-amber" aria-hidden />
-          {checks.running}
         </Badge>
       ) : checks && checks.waiting > 0 ? (
         /* Both in the same amber pen as the clock above, because it is the same
@@ -201,15 +232,19 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
            it. */
         <>
           {checks.waitingOnPeople > 0 ? (
-            <Badge label={`${checks.waitingOnPeople} reviewer policies not satisfied yet`}>
+            <Badge
+              label={`${checks.waitingOnPeople} reviewer policies not satisfied yet`}
+              count={checks.waitingOnPeople}
+            >
               <HugeiconsIcon icon={UserCheck01Icon} size={12} className="text-pen-amber" aria-hidden />
-              {checks.waitingOnPeople}
             </Badge>
           ) : null}
           {checks.waiting > checks.waitingOnPeople ? (
-            <Badge label={`${checks.waiting - checks.waitingOnPeople} policies not satisfied yet`}>
+            <Badge
+              label={`${checks.waiting - checks.waitingOnPeople} policies not satisfied yet`}
+              count={checks.waiting - checks.waitingOnPeople}
+            >
               <HugeiconsIcon icon={HourglassIcon} size={12} className="text-pen-amber" aria-hidden />
-              {checks.waiting - checks.waitingOnPeople}
             </Badge>
           ) : null}
         </>
@@ -221,9 +256,8 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
       ) : null}
 
       {result?.ok === true && result.data.unresolved > 0 ? (
-        <Badge label={`${result.data.unresolved} unresolved comments`}>
+        <Badge label={`${result.data.unresolved} unresolved comments`} count={result.data.unresolved}>
           <HugeiconsIcon icon={Message01Icon} size={12} className="text-ink" aria-hidden />
-          {result.data.unresolved}
         </Badge>
       ) : null}
 
@@ -254,7 +288,7 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
  */
 function Outcome({ closed }: { closed: NonNullable<PullRequestRow['closed']> }) {
   return (
-    <span className="flex w-32 shrink-0 items-center justify-end overflow-hidden">
+    <span className="flex w-36 shrink-0 items-center justify-end overflow-hidden">
       <span
         className={cn(
           'prof-badge tracking-label px-1.5 py-0.5 text-2xs leading-none uppercase',
@@ -458,6 +492,16 @@ function Row({
   const callouts = result?.ok === true ? result.data.pipelineThreads : []
   const requeueable = result?.ok === true ? result.data.requeueIds : []
   const mergeable = result?.ok === true && result.data.readyToMerge
+  // A page that can write reserves the whole gutter on every row, drawn or not.
+  // These buttons are flex siblings of a `flex-1` link, so without the box each
+  // one takes 30px off the link and drags the badge and age columns left with it
+  // — a row with no act would sit a glyph right of the row under it, and the
+  // columns would move again as the hydration lands.
+  //
+  // Three slots at 30px, because all three acts can be true at once: an optional
+  // build can be broken, and requeueable, while the pull request is still ready
+  // to merge on the policies that block.
+  const writes = onResolveCallout !== undefined || onRequeue !== undefined || onMerge !== undefined
   const body = (
     <>
       <span className="text-muted-foreground w-14 shrink-0 text-right font-mono text-xs tabular-nums">
@@ -533,47 +577,54 @@ function Row({
           >
             {body}
           </Link>
-          {onResolveCallout !== undefined && callouts.length > 0 ? (
-            <RowAction
-              icon={MessageDone01Icon}
-              label={
-                callouts.length === 1
-                  ? 'Resolve the Azure Pipelines comment'
-                  : `Resolve ${callouts.length} Azure Pipelines comments`
-              }
-              run={() => onResolveCallout(row, callouts)}
-            />
-          ) : null}
-          {/* `ReloadIcon` and not the `RefreshIcon` in the badge column, which
-              already means "a push reset your approval" on these same rows. */}
-          {onRequeue !== undefined && requeueable.length > 0 ? (
-            <RowAction
-              icon={ReloadIcon}
-              label={
-                requeueable.length === 1
-                  ? 'Requeue the build policy'
-                  : `Requeue ${requeueable.length} build policies`
-              }
-              run={() => onRequeue(row, requeueable)}
-            />
-          ) : null}
-          {/* Not a `RowAction`: this one writes nothing on its own. It opens the
-              page's merge dialog, where the commit message is written and the
-              real answer to "may this merge" is asked of the pull request — so
-              there is no busy state and no failure to draw here.
+          {writes ? (
+            // Right-packed, like `Rich`: the act nearest the Azure DevOps link
+            // lands on the same column on every row, and a second or third one
+            // grows leftward into space that was already spent.
+            <span className="flex w-[90px] shrink-0 items-center justify-end">
+              {onResolveCallout !== undefined && callouts.length > 0 ? (
+                <RowAction
+                  icon={MessageDone01Icon}
+                  label={
+                    callouts.length === 1
+                      ? 'Resolve the Azure Pipelines comment'
+                      : `Resolve ${callouts.length} Azure Pipelines comments`
+                  }
+                  run={() => onResolveCallout(row, callouts)}
+                />
+              ) : null}
+              {/* `ReloadIcon` and not the `RefreshIcon` in the badge column, which
+                  already means "a push reset your approval" on these same rows. */}
+              {onRequeue !== undefined && requeueable.length > 0 ? (
+                <RowAction
+                  icon={ReloadIcon}
+                  label={
+                    requeueable.length === 1
+                      ? 'Requeue the build policy'
+                      : `Requeue ${requeueable.length} build policies`
+                  }
+                  run={() => onRequeue(row, requeueable)}
+                />
+              ) : null}
+              {/* Not a `RowAction`: this one writes nothing on its own. It opens the
+                  page's merge dialog, where the commit message is written and the
+                  real answer to "may this merge" is asked of the pull request — so
+                  there is no busy state and no failure to draw here.
 
-              `GitCommitIcon` rather than the `GitMergeIcon` the badge column
-              already spends on the ready state, and a squash is one commit. */}
-          {onMerge !== undefined && mergeable ? (
-            <button
-              type="button"
-              title={`Squash and merge !${row.id}`}
-              onClick={() => onMerge(row)}
-              className="text-muted-foreground hover:text-pen-green flex shrink-0 items-center rounded-sm px-2"
-            >
-              <HugeiconsIcon icon={GitCommitIcon} size={14} aria-hidden />
-              <span className="sr-only">Squash and merge</span>
-            </button>
+                  `GitCommitIcon` rather than the `GitMergeIcon` the badge column
+                  already spends on the ready state, and a squash is one commit. */}
+              {onMerge !== undefined && mergeable ? (
+                <button
+                  type="button"
+                  title={`Squash and merge !${row.id}`}
+                  onClick={() => onMerge(row)}
+                  className="text-muted-foreground hover:text-pen-green flex shrink-0 items-center rounded-sm px-2"
+                >
+                  <HugeiconsIcon icon={GitCommitIcon} size={14} aria-hidden />
+                  <span className="sr-only">Squash and merge</span>
+                </button>
+              ) : null}
+            </span>
           ) : null}
           {/* Demoted, not removed: this app replaces the ADO tab for reading a
               PR, and there will always be something only ADO can do. */}
