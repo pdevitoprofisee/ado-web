@@ -34,16 +34,25 @@ export interface CommitDraft {
 }
 
 /**
- * What the fields say before anyone types: Azure DevOps' own squash convention.
+ * What the fields say before anyone types: the pull request's own title and
+ * description, unchanged.
  *
- * `Merged PR {id}: {title}` is the subject ADO writes when it composes the
- * message itself, and the description is the body it uses. Copying it is the
- * point — this page now sends the message explicitly, and a repository's history
- * should not change shape depending on which client merged. It is a starting
- * text, not a rule: every character of it is editable.
+ * **Not `Merged PR {id}: {title}`, which is what Azure DevOps writes when it
+ * composes the message itself.** That prefix pushes the title past the first
+ * ten characters of every shortlog, and it destroys a Conventional Commits
+ * subject: a pull request called `feat(inbox): merge from the table` lands in
+ * `main` as a commit no parser reads as a feature. Titles here are already
+ * written as commit subjects, so the honest default is to keep them.
+ *
+ * Nothing is added in the prefix's place. The type and the scope are the
+ * author's to write, and a fallback of `chore:` would file every unlabelled
+ * pull request under a lie. The pull request number is dropped with it —
+ * Azure DevOps links the squashed commit to its pull request on its own.
+ *
+ * It is a starting text, not a rule: every character of it is editable.
  */
-export function defaultDraft(pr: Pick<PullRequestDetail, 'id' | 'title' | 'description'>): CommitDraft {
-  return { subject: `Merged PR ${pr.id}: ${pr.title}`, body: pr.description }
+export function defaultDraft(pr: Pick<PullRequestDetail, 'title' | 'description'>): CommitDraft {
+  return { subject: pr.title, body: pr.description }
 }
 
 /**

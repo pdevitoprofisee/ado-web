@@ -854,12 +854,12 @@ describe('PullRequestDetailView squash merge', () => {
     if (text !== '') await userEvent.type(field, text)
   }
 
-  it('offers the message Azure DevOps would have written, and lets it be changed', async () => {
+  it('offers the title and the description, and lets them be changed', async () => {
     render(<PullRequestDetailView pr={detail()} />)
 
-    // ADO's own squash convention, so the repository's history does not change
-    // shape depending on which client did the merge.
-    expect(subject()).toHaveValue('Merged PR 24698: move the logging sink off the shared account')
+    // The title as written, with no `Merged PR 24698: ` in front of it: that
+    // prefix is what makes a Conventional Commits title unparseable in `main`.
+    expect(subject()).toHaveValue('move the logging sink off the shared account')
     expect(body()).toHaveValue('why this exists')
 
     await retype(subject(), 'chore: move the logging sink')
@@ -919,8 +919,7 @@ describe('PullRequestDetailView squash merge', () => {
       data: {
         ...REF,
         lastMergeSourceCommit: SOURCE_TIP,
-        commitMessage:
-          'Merged PR 24698: move the logging sink off the shared account\n\nwhy this exists',
+        commitMessage: 'move the logging sink off the shared account\n\nwhy this exists',
       },
     })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
@@ -955,7 +954,7 @@ describe('PullRequestDetailView squash merge', () => {
         ...REF,
         lastMergeSourceCommit: SOURCE_TIP,
         // No trailing blank line: an empty body is no body.
-        commitMessage: 'Merged PR 24698: move the logging sink off the shared account',
+        commitMessage: 'move the logging sink off the shared account',
       },
     })
   })

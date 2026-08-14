@@ -10,24 +10,40 @@ import { commitMessage, defaultDraft } from './merge'
 // function, and it is exercised through `pr-detail.test.tsx`.
 
 describe('defaultDraft', () => {
-  it("starts from Azure DevOps' own squash convention", () => {
-    // The subject ADO writes when it composes the message itself. Copied so a
-    // repository's history does not change shape depending on which client merged.
-    expect(defaultDraft({ id: 24698, title: 'move the logging sink', description: 'why' })).toEqual({
-      subject: 'Merged PR 24698: move the logging sink',
+  it('starts from the title and the description, unchanged', () => {
+    expect(defaultDraft({ title: 'refactor(logging): move the sink', description: 'why' })).toEqual({
+      subject: 'refactor(logging): move the sink',
       body: 'why',
     })
   })
 
+  it("does not prefix the subject with Azure DevOps' own squash convention", () => {
+    // `Merged PR {id}: ` is what ADO writes when it composes the message itself,
+    // and it is what makes a Conventional Commits title unparseable in `main`.
+    const subject = defaultDraft({ title: 'feat(inbox): merge from the table', description: '' })
+      .subject
+
+    expect(subject).toBe('feat(inbox): merge from the table')
+    expect(subject).not.toContain('Merged PR')
+  })
+
+  it('adds no type of its own to a title that has none', () => {
+    // A fallback of `chore:` would file every unlabelled pull request under a lie.
+    // The type is the author's to write, in the field.
+    expect(defaultDraft({ title: 'move the logging sink', description: '' }).subject).toBe(
+      'move the logging sink',
+    )
+  })
+
   it('leaves an empty description empty rather than inventing a body', () => {
-    expect(defaultDraft({ id: 1, title: 'a thing', description: '' }).body).toBe('')
+    expect(defaultDraft({ title: 'a thing', description: '' }).body).toBe('')
   })
 
   it('does not tidy the title on the way in', () => {
     // Whatever the pull request is called is what the subject offers; `commitMessage`
     // trims the ends, and nothing here decides the title was written wrong.
-    expect(defaultDraft({ id: 1, title: 'fix:  the  spacing', description: '' }).subject).toBe(
-      'Merged PR 1: fix:  the  spacing',
+    expect(defaultDraft({ title: 'fix:  the  spacing', description: '' }).subject).toBe(
+      'fix:  the  spacing',
     )
   })
 })

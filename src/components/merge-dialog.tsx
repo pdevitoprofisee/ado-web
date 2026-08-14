@@ -43,7 +43,7 @@ import type { AddressableRow } from './pr-list'
  * they must not be the delete key for a paragraph somebody just wrote. The draft
  * is held out here, above the part that closes, and keyed by pull request — so
  * reopening the same row finds the message again, and a different row starts from
- * Azure DevOps' own wording.
+ * its own title.
  *
  * @param onMerged Run after ADO accepted the merge, with the row it merged. The
  * inbox's cue to drop that row, which is the one thing this component cannot do

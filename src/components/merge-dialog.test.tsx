@@ -171,14 +171,14 @@ describe('MergeDialog', () => {
     await opened()
   })
 
-  it('offers the message Azure DevOps would have written, past the 400 characters the table holds', async () => {
+  it('offers the title and the description, past the 400 characters the table holds', async () => {
     render(<Table />)
     await opened()
 
     expect(pullRequestQuery).toHaveBeenCalledWith({
       data: { projectId: PROJECT, repositoryId: REPOSITORY, id: 3302 },
     })
-    expect(subject()).toHaveValue('Merged PR 3302: disable sql auditing')
+    expect(subject()).toHaveValue('disable sql auditing')
     // The whole description, not the row's copy of it.
     expect(body()).toHaveValue(`${TRUNCATED}tence the list cut off`)
   })
