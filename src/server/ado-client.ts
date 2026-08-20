@@ -41,6 +41,9 @@ export type AdoHost = keyof typeof HOSTS
  */
 const API_VERSION = '7.1'
 
+/** What a write sends unless the caller names something else. */
+const JSON_CONTENT = 'application/json'
+
 const TIMEOUT_MS = 30_000
 const MAX_ATTEMPTS = 3
 /**
@@ -173,6 +176,18 @@ export interface AdoBytesOptions {
 }
 
 /**
+ * What a write needs beyond a body, which so far is one header.
+ *
+ * Work item links are the reason it exists: `wit/workitems` takes a JSON Patch
+ * document and refuses `application/json`, so the content type is the caller's to
+ * say. Nothing else about the write changes with it — same gate, same one attempt.
+ */
+export interface AdoWriteOptions {
+  /** Defaults to `application/json`. */
+  readonly contentType?: string
+}
+
+/**
  * The verbs that change something. `GET` is deliberately not in here: a write
  * goes down a different path through `send` — one attempt, no retry — and
  * letting a caller say `write('GET', …)` would be a way to lose the retry on a
@@ -229,6 +244,7 @@ export interface AdoClient {
     path: string,
     body?: unknown,
     params?: Record<string, QueryValue>,
+    options?: AdoWriteOptions,
   ): Promise<T | null>
   /** Runs `task` over `items` at most `concurrency` at a time, results in order. */
   fanOut<I, O>(items: readonly I[], task: (item: I) => Promise<O>): Promise<O[]>
@@ -248,6 +264,7 @@ interface SendOptions {
   readonly method?: 'GET' | AdoWriteMethod
   readonly body?: string
   readonly retry?: boolean
+  readonly contentType?: string
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -391,14 +408,14 @@ export function createAdoClient(
   }
 
   async function send(url: string, options: SendOptions = {}): Promise<Response> {
-    const { method = 'GET', body, retry = true } = options
+    const { method = 'GET', body, retry = true, contentType = JSON_CONTENT } = options
     // One budget for the request. Fixed here, before the first attempt, so a
     // retry cannot buy itself a fresh one.
     const deadline = Date.now() + MAX_WAIT_MS
     const headers =
       body === undefined
         ? adoAuthHeaders(credential.pat)
-        : { ...adoAuthHeaders(credential.pat), 'Content-Type': 'application/json' }
+        : { ...adoAuthHeaders(credential.pat), 'Content-Type': contentType }
 
     for (let attempt = 1; ; attempt++) {
       await gate(deadline)
@@ -539,6 +556,7 @@ export function createAdoClient(
     path: string,
     body?: unknown,
     params: Record<string, QueryValue> = {},
+    { contentType = JSON_CONTENT }: AdoWriteOptions = {},
   ): Promise<T | null> {
     const url = buildUrl(credential.org, path, params, 'core')
     // `undefined`, not `'null'`: a DELETE with a body is a different request
@@ -566,7 +584,7 @@ export function createAdoClient(
 
     let response: Response
     try {
-      response = await send(url, { method, body: sent, retry: false })
+      response = await send(url, { method, body: sent, retry: false, contentType })
     } catch (cause) {
       record('threw', null, cause)
       throw cause

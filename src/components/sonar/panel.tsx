@@ -3,6 +3,7 @@ import { HugeiconsIcon } from '@hugeicons/react'
 import { useMemo, useState } from 'react'
 
 import { RuleDetail } from './rule-detail'
+import { Empty, Failed } from '@/components/notes'
 import { Button } from '@/components/ui/button'
 import { scrollToFile } from '@/lib/file-anchor'
 import { SONAR_ISSUE_CEILING, SONAR_TRANSITIONS } from '@/lib/sonar-contract'
@@ -37,26 +38,6 @@ import type {
 // grouping, count order, the worst impact — is already decided server-side,
 // because "count descending" is a fact about the whole list and a component that
 // groups is a component that re-groups on every render.
-
-/**
- * "There are none" and "we could not find out" are different facts.
- *
- * Copies of `pr-detail.tsx`'s pair rather than imports of them: they are private
- * to that module today, and this panel is not allowed to reach into it. Worth
- * lifting into one shared place the first time a third section wants them.
- */
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="text-muted-foreground px-2 py-1.5 text-sm">{children}</p>
-}
-
-function Failed({ children }: { children: ReactNode }) {
-  return (
-    <p className="text-destructive flex items-center gap-1.5 px-2 py-1.5 text-sm">
-      <HugeiconsIcon icon={Alert02Icon} size={14} className="shrink-0" aria-hidden />
-      {children}
-    </p>
-  )
-}
 
 /**
  * And "there are more of them than this" is a third fact, drawn between the two.

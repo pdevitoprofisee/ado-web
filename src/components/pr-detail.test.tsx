@@ -145,6 +145,16 @@ vi.mock('@/server/checks-fn', () => ({
   retryBuildRun: vi.fn(),
 }))
 
+// The work items panel, mocked for both of `checks-fn`' reasons: it reads for
+// itself, and `work-items-fn` validates with the `pullRequestRef` the mock above
+// does not export. Answered as "none attached", which draws one sentence.
+vi.mock('@/server/work-items-fn', () => ({
+  workItemsQuery: vi.fn(async () => ({ items: [], total: 0, error: null, connected: true })),
+  // Closed over by the picker, which is behind a press and never pressed here.
+  workItemSearchQuery: vi.fn(),
+  attachWorkItem: vi.fn(),
+}))
+
 // `useSonarResolve` for the same import-time reason as `checks-fn`: the header
 // closes over it on every render, and `sonar-fn` validates with the
 // `pullRequestRef` the mock above does not export.

@@ -22,6 +22,7 @@ import type { KeyboardEvent, ReactNode } from 'react'
 import { age } from './pr-list'
 import { Avatar } from './avatar'
 import { Markdown } from './markdown'
+import { Empty, Failed } from './notes'
 import { ReviewerPicker } from './reviewer-picker'
 import { ChecksPanel } from './checks/panel'
 import { Composer } from './comments/composer'
@@ -33,6 +34,7 @@ import { LayoutToggle } from './diff/layout-toggle'
 import { ReviewKeys } from './diff/review-keys'
 import { WhitespaceToggle } from './diff/whitespace-toggle'
 import { SonarPanel, scrollToFinding } from './sonar/panel'
+import { WorkItemsPanel } from './work-items/panel'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -404,20 +406,6 @@ function Section({
       </h2>
       {children}
     </section>
-  )
-}
-
-/** "There are none" and "we could not find out" are different facts. */
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="text-muted-foreground px-2 py-1.5 text-sm">{children}</p>
-}
-
-function Failed({ children }: { children: ReactNode }) {
-  return (
-    <p className="text-destructive flex items-center gap-1.5 px-2 py-1.5 text-sm">
-      <HugeiconsIcon icon={Alert02Icon} size={14} className="shrink-0" aria-hidden />
-      {children}
-    </p>
   )
 }
 
@@ -2487,6 +2475,12 @@ export function PullRequestDetailView({
               <Markdown>{pr.description}</Markdown>
             )}
           </Section>
+
+          {/* After the description and before the commits, which is the order this
+              half of the page answers "what is this": what the author wrote, then
+              what the board says it is for, then what is actually in it. The panel
+              owns its own read — there is nothing to pass it beyond the ref. */}
+          <WorkItemsPanel prRef={prRef} canWrite={pr.status === 'active'} />
 
           <Section title="Commits" count={failed.commits === true ? undefined : pr.commits.length}>
             {failed.commits === true ? (

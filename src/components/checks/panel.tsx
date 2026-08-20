@@ -1,5 +1,4 @@
 import {
-  Alert02Icon,
   ArrowDown01Icon,
   ArrowRight01Icon,
   Cancel01Icon,
@@ -12,11 +11,11 @@ import { HugeiconsIcon } from '@hugeicons/react'
 import { useState } from 'react'
 
 import { BuildDetail } from './detail'
+import { Empty, Failed } from '@/components/notes'
 import { useChecks } from '@/lib/checks'
 import { cn } from '@/lib/utils'
 
 import type { IconSvgElement } from '@hugeicons/react'
-import type { ReactNode } from 'react'
 import type { BuildRun, CheckSummary, EvaluationStatus } from '@/lib/checks-contract'
 import type { PullRequestRef } from '@/server/pull-request'
 
@@ -34,31 +33,6 @@ import type { PullRequestRef } from '@/server/pull-request'
 // disclosure is, and a panel that owned half its reads and was handed the other
 // half would be harder to follow than one that owns both. The wiring is therefore
 // one line — `<ChecksPanel prRef={prRef} />` — and no plumbing in the route.
-
-/**
- * "There are none" and "we could not find out" are different facts.
- *
- * Copies of `pr-detail.tsx`'s pair, exactly as `sonar/panel.tsx` copied them:
- * they are private to that module and this panel is not allowed to reach into it.
- * That is now **three** modules holding the same eight lines, which is one more
- * than the note in `sonar/panel.tsx` said would be the moment to lift them into a
- * shared place. The reason it stayed a copy — that this branch was not allowed to
- * touch `pr-detail.tsx` — is gone as of the commit that wired this panel in, so
- * the third copy is now a deliberate debt and not a constraint. Lift all three
- * when a fourth wants them.
- */
-function Empty({ children }: { children: ReactNode }) {
-  return <p className="text-muted-foreground px-2 py-1.5 text-sm">{children}</p>
-}
-
-function Failed({ children }: { children: ReactNode }) {
-  return (
-    <p className="text-destructive flex items-center gap-1.5 px-2 py-1.5 text-sm">
-      <HugeiconsIcon icon={Alert02Icon} size={14} className="shrink-0" aria-hidden />
-      {children}
-    </p>
-  )
-}
 
 /**
  * ADO's evaluation vocabulary in English, the checklist's wording.

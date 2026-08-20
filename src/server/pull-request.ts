@@ -699,8 +699,8 @@ const NO_COMMITS: readonly Commit[] = []
 const NO_CONFLICTS: readonly Conflict[] = []
 const NO_FILES: FileList = { files: [], iterationId: null, iterations: [], truncated: false }
 
-/** Where every call about one pull request hangs off. Two callers, hence a name. */
-const prBase = (ref: PullRequestRef): string =>
+/** Where every call about one pull request hangs off. Shared, hence a name. */
+export const prBase = (ref: PullRequestRef): string =>
   `${ref.projectId}/_apis/git/repositories/${ref.repositoryId}/pullRequests/${ref.id}`
 const UNFETCHED: Section<readonly Conflict[]> = { data: NO_CONFLICTS, error: null }
 
