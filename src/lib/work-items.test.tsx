@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { pullRequestKey } from './requeue'
 import {
   useAttachWorkItem,
   useDebounced,
@@ -26,6 +27,10 @@ vi.mock('@/server/work-items-fn', () => ({
   workItemSearchQuery: vi.fn(async () => ({ items: [], error: null, connected: true })),
   attachWorkItem: vi.fn(async () => ({ ok: true, error: null, connected: true })),
 }))
+
+// `requeue.ts` owns the detail key this write invalidates, and it sits next to a
+// server function that reaches SQLite. `checks.test.tsx`' mock, for its reason.
+vi.mock('@/server/pull-request-fn', () => ({ requeuePolicy: vi.fn() }))
 
 const PROJECT = '11111111-1111-1111-1111-111111111111'
 const REPOSITORY = '22222222-2222-2222-2222-222222222222'
@@ -214,8 +219,19 @@ describe('useAttachWorkItem', () => {
         data: { ...REF, workItemId: 162828 },
       }),
     )
-    // This read alone, not the whole page: nothing else on it changes.
     await waitFor(() => expect(invalidated).toHaveBeenCalledWith({ queryKey: workItemsKey(REF) }))
+  })
+
+  it('re-reads the detail as well, because the work item policy lives there', async () => {
+    const client = quiet()
+    const invalidated = vi.spyOn(client, 'invalidateQueries')
+    const { result } = mount(() => useAttachWorkItem(REF), client, undefined)
+
+    result.current.run(162828)
+
+    await waitFor(() =>
+      expect(invalidated).toHaveBeenCalledWith({ queryKey: pullRequestKey(REF) }),
+    )
   })
 
   it('names the work item in flight, not merely that one is', async () => {
@@ -253,9 +269,10 @@ describe('useAttachWorkItem', () => {
         'Azure DevOps answered 403. (TF401326: You do not have permission.)',
       ),
     )
-    // A `PATCH` whose response was lost may well have been applied, so the re-read
-    // happens on the failure too.
+    // A `PATCH` whose response was lost may well have been applied, so both re-reads
+    // happen on the failure too.
     expect(invalidated).toHaveBeenCalledWith({ queryKey: workItemsKey(REF) })
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: pullRequestKey(REF) })
   })
 
   it('has something to say when the refusal came with no reason', async () => {

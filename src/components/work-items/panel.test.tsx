@@ -22,6 +22,11 @@ vi.mock('@/server/work-items-fn', () => ({
   attachWorkItem: vi.fn(async () => ({ ok: true, error: null, connected: true })),
 }))
 
+// Reached through `requeue.ts`, which owns the detail key an attach invalidates.
+// `checks.test.tsx`' mock, for its reason: that module sits beside a server function
+// that opens SQLite.
+vi.mock('@/server/pull-request-fn', () => ({ requeuePolicy: vi.fn() }))
+
 const REF: PullRequestRef = {
   projectId: '11111111-1111-1111-1111-111111111111',
   repositoryId: '22222222-2222-2222-2222-222222222222',

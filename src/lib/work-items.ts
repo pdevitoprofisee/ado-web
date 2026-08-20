@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
+import { pullRequestKey } from './requeue'
 import { WORK_ITEM_DEBOUNCE_MS } from './work-item-contract'
 import { attachWorkItem, workItemSearchQuery, workItemsQuery } from '@/server/work-items-fn'
 
@@ -124,7 +125,18 @@ export function useAttachWorkItem(ref: PullRequestRef): Attach {
     // On failure as well, `useInviteReviewer`'s rule: a write whose response was
     // lost may well have been applied (`ado-client.ts` note 2), and only the re-read
     // knows whether the link is there.
-    onSettled: () => client.invalidateQueries({ queryKey: workItemsKey(ref) }),
+    //
+    // Both reads, because a link changes two sections. The rows come from
+    // `workItemsKey`; the work item policy — "not yet met" for as long as nothing is
+    // attached — is one of the evaluations in the detail read. Invalidating only the
+    // first leaves a row in this section sitting under a blocking policy that says
+    // there is none, which is the state this write exists to end.
+    onSettled: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: workItemsKey(ref) }),
+        client.invalidateQueries({ queryKey: pullRequestKey(ref) }),
+      ])
+    },
   })
 
   return {
