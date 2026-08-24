@@ -48,3 +48,30 @@ export interface BuildPolicySettings {
  */
 export const isBuild = (settings: BuildPolicySettings | undefined): boolean =>
   typeof settings?.buildDefinitionId === 'number'
+
+/** The one settings key that says "a squash is allowed". */
+export interface MergeStrategyPolicySettings {
+  readonly allowSquash?: boolean
+}
+
+/**
+ * Whether the squash this app sends already satisfies this policy.
+ *
+ * A "Require a merge strategy" policy rejects the merge Azure DevOps *previewed*,
+ * and until somebody sets `completionOptions.mergeStrategy` that preview is a
+ * merge commit. So a squash-only policy sits at `rejected` on every pull request
+ * in the repository, and nothing clears it except the merge itself. Measured on
+ * `Products/dev-launchpad`: three active pull requests with no strategy set, all
+ * three `rejected`; the one that completed with `squash` was `approved`.
+ *
+ * Treated as unsatisfied, that row is a deadlock — `completePullRequest` sends
+ * `mergeStrategy: 'squash'` and nothing else, so the button that would clear the
+ * policy is the button the policy switches off.
+ *
+ * Keyed off `allowSquash` alone, which is both the test for "this is a merge
+ * strategy policy" and the answer. An absent or `false` key claims nothing and
+ * leaves the row blocking, which is the safe direction: a policy that forbids
+ * squashing really does stand between this app and a merge.
+ */
+export const clearedBySquash = (settings: MergeStrategyPolicySettings | undefined): boolean =>
+  settings?.allowSquash === true

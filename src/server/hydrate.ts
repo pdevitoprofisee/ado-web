@@ -1,10 +1,14 @@
 import { noteActivity } from './notifications'
-import { isBuild, waitsOnPeople } from './policy-kind'
+import { clearedBySquash, isBuild, waitsOnPeople } from './policy-kind'
 import { readPrCache, writePrCache } from './pr-cache'
 
 import type { DatabaseSync } from 'node:sqlite'
 import type { AdoClient } from './ado-client'
-import type { BuildPolicySettings, ReviewerPolicySettings } from './policy-kind'
+import type {
+  BuildPolicySettings,
+  MergeStrategyPolicySettings,
+  ReviewerPolicySettings,
+} from './policy-kind'
 
 // Server-only. The per-PR half of the inbox: what a reviewer actually triages
 // on, which the one cheap list call cannot carry.
@@ -78,8 +82,13 @@ interface EvaluationList {
     readonly configuration?: {
       readonly isBlocking?: boolean
       readonly isEnabled?: boolean
-      /** Only the keys that say "people" and "a build". See `policy-kind.ts`. */
-      readonly settings?: ReviewerPolicySettings & BuildPolicySettings
+      /**
+       * Only the keys that say "people", "a build" and "a squash will do". See
+       * `policy-kind.ts`.
+       */
+      readonly settings?: ReviewerPolicySettings &
+        BuildPolicySettings &
+        MergeStrategyPolicySettings
     }
   }>
 }
@@ -401,13 +410,20 @@ export function readRequeueable(evaluations: EvaluationList): readonly string[] 
  * An unrecognised status is not satisfied, which errs toward "blocked". Being
  * told to look again is a cheap mistake; being told a PR is ready when a policy
  * says otherwise is not.
+ *
+ * The one exception to that caution is `clearedBySquash`, and it earns the
+ * exception by being a permanent wrong answer rather than a stale one: a
+ * squash-only merge strategy policy sits at `rejected` on every open pull
+ * request in the repository, so without this the inbox marks every row blocked
+ * and never stops.
  */
 export function readBlocked(evaluations: EvaluationList): boolean {
   return (evaluations.value ?? []).some(
     (evaluation) =>
       evaluation.configuration?.isBlocking === true &&
       evaluation.configuration.isEnabled !== false &&
-      !SATISFIED.has(evaluation.status ?? ''),
+      !SATISFIED.has(evaluation.status ?? '') &&
+      !clearedBySquash(evaluation.configuration.settings),
   )
 }
 

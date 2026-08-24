@@ -60,6 +60,7 @@ import {
   defaultDraft,
   mergeBlocker,
   useSquashMerge,
+  useSquashStrategy,
 } from '@/lib/merge'
 import { voteWord } from '@/lib/people'
 import { useRename } from '@/lib/rename'
@@ -732,13 +733,20 @@ function PolicyIcon({ policy }: { policy: Policy }) {
 }
 
 /**
- * The four verdicts, in the order they are read: what is stopping the merge,
- * what is done, what does not apply to this branch, and what is only advice.
- * A policy lands in the first group that claims it.
+ * The five verdicts, in the order they are read: what is stopping the merge,
+ * what is done, what the merge itself will settle, what does not apply to this
+ * branch, and what is only advice. A policy lands in the first group that
+ * claims it.
+ *
+ * The middle one sits after "Passed" rather than before it so that a merge
+ * strategy policy which has already been satisfied stays where it belongs — the
+ * group is for the ones Azure DevOps still calls `rejected`, and `clearedBySquash`
+ * is true either way.
  */
 const GROUPS: ReadonlyArray<[string, (policy: Policy) => boolean]> = [
   ['Blocking', (policy) => policy.blocking],
   ['Passed', (policy) => policy.status === 'approved'],
+  ['Cleared by the squash', (policy) => policy.clearedBySquash],
   ['Not applicable', (policy) => policy.status === 'notApplicable'],
   ['Optional', () => true],
 ]
@@ -747,22 +755,65 @@ function label(policy: Policy): string {
   return policy.detail === null ? policy.name : `${policy.name} — ${policy.detail}`
 }
 
-/** One row's share of `useRequeue`, or `null` when the row is not one to requeue. */
-interface RowRequeue {
+/**
+ * One row's share of a write, or `null` when the row is not one to offer it on.
+ *
+ * The same three fields serve both of the checklist's verbs — requeue a build,
+ * name the squash strategy — because a row only ever needs to know that
+ * something can be pressed, whether it is in flight, and what was said about it.
+ */
+interface RowAction {
   readonly ask: () => void
   readonly pending: boolean
   /** What ADO said about the last attempt on *this* row, or `null`. */
   readonly error: string | null
 }
 
+/**
+ * A row's write, drawn as the link beside the verdict.
+ *
+ * Not a `<Button>`: this sits in a row of eleven-pixel type, and a real button
+ * here would outweigh the verdict it is about. It is still a `<button>`, because
+ * it does something rather than going somewhere.
+ *
+ * The accessible name carries the policy so a checklist with three build rows has
+ * three distinguishable controls — "requeue" three times over is a screen reader
+ * listing the same action thrice.
+ */
+function RowActionLink({
+  action,
+  name,
+  pendingLabel,
+  label: accessibleLabel,
+}: {
+  action: RowAction
+  name: string
+  pendingLabel: string
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={action.ask}
+      disabled={action.pending}
+      aria-label={accessibleLabel}
+      className="text-muted-foreground hover:text-primary shrink-0 text-2xs underline decoration-[1.5px] underline-offset-[3px] disabled:no-underline disabled:opacity-60"
+    >
+      {action.pending ? pendingLabel : name}
+    </button>
+  )
+}
+
 function PolicyRow({
   policy,
   ambiguous,
   requeue,
+  strategy,
 }: {
   policy: Policy
   ambiguous: boolean
-  requeue: RowRequeue | null
+  requeue: RowAction | null
+  strategy: RowAction | null
 }) {
   return (
     // `border-border` at full strength rather than the old `/60`: `--border` is
@@ -799,23 +850,24 @@ function PolicyRow({
           </a>
         )}
         {requeue === null ? null : (
-          // Drawn as the link beside it and not as a `<Button>`: this sits in a
-          // row of eleven-pixel type, and a real button here would outweigh the
-          // verdict it is about. It is still a `<button>`, because it does
-          // something rather than going somewhere.
-          //
-          // The name carries the policy so a checklist with three build rows has
-          // three distinguishable controls — "requeue" three times over is a
-          // screen reader listing the same action thrice.
-          <button
-            type="button"
-            onClick={requeue.ask}
-            disabled={requeue.pending}
-            aria-label={`Requeue ${label(policy)}`}
-            className="text-muted-foreground hover:text-primary shrink-0 text-2xs underline decoration-[1.5px] underline-offset-[3px] disabled:no-underline disabled:opacity-60"
-          >
-            {requeue.pending ? 'requeuing…' : 'requeue'}
-          </button>
+          <RowActionLink
+            action={requeue}
+            name="requeue"
+            pendingLabel="requeuing…"
+            label={`Requeue ${label(policy)}`}
+          />
+        )}
+        {strategy === null ? null : (
+          // "in Azure DevOps", because the row it fixes is not this one — this
+          // page already reads the policy as satisfied, which is why the row is
+          // under "Cleared by the squash". The link is for the checklist Azure
+          // DevOps draws on its own pull request page.
+          <RowActionLink
+            action={strategy}
+            name="set in Azure DevOps"
+            pendingLabel="setting…"
+            label={`Set the squash strategy in Azure DevOps for ${label(policy)}`}
+          />
         )}
         {/* Mono, because this column is read down rather than across: the verdicts
             line up on a shared advance width and a row that says "failed" jumps
@@ -829,6 +881,11 @@ function PolicyRow({
         // Indented to the text it belongs under, past the verdict glyph.
         <p className="text-destructive ml-[1.375rem] text-2xs">
           Azure DevOps did not requeue it: {requeue.error}
+        </p>
+      )}
+      {strategy === null || strategy.error === null ? null : (
+        <p className="text-destructive ml-[1.375rem] text-2xs">
+          Azure DevOps did not set the strategy: {strategy.error}
         </p>
       )}
     </li>
@@ -846,6 +903,10 @@ function PolicyChecklist({
   // requeue is ever in flight — the button that started it is disabled — and a
   // hook per row would mean a `useMutation` per policy on every render.
   const requeue = useRequeue(prRef)
+  // One for the same reason, and one is enough for a second reason: the strategy
+  // is a field of the pull request, not of a policy, so every row that offers it
+  // is asking for the same single write.
+  const strategy = useSquashStrategy(prRef)
 
   const buckets = GROUPS.map(() => [] as Policy[])
   for (const policy of policies) {
@@ -891,6 +952,19 @@ function PolicyChecklist({
                           error:
                             requeue.failure?.id === policy.id ? requeue.failure.message : null,
                         }
+                  }
+                  strategy={
+                    // Exactly the disagreement this write settles: a policy a
+                    // squash satisfies, which Azure DevOps is nonetheless still
+                    // calling failed. A row already `approved` has nothing to fix,
+                    // and a row a squash cannot satisfy is not this write's to try.
+                    policy.clearedBySquash && policy.status === 'rejected'
+                      ? {
+                          ask: strategy.ask,
+                          pending: strategy.isPending,
+                          error: strategy.error,
+                        }
+                      : null
                   }
                 />
               ))}

@@ -300,6 +300,7 @@ const policy = (over: Partial<Policy> = {}): Policy => ({
   detail: null,
   url: null,
   waitsOnPeople: false,
+  clearedBySquash: false,
   // Whether a row is one to requeue is `toPolicies`' decision, tested there. The
   // rows here are given one or not given one, which is all this side knows.
   requeueId: null,

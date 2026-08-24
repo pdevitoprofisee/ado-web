@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { squashMerge } from '@/server/pull-request-fn'
+import { setSquashStrategy, squashMerge } from '@/server/pull-request-fn'
 
 import { pullRequestKey } from './requeue'
 
@@ -225,6 +225,69 @@ export function mergeBlocker(
   }
 
   return null
+}
+
+/**
+ * How long Azure DevOps is given to re-judge the policy before the page re-reads.
+ *
+ * The PATCH is answered before the evaluation it changes has moved, which is
+ * `requeue.ts`' finding about a queue and is true of this one too: the read taken
+ * the instant the write returns is a read of a service that has not acted yet, and
+ * the row comes back still red. So the page waits once, then re-reads.
+ *
+ * One wait and not `requeue.ts`' ladder of them, because there is no second thing
+ * to learn here. The strategy either took or it did not, and a row that is still
+ * red after two seconds is a row the reviewer can press Refresh on — where a
+ * requeue is waiting on a build queue, whose length nobody here knows.
+ */
+const SETTLE_MS = 2_000
+
+/** The one verb a merge strategy policy row has, and what came back. */
+export interface SquashStrategy {
+  /** Tells Azure DevOps this pull request is to be squashed. Merges nothing. */
+  readonly ask: () => void
+  readonly isPending: boolean
+  /** What Azure DevOps said about the last attempt, or `null`. */
+  readonly error: string | null
+}
+
+/**
+ * Write the squash strategy onto the pull request, so that Azure DevOps' own
+ * policy row agrees with this page's.
+ *
+ * **It changes nothing about what merging from here does.** The completion this
+ * app sends already carries `mergeStrategy: 'squash'`, and a squash-only policy
+ * does not stand in its way — measured. So this is offered as a control rather
+ * than sent on load: the row it fixes is a row in the *Azure DevOps* web UI, the
+ * pull request may well be somebody else's, and a page that writes to every pull
+ * request it is opened on is a page that edits work by being looked at.
+ *
+ * Not optimistic, for `useRequeue`'s reason. Whether the policy went green is
+ * Azure DevOps' answer and it does not arrive with the write, so the page waits
+ * {@link SETTLE_MS} and re-reads rather than drawing a verdict nobody gave.
+ */
+export function useSquashStrategy(ref: PullRequestRef): SquashStrategy {
+  const client = useQueryClient()
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const result = await setSquashStrategy({ data: ref })
+      // The server function answers a refusal rather than throwing one;
+      // react-query only calls something a failure if it rejects.
+      if (!result.ok) throw new Error(result.error ?? 'Azure DevOps did not say why.')
+
+      await new Promise((resolve) => setTimeout(resolve, SETTLE_MS))
+    },
+    // On failure too: a write whose response was lost may still have landed
+    // (`ado-client.ts` note 2), and only the re-read knows.
+    onSettled: () => client.invalidateQueries({ queryKey: pullRequestKey(ref) }),
+  })
+
+  return {
+    ask: () => mutation.mutate(),
+    isPending: mutation.isPending,
+    error: mutation.error === null ? null : mutation.error.message,
+  }
 }
 
 /** One button's worth of state: what pressing it does, and what came back. */

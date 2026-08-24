@@ -1,5 +1,5 @@
 import { resolveIdentity } from './inbox'
-import { waitsOnPeople } from './policy-kind'
+import { clearedBySquash, waitsOnPeople } from './policy-kind'
 
 import type { AdoClient } from './ado-client'
 
@@ -189,6 +189,12 @@ export interface Policy {
   readonly detail: string | null
   /** Whether people, and not a machine, satisfy this row. See `policy-kind.ts`. */
   readonly waitsOnPeople: boolean
+  /**
+   * A merge strategy policy that the squash this app sends already satisfies, so
+   * it is not blocking and the checklist gives it its own group rather than
+   * filing it with the optional rows. See `clearedBySquash`.
+   */
+  readonly clearedBySquash: boolean
   /** A build result, when the policy has one to point at. */
   readonly url: string | null
   /**
@@ -421,6 +427,16 @@ interface AdoPolicySettings {
   /** A build policy names its definition here; most other types send nothing. */
   readonly displayName?: string
   readonly buildDefinitionId?: number
+  /**
+   * A "Require a merge strategy" policy sends one key per strategy it permits,
+   * and only the permitted ones — `allowRebase` was absent rather than `false`
+   * on both sampled policies. `allowSquash` is the one that decides whether this
+   * app can merge at all; see `clearedBySquash`.
+   */
+  readonly allowSquash?: boolean
+  readonly allowNoFastForward?: boolean
+  readonly allowRebase?: boolean
+  readonly allowRebaseMerge?: boolean
   readonly minimumApproverCount?: number
   readonly creatorVoteCounts?: boolean
   readonly requiredReviewerIds?: readonly string[]
@@ -574,6 +590,22 @@ function policyName(type: string, settings: AdoPolicySettings): string {
  * than off `displayName`: the name is display text and collides, the settings
  * are data and do not.
  */
+/**
+ * The strategies a "Require a merge strategy" policy permits, in the order the
+ * Azure DevOps branch-policy page lists them.
+ *
+ * Written out because the row is unreadable without it: the live repository
+ * carries two of these policies, one permitting a merge commit as well as a
+ * squash and one permitting only a squash, and nothing on screen said which was
+ * which. The names are ADO's own wording on that page, not the settings keys.
+ */
+const STRATEGY_WORDS: ReadonlyArray<[keyof AdoPolicySettings, string]> = [
+  ['allowNoFastForward', 'merge commit'],
+  ['allowSquash', 'squash'],
+  ['allowRebase', 'rebase'],
+  ['allowRebaseMerge', 'rebase and merge'],
+]
+
 function policyDetail(
   settings: AdoPolicySettings,
   context: AdoPolicyContext | null | undefined,
@@ -601,6 +633,13 @@ function policyDetail(
 
     return `${plural(settings.minimumApproverCount, 'approval')}${counts}`
   }
+  // Last, because a merge strategy policy carries none of the keys above and no
+  // other policy type carries these. "only" is the word that answers the
+  // question the checklist raises — why one of these rows passed and the other
+  // did not.
+  const allowed = STRATEGY_WORDS.filter(([key]) => settings[key] === true).map(([, word]) => word)
+  if (allowed.length === 1) return `${allowed[0]} only`
+  if (allowed.length > 1) return allowed.join(' or ')
 
   return null
 }
@@ -656,6 +695,10 @@ export function toPolicies(
     // `policyDetail`'s reason: the name is display text and collides, the
     // settings are data and do not.
     const isBuild = settings.buildDefinitionId !== undefined
+    // Not `SATISFIED.has(status)`, and deliberately not folded into it: ADO
+    // says `rejected` and it is right about the merge it previewed. What is
+    // false is that the row stands in this app's way. See `clearedBySquash`.
+    const squashClears = clearedBySquash(settings)
 
     return {
       id: String(configuration?.id ?? index),
@@ -664,9 +707,11 @@ export function toPolicies(
       blocking:
         configuration?.isBlocking === true &&
         configuration.isEnabled !== false &&
-        !SATISFIED.has(status),
+        !SATISFIED.has(status) &&
+        !squashClears,
       detail: policyDetail(settings, evaluation.context),
       waitsOnPeople: waitsOnPeople(settings),
+      clearedBySquash: squashClears,
       url:
         buildId === undefined
           ? null
@@ -821,6 +866,43 @@ export async function setTitle(
   title: string,
 ): Promise<void> {
   await client.write('PATCH', prBase(ref), { title })
+}
+
+/**
+ * Say now that this pull request will be squashed, without merging it.
+ *
+ * The pull request's *planned* strategy is a field Azure DevOps evaluates a
+ * "Require a merge strategy" policy against, and a pull request that has never
+ * named one is previewed as a merge commit. On a branch whose policy permits a
+ * squash and nothing else, that is a policy row Azure DevOps draws as failed for
+ * the whole life of the pull request, on work that would satisfy it — measured on
+ * every open pull request of one repository. This write says the thing early that
+ * {@link completePullRequest} would say at the end.
+ *
+ * **The current options are read first and kept.** `completionOptions` is one
+ * object, so a PATCH carrying a lone `mergeStrategy` replaces the whole of it —
+ * and `deleteSourceBranch`, `mergeCommitMessage` and `transitionWorkItems` live
+ * in there too. On a pull request with auto-complete armed, sending one key would
+ * quietly disarm the branch deletion somebody asked for. The extra read is the
+ * price of not doing that.
+ *
+ * Nothing else is sent. `status` is absent, so this cannot complete anything, and
+ * `lastMergeSourceCommit` is absent because no merge is being asked for — the
+ * guard belongs to the write that merges. This is `setTitle`'s rule: one field,
+ * so the worst a bug here can do is store the wrong plan.
+ *
+ * Azure DevOps re-evaluates the policy on its own after the PATCH, and it is not
+ * immediate. The caller re-reads; see `useSquashStrategy`.
+ *
+ * Unproven against ADO on an active pull request: written from the documented
+ * shape of `Pull Requests - Update`, and the PAT needs `vso.code_write`.
+ */
+export async function setMergeStrategy(client: AdoClient, ref: PullRequestRef): Promise<void> {
+  const current = await client.get<{ completionOptions?: Record<string, unknown> }>(prBase(ref))
+
+  await client.write('PATCH', prBase(ref), {
+    completionOptions: { ...current.completionOptions, mergeStrategy: 'squash' },
+  })
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   reactivate,
   removeReviewer,
   requeueEvaluation,
+  setMergeStrategy,
   setTitle,
 } from './pull-request'
 
@@ -608,6 +609,39 @@ export const squashMerge = createServerFn({ method: 'POST' })
 
     try {
       await completePullRequest(client, ref, lastMergeSourceCommit, commitMessage)
+
+      return { ok: true, error: null, connected: true }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        connected: true,
+      }
+    }
+  })
+
+/**
+ * Record that this pull request is to be squashed, ahead of merging it.
+ *
+ * The same `RequeueResult` shape and the same `ok: false` rule as the writes
+ * above: "not connected" and "ADO refused" are both sentences the policy row has
+ * to print, and a refusal here is the interesting one — this is the write that
+ * needs a permission the reads do not.
+ *
+ * It decides nothing about *which* pull requests want this. The row that offers
+ * it is the one Azure DevOps still calls `rejected` on a policy a squash would
+ * satisfy, and that judgement is `clearedBySquash`'s, in `policy-kind.ts`.
+ */
+export const setSquashStrategy = createServerFn({ method: 'POST' })
+  .validator(pullRequestRef)
+  .handler(async ({ data }): Promise<RequeueResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) {
+      return { ok: false, error: client.message, connected: false }
+    }
+
+    try {
+      await setMergeStrategy(client, data)
 
       return { ok: true, error: null, connected: true }
     } catch (error) {

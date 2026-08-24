@@ -360,6 +360,21 @@ describe('readBlocked', () => {
   it('treats a PR with no policies as unblocked rather than unknown', () => {
     expect(readBlocked({})).toBe(false)
   })
+
+  it('is not blocked by a merge strategy policy the squash would satisfy', () => {
+    // Agrees with `Policy.blocking` on the detail page by construction — both
+    // ask `clearedBySquash`. A squash-only policy is `rejected` on every open PR
+    // in the repository, so the inbox would mark every row blocked for ever.
+    expect(
+      readBlocked({ value: [required('rejected', { settings: { allowSquash: true } })] }),
+    ).toBe(false)
+  })
+
+  it('is blocked by a merge strategy policy that forbids squashing', () => {
+    expect(
+      readBlocked({ value: [required('rejected', { settings: { allowNoFastForward: true } })] }),
+    ).toBe(true)
+  })
 })
 
 describe('approvalWasReset', () => {

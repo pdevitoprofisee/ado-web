@@ -14,6 +14,7 @@ import {
   reactivate,
   removeReviewer,
   requeueEvaluation,
+  setMergeStrategy,
   setTitle,
   toPolicies,
 } from './pull-request'
@@ -450,6 +451,47 @@ describe('the policy checklist', () => {
     expect(rows.filter((row) => row.blocking).map((row) => row.id)).toEqual(['102', '104'])
   })
 
+  it('does not block on a merge strategy policy that the squash satisfies', () => {
+    // The live deadlock on `Products/dev-launchpad`: a squash-only policy is
+    // `rejected` on every open PR, because ADO previews a merge commit until a
+    // strategy is set. Counted as blocking, it switches off the only button that
+    // would ever clear it.
+    const rows = policies([
+      evaluation(101, 'Require a merge strategy', 'rejected', { allowSquash: true }),
+      evaluation(102, 'Require a merge strategy', 'approved', {
+        allowSquash: true,
+        allowNoFastForward: true,
+      }),
+    ])
+
+    expect(rows.map((row) => row.blocking)).toEqual([false, false])
+    expect(rows.map((row) => row.clearedBySquash)).toEqual([true, true])
+  })
+
+  it('still blocks on a merge strategy policy that forbids squashing', () => {
+    // The safe direction. This app sends `mergeStrategy: 'squash'` and nothing
+    // else, so a policy that permits only a merge commit really does stand
+    // between it and a merge.
+    const rows = policies([
+      evaluation(101, 'Require a merge strategy', 'rejected', { allowNoFastForward: true }),
+    ])
+
+    expect(rows[0].blocking).toBe(true)
+    expect(rows[0].clearedBySquash).toBe(false)
+  })
+
+  it('names the strategies a merge strategy policy permits', () => {
+    const rows = policies([
+      evaluation(101, 'Require a merge strategy', 'rejected', { allowSquash: true }),
+      evaluation(102, 'Require a merge strategy', 'approved', {
+        allowNoFastForward: true,
+        allowSquash: true,
+      }),
+    ])
+
+    expect(rows.map((row) => row.detail)).toEqual(['squash only', 'merge commit or squash'])
+  })
+
   it('says what each row is actually about', () => {
     const rows = policies([
       evaluation(
@@ -636,6 +678,56 @@ describe('renaming a pull request', () => {
         params: {},
       },
     ])
+  })
+})
+
+describe('naming the squash strategy ahead of the merge', () => {
+  it('patches the completion options with the strategy and nothing else', async () => {
+    const { client, writes } = capture({ [PR]: {} })
+
+    await setMergeStrategy(client, REF)
+
+    expect(writes).toEqual([
+      {
+        method: 'PATCH',
+        path: PR,
+        // Pinned whole for `setTitle`'s reason, and for one of its own: no
+        // `status`, so this cannot complete or abandon anything.
+        body: { completionOptions: { mergeStrategy: 'squash' } },
+        params: {},
+      },
+    ])
+  })
+
+  it('keeps the completion options the pull request already carries', async () => {
+    // A pull request with auto-complete armed: someone asked for the branch to go
+    // and wrote the message. Sending a lone `mergeStrategy` would replace the
+    // whole object and take both away.
+    const { client, writes } = capture({
+      [PR]: {
+        completionOptions: { deleteSourceBranch: true, mergeCommitMessage: 'feat: a thing' },
+      },
+    })
+
+    await setMergeStrategy(client, REF)
+
+    expect(writes[0].body).toEqual({
+      completionOptions: {
+        deleteSourceBranch: true,
+        mergeCommitMessage: 'feat: a thing',
+        mergeStrategy: 'squash',
+      },
+    })
+  })
+
+  it('overrides a strategy that is already set to something else', async () => {
+    const { client, writes } = capture({
+      [PR]: { completionOptions: { mergeStrategy: 'noFastForward' } },
+    })
+
+    await setMergeStrategy(client, REF)
+
+    expect(writes[0].body).toEqual({ completionOptions: { mergeStrategy: 'squash' } })
   })
 })
 
