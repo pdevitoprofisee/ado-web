@@ -37,6 +37,7 @@ import { SonarPanel, scrollToFinding } from './sonar/panel'
 import { WorkItemsPanel } from './work-items/panel'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogClose,
@@ -54,6 +55,7 @@ import { buildFileTree, treeFiles } from '@/lib/file-tree'
 import { lifecycleAction, useAbandon, useReactivate } from '@/lib/lifecycle'
 import { readLineTarget } from '@/lib/line-link'
 import {
+  OVERRIDE_LABEL,
   UNTESTED,
   branch,
   commitMessage,
@@ -504,12 +506,26 @@ function MergeControl({
 }) {
   const [confirming, setConfirming] = useState(false)
   const [draft, setDraft] = useState(() => defaultDraft(pr))
+  // On by default, which is the whole point of the control: on the repositories
+  // this app was built for, the policy standing in the way is a reviewer count
+  // nobody is coming to satisfy, and the reviewer who opened the page is the
+  // person who would have overridden it in Azure DevOps anyway. Nothing is
+  // bypassed without a refusal to bypass, though — see `canOverride`.
+  const [override, setOverride] = useState(true)
   // Closing on success only, which is what the hook's callback is for: a refused
   // merge has to leave the dialog standing, because ADO's refusal is the whole
   // reason the reviewer pressed the button and it is written right there.
   const merge = useSquashMerge(prRef, () => setConfirming(false))
 
-  const blocker = mergeBlocker(pr, failed)
+  const refusal = mergeBlocker(pr, failed)
+  // The box is drawn only where it would work. `mergeBlocker` says which refusals
+  // Azure DevOps' override actually clears; on the rest a tick would do nothing
+  // but leave the button dead beside a control that claimed to enable it. This is
+  // also what keeps `bypassPolicy` off a clean merge: no refusal, no override, no
+  // flag on the completion.
+  const canOverride = refusal?.overridable === true
+  const bypassPolicy = canOverride && override
+  const blocker = bypassPolicy ? null : (refusal?.reason ?? null)
   const sha = pr.lastMergeSourceCommit
   const message = commitMessage(draft)
 
@@ -523,7 +539,16 @@ function MergeControl({
 
   // One sentence at a time, and the page's own reason first: while a merge is
   // blocked there is nothing to say about the message.
-  const refusal = blocker ?? unwritten
+  const stopping = blocker ?? unwritten
+  // Which of the two places says why. An overridable refusal is written on the
+  // box that clears it, so it is not also written under the button — the same
+  // sentence twice, two lines apart, reads as two problems.
+  const because =
+    stopping === null
+      ? undefined
+      : canOverride && blocker !== null
+        ? 'merge-override'
+        : 'merge-blocked'
 
   return (
     <div className="sketch-box flex w-full flex-col items-start gap-3 px-4 py-3">
@@ -560,21 +585,35 @@ function MergeControl({
         </>
       ) : null}
 
+      {/* Azure DevOps' own checkbox, in Azure DevOps' own words, carrying the
+          refusal it would clear — the reviewer decides with the reason in front
+          of them rather than a bare offer to break a rule. */}
+      {canOverride && refusal !== null ? (
+        <Checkbox isSelected={override} onChange={setOverride} className="w-full">
+          <span className="flex flex-col gap-0.5">
+            <span>{OVERRIDE_LABEL}</span>
+            <span id="merge-override" className="text-muted-foreground text-xs">
+              {refusal.reason} Azure DevOps records the override on the pull request.
+            </span>
+          </span>
+        </Checkbox>
+      ) : null}
+
       <Button
-        isDisabled={refusal !== null}
+        isDisabled={stopping !== null}
         // The reason is a sentence on the page, and it is also this button's
         // description — a disabled control whose explanation is only visual is
         // still a control that will not say why.
-        aria-describedby={refusal === null ? undefined : 'merge-blocked'}
+        aria-describedby={because}
         onPress={() => setConfirming(true)}
       >
         Squash and merge
       </Button>
-      {refusal === null ? null : (
+      {because === 'merge-blocked' ? (
         <p id="merge-blocked" className="text-muted-foreground text-xs">
-          {refusal}
+          {stopping}
         </p>
-      )}
+      ) : null}
 
       <Dialog
         isOpen={confirming}
@@ -620,8 +659,20 @@ function MergeControl({
             <p>
               <span className="font-mono">{branch(pr.sourceBranch)}</span> is deleted — its work
               lives on in the squashed commit, and Azure DevOps can restore the branch afterwards.
-              No policy is bypassed.
+              {bypassPolicy ? null : ' No policy is bypassed.'}
             </p>
+            {/* Said again here, in the strongest voice the dialog has, because
+                the box was ticked on the page and this is the press that acts on
+                it. A confirmation that lists everything except the rule being
+                broken is the wrong half of the truth. */}
+            {bypassPolicy && refusal !== null ? (
+              <p className="text-foreground">
+                The branch policies are overridden: {refusal.reason} Azure DevOps records the
+                override on the pull request, and refuses the completion outright unless this token
+                may bypass policies on{' '}
+                <span className="font-mono">{branch(pr.targetBranch)}</span>.
+              </p>
+            ) : null}
           </DialogDescription>
         </DialogHeader>
 
@@ -642,7 +693,9 @@ function MergeControl({
             onPress={() => {
               // Narrowing, not defence: `mergeBlocker` refuses a null tip, so
               // the dialog cannot be open without one.
-              if (sha !== null) merge.run({ lastMergeSourceCommit: sha, commitMessage: message })
+              if (sha !== null) {
+                merge.run({ lastMergeSourceCommit: sha, commitMessage: message, bypassPolicy })
+              }
             }}
           >
             {merge.isPending ? 'Merging…' : 'Squash and merge'}

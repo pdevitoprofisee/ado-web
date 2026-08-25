@@ -735,12 +735,17 @@ describe('completing a pull request', () => {
   it('patches the pull request to completed, squashed, at the tip it was read at', async () => {
     const { client, writes } = capture()
 
-    await completePullRequest(client, REF, 'f'.repeat(40), 'Merged PR 1: a thing\n\nwhy')
+    await completePullRequest(client, REF, {
+      lastMergeSourceCommit: 'f'.repeat(40),
+      mergeCommitMessage: 'Merged PR 1: a thing\n\nwhy',
+      bypassPolicy: false,
+    })
 
     // Asserted whole rather than field by field, because both what this request
-    // contains and what it must *not* contain are the point: no `bypassPolicy`,
-    // and no `squashMerge` beside the strategy that deprecates it. Confirmed
-    // against Microsoft's "Pull Requests - Update" reference at api-version 7.1.
+    // contains and what it must *not* contain are the point: no `bypassPolicy`
+    // when none was asked for, and no `squashMerge` beside the strategy that
+    // deprecates it. Confirmed against Microsoft's "Pull Requests - Update"
+    // reference at api-version 7.1.
     expect(writes).toEqual([
       {
         method: 'PATCH',
@@ -767,7 +772,11 @@ describe('completing a pull request', () => {
     // refuses when they differ, so a value invented here would defeat it.
     const tip = '4f3c9a1b2d7e5068c1a4b39f7e2d05c8a6b1f394'
 
-    await completePullRequest(client, REF, tip, 'Merged PR 1: a thing')
+    await completePullRequest(client, REF, {
+      lastMergeSourceCommit: tip,
+      mergeCommitMessage: 'Merged PR 1: a thing',
+      bypassPolicy: false,
+    })
 
     expect((writes[0].body as { lastMergeSourceCommit: unknown }).lastMergeSourceCommit).toEqual({
       commitId: tip,
@@ -780,7 +789,11 @@ describe('completing a pull request', () => {
     // makes the first line a subject in every tool that reads the commit.
     const message = 'Merged PR 24698: move the logging sink\n\nwhy this exists\n\n- and a list'
 
-    await completePullRequest(client, REF, 'f'.repeat(40), message)
+    await completePullRequest(client, REF, {
+      lastMergeSourceCommit: 'f'.repeat(40),
+      mergeCommitMessage: message,
+      bypassPolicy: false,
+    })
 
     expect(
       (writes[0].body as { completionOptions: { mergeCommitMessage: unknown } }).completionOptions
@@ -791,7 +804,11 @@ describe('completing a pull request', () => {
   it('always asks for the source branch to be deleted', async () => {
     const { client, writes } = capture()
 
-    await completePullRequest(client, REF, 'f'.repeat(40), 'Merged PR 1: a thing')
+    await completePullRequest(client, REF, {
+      lastMergeSourceCommit: 'f'.repeat(40),
+      mergeCommitMessage: 'Merged PR 1: a thing',
+      bypassPolicy: false,
+    })
 
     // Not a parameter and not a preference: every merge sent from this app takes
     // the branch with it, and the confirmation dialog says so.
@@ -799,6 +816,46 @@ describe('completing a pull request', () => {
       (writes[0].body as { completionOptions: { deleteSourceBranch: unknown } }).completionOptions
         .deleteSourceBranch,
     ).toBe(true)
+  })
+
+  it('overrides the branch policies, with a reason, when it was asked to', async () => {
+    const { client, writes } = capture()
+
+    await completePullRequest(client, REF, {
+      lastMergeSourceCommit: 'f'.repeat(40),
+      mergeCommitMessage: 'Merged PR 1: a thing',
+      bypassPolicy: true,
+    })
+
+    // The reason rides with the flag because a bypass without one is a blank on
+    // the pull request afterwards. Both keys, or ADO records the override
+    // unattributed.
+    expect(
+      writes[0].body as { completionOptions: { bypassPolicy: unknown; bypassReason: unknown } },
+    ).toMatchObject({
+      completionOptions: {
+        bypassPolicy: true,
+        bypassReason: 'Overridden from ado-web while completing the pull request.',
+      },
+    })
+  })
+
+  it('leaves the flag off the request entirely when it was not asked for', async () => {
+    const { client, writes } = capture()
+
+    await completePullRequest(client, REF, {
+      lastMergeSourceCommit: 'f'.repeat(40),
+      mergeCommitMessage: 'Merged PR 1: a thing',
+      bypassPolicy: false,
+    })
+
+    // Absent, not `false`. An override is recorded on the pull request
+    // permanently, and a merge that needed none should not carry a field about
+    // one at all.
+    const options = (writes[0].body as { completionOptions: Record<string, unknown> })
+      .completionOptions
+    expect('bypassPolicy' in options).toBe(false)
+    expect('bypassReason' in options).toBe(false)
   })
 })
 

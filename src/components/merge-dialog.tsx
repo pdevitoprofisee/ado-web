@@ -4,9 +4,17 @@ import { TextArea, TextField } from 'react-aria-components'
 
 import { pullRequestQuery } from '@/server/pull-request-fn'
 import { CADENCE } from '@/lib/cadence'
-import { branch, commitMessage, defaultDraft, mergeBlocker, useSquashMerge } from '@/lib/merge'
+import {
+  OVERRIDE_LABEL,
+  branch,
+  commitMessage,
+  defaultDraft,
+  mergeBlocker,
+  useSquashMerge,
+} from '@/lib/merge'
 import { pullRequestKey } from '@/lib/requeue'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogClose,
@@ -96,6 +104,11 @@ function MergeSheet({
   // pull request that was just read costs nothing and merging from here corrects
   // the page too. Not polled: this dialog is open for a minute at most, and the
   // write re-reads on its own way out.
+  // On by default, for `MergeControl`'s reason, and reset with the dialog: this
+  // component is keyed by row, so moving to another pull request asks the
+  // question again rather than carrying an answer across.
+  const [override, setOverride] = useState(true)
+
   const query = useQuery({
     queryKey: pullRequestKey(prRef),
     queryFn: () => pullRequestQuery({ data: prRef }),
@@ -110,7 +123,13 @@ function MergeSheet({
   const draft = edited ?? (pr === null ? null : defaultDraft(pr))
   const message = draft === null ? '' : commitMessage(draft)
 
-  const blocker = pr === null || result === undefined ? null : mergeBlocker(pr, result.failed)
+  const refusal = pr === null || result === undefined ? null : mergeBlocker(pr, result.failed)
+  // The box is offered only where Azure DevOps' override would clear the refusal
+  // — `MergeControl` says why — which is also what keeps `bypassPolicy` off a
+  // completion that needed no override.
+  const canOverride = refusal?.overridable === true
+  const bypassPolicy = canOverride && override
+  const blocker = bypassPolicy ? null : (refusal?.reason ?? null)
   // `mergeBlocker` answers a question about the pull request; this one is about
   // what is in the box. Keyed on the subject, because a body with no subject line
   // composes to a commit whose first line is somebody's second thought.
@@ -118,7 +137,15 @@ function MergeSheet({
     draft !== null && draft.subject.trim() === ''
       ? 'A commit needs a message. Write its first line above.'
       : null
-  const refusal = blocker ?? unwritten
+  const stopping = blocker ?? unwritten
+  // Which of the two places says why: an overridable refusal is written on the
+  // box that clears it, not twice.
+  const because =
+    stopping === null
+      ? undefined
+      : canOverride && blocker !== null
+        ? 'merge-override'
+        : 'merge-blocked'
 
   const sha = pr?.lastMergeSourceCommit ?? null
 
@@ -151,9 +178,20 @@ function MergeSheet({
               one commit on <span className="font-mono">{branch(pr.targetBranch)}</span>.{' '}
               <span className="font-mono">{branch(pr.sourceBranch)}</span> is deleted — its work
               lives on in the squashed commit, and Azure DevOps can restore the branch afterwards.
-              Completing a pull request cannot be undone, and no policy is bypassed.
+              Completing a pull request cannot be undone
+              {bypassPolicy ? '.' : ', and no policy is bypassed.'}
             </p>
           )}
+          {/* The rule being broken, in the dialog's strongest voice, because a
+              confirmation that lists everything except that is the wrong half of
+              the truth. */}
+          {bypassPolicy && refusal !== null ? (
+            <p className="text-foreground">
+              The branch policies are overridden: {refusal.reason} Azure DevOps records the override
+              on the pull request, and refuses the completion outright unless this token may bypass
+              policies on the target branch.
+            </p>
+          ) : null}
         </DialogDescription>
       </DialogHeader>
 
@@ -217,11 +255,24 @@ function MergeSheet({
         </div>
       ) : null}
 
-      {refusal === null ? null : (
+      {/* Azure DevOps' own checkbox, in Azure DevOps' own words, carrying the
+          refusal it would clear. */}
+      {canOverride && refusal !== null ? (
+        <Checkbox isSelected={override} onChange={setOverride}>
+          <span className="flex flex-col gap-0.5">
+            <span>{OVERRIDE_LABEL}</span>
+            <span id="merge-override" className="text-muted-foreground text-xs">
+              {refusal.reason} Azure DevOps records the override on the pull request.
+            </span>
+          </span>
+        </Checkbox>
+      ) : null}
+
+      {because === 'merge-blocked' ? (
         <p id="merge-blocked" className="text-muted-foreground text-xs">
-          {refusal}
+          {stopping}
         </p>
-      )}
+      ) : null}
 
       {merge.error === null ? null : (
         // ADO's own words. A refusal here names the policy, or says the source
@@ -236,12 +287,14 @@ function MergeSheet({
             rather than on the irreversible half. */}
         <DialogClose isDisabled={merge.isPending}>Cancel</DialogClose>
         <Button
-          isDisabled={merge.isPending || refusal !== null || sha === null || message === ''}
-          aria-describedby={refusal === null ? undefined : 'merge-blocked'}
+          isDisabled={merge.isPending || stopping !== null || sha === null || message === ''}
+          aria-describedby={because}
           onPress={() => {
             // Narrowing, not defence: a null tip is one of `mergeBlocker`'s own
             // refusals, so the button is disabled before this can be reached.
-            if (sha !== null) merge.run({ lastMergeSourceCommit: sha, commitMessage: message })
+            if (sha !== null) {
+              merge.run({ lastMergeSourceCommit: sha, commitMessage: message, bypassPolicy })
+            }
           }}
         >
           {merge.isPending ? 'Merging…' : 'Squash and merge'}

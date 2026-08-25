@@ -132,15 +132,15 @@ describe('reviewerRequest', () => {
 describe('mergeRequest', () => {
   const TIP = '4f3c9a1b2d7e5068c1a4b39f7e2d05c8a6b1f394'
 
-  it('keeps the pull request, the tip and the message, and nothing else', () => {
+  it('keeps the pull request, the tip, the message and the override, and nothing else', () => {
     const request = mergeRequest({
       ...ref,
       lastMergeSourceCommit: TIP,
       commitMessage: 'Merged PR 24698: move the logging sink\n\nwhy this exists',
-      // No completion option reaches ADO by being named here — the handler sends
-      // the strategy and the deletion itself, and a `bypassPolicy` in a request
-      // body must be a field that goes nowhere.
       bypassPolicy: true,
+      // No *other* completion option reaches ADO by being named here — the
+      // handler sends the strategy and the deletion itself, so these two are
+      // fields that go nowhere.
       deleteSourceBranch: false,
       mergeStrategy: 'noFastForward',
     })
@@ -149,8 +149,20 @@ describe('mergeRequest', () => {
       ...ref,
       lastMergeSourceCommit: TIP,
       commitMessage: 'Merged PR 24698: move the logging sink\n\nwhy this exists',
+      bypassPolicy: true,
     })
   })
+
+  it.each([[undefined], [null], ['true'], [1], [{}]])(
+    'refuses %o as the override, because a merge must not bypass a policy by accident',
+    (bypassPolicy) => {
+      // The one field on this route that widens what the write may do, so a
+      // request that never answered the question is refused rather than defaulted.
+      expect(() =>
+        mergeRequest({ ...ref, lastMergeSourceCommit: TIP, commitMessage: 'x', bypassPolicy }),
+      ).toThrow('bypassPolicy must be true or false.')
+    },
+  )
 
   it.each([['abc'], [`${TIP}x`], [TIP.slice(1)], [''], [null], [undefined], [{}]])(
     'refuses %o as a source tip, because the tip is the guard',
@@ -168,6 +180,7 @@ describe('mergeRequest', () => {
       ...ref,
       lastMergeSourceCommit: TIP,
       commitMessage: '\n  Merged PR 1: a thing\n\n  indented\n\n',
+      bypassPolicy: false,
     })
 
     expect(request.commitMessage).toBe('Merged PR 1: a thing\n\n  indented')
@@ -189,7 +202,8 @@ describe('mergeRequest', () => {
     const long = `${'a'.repeat(5000)}\n\n${'b'.repeat(5000)}`
 
     expect(
-      mergeRequest({ ...ref, lastMergeSourceCommit: TIP, commitMessage: long }).commitMessage,
+      mergeRequest({ ...ref, lastMergeSourceCommit: TIP, commitMessage: long, bypassPolicy: false })
+        .commitMessage,
     ).toBe(long)
   })
 

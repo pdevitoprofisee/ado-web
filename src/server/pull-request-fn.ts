@@ -182,10 +182,17 @@ export interface RequeueResult {
  * this layer owes it is the same check every other written string gets: a
  * string, trimmed, not empty. It lands in `main`'s history permanently, so it
  * gets checked here even though the field it came from cannot be empty.
+ *
+ * `bypassPolicy` is the reviewer's answer to "Override branch policies and enable
+ * merge", and the only field on this route that widens what the write is allowed
+ * to do. Required rather than optional, and a boolean rather than anything
+ * truthy: a request that leaves it out is a request whose sender never asked the
+ * question, and the honest answer to that is a refusal instead of a guess.
  */
 export interface MergeRequest extends PullRequestRef {
   readonly lastMergeSourceCommit: string
   readonly commitMessage: string
+  readonly bypassPolicy: boolean
 }
 
 /**
@@ -221,7 +228,16 @@ export function mergeRequest(input: unknown): MergeRequest {
   const commitMessage = raw.commitMessage.trim()
   if (commitMessage === '') throw new Error('commitMessage must not be empty.')
 
-  return { ...ref, lastMergeSourceCommit: raw.lastMergeSourceCommit, commitMessage }
+  if (typeof raw.bypassPolicy !== 'boolean') {
+    throw new Error('bypassPolicy must be true or false.')
+  }
+
+  return {
+    ...ref,
+    lastMergeSourceCommit: raw.lastMergeSourceCommit,
+    commitMessage,
+    bypassPolicy: raw.bypassPolicy,
+  }
 }
 
 export function requeueRequest(input: unknown): RequeueRequest {
@@ -586,12 +602,14 @@ export const renamePullRequest = createServerFn({ method: 'POST' })
  * Squash-merge the pull request.
  *
  * The one write in this app that changes two branches — it squashes onto the
- * target and deletes the source — so two things about it are deliberate. It
- * sends no bypass of any kind — `completePullRequest` says why, and says why the
- * deletion is unconditional — and it decides nothing: whether merging is even
- * possible is judged where the page's own state is, in `mergeBlocker`, and
- * re-judged by ADO, which owns the answer. Duplicating that judgement here would
- * mean two rules that can drift, and the one that would win is the weaker.
+ * target and deletes the source — so two things about it are deliberate. The
+ * branch deletion is unconditional and the policy override is not:
+ * `completePullRequest` says why for both. And it decides nothing: whether
+ * merging is even possible is judged where the page's own state is, in
+ * `mergeBlocker`, and re-judged by ADO, which owns the answer — including on the
+ * override, which ADO refuses outright unless the token may bypass policies on
+ * that branch. Duplicating that judgement here would mean two rules that can
+ * drift, and the one that would win is the weaker.
  *
  * `ok: false` rather than a throw, like `requeuePolicy`: "not connected" and
  * "ADO refused" are both things the confirmation dialog has to say out loud, and
@@ -605,10 +623,14 @@ export const squashMerge = createServerFn({ method: 'POST' })
       return { ok: false, error: client.message, connected: false }
     }
 
-    const { lastMergeSourceCommit, commitMessage, ...ref } = data
+    const { lastMergeSourceCommit, commitMessage, bypassPolicy, ...ref } = data
 
     try {
-      await completePullRequest(client, ref, lastMergeSourceCommit, commitMessage)
+      await completePullRequest(client, ref, {
+        lastMergeSourceCommit,
+        mergeCommitMessage: commitMessage,
+        bypassPolicy,
+      })
 
       return { ok: true, error: null, connected: true }
     } catch (error) {

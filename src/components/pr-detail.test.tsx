@@ -756,9 +756,24 @@ const BLOCKED: ReadonlyArray<[string, Partial<PullRequestDetail>, string]> = [
   ],
 ]
 
+/** The two refusals Azure DevOps' own override clears. */
+const OVERRIDABLE: ReadonlyArray<[string, Partial<PullRequestDetail>]> = [
+  ['a blocking policy', { policies: [policy({ blocking: true })] }],
+  ['a required reviewer who has not approved', { reviewers: [reviewer({ vote: 0 })] }],
+]
+
+/** Refusals no override reaches, so no box is drawn beside them. */
+const FINAL: ReadonlyArray<[string, Partial<PullRequestDetail>]> = [
+  ['a completed pull request', { status: 'completed' }],
+  ['a draft', { isDraft: true }],
+  ['a conflicted branch', { merge: { status: 'conflicts', conflicted: true, conflicts: [] } }],
+  ['a merge nobody has attempted', { merge: { status: 'queued', conflicted: false, conflicts: [] } }],
+  ['a source tip ADO did not name', { lastMergeSourceCommit: null }],
+]
+
 describe('mergeBlocker', () => {
   it.each(BLOCKED)('refuses %s', (_state, over, reason) => {
-    expect(mergeBlocker(detail(over), {})).toBe(reason)
+    expect(mergeBlocker(detail(over), {})?.reason).toBe(reason)
   })
 
   it('counts the blocking policies rather than saying "some"', () => {
@@ -773,14 +788,14 @@ describe('mergeBlocker', () => {
           ],
         }),
         {},
-      ),
+      )?.reason,
     ).toBe('2 blocking policies are not satisfied yet.')
   })
 
   it('refuses when the policies are the part that did not load', () => {
     // "We do not know" is not "yes". A page that offers the merge here is a page
     // that offers it on a pull request three policies are refusing.
-    expect(mergeBlocker(detail(), { policies: true })).toBe(
+    expect(mergeBlocker(detail(), { policies: true })?.reason).toBe(
       'The branch policies could not be loaded, so whether this may merge is unknown.',
     )
   })
@@ -803,7 +818,7 @@ describe('mergeBlocker', () => {
           ],
         }),
         {},
-      ),
+      )?.reason,
     ).toBe('Patrick Mize is a required reviewer and has not approved.')
   })
 
@@ -816,7 +831,7 @@ describe('mergeBlocker', () => {
           ),
         }),
         {},
-      )
+      )?.reason
 
     expect(waiting(2)).toBe('Reviewer 0 and Reviewer 1 are required reviewers and have not approved.')
     expect(waiting(3)).toBe('3 required reviewers have not approved.')
@@ -838,6 +853,22 @@ describe('mergeBlocker', () => {
         {},
       ),
     ).toBeNull()
+  })
+
+  // Which refusals carry the override, and it is not a ranking of severity:
+  // `bypassPolicy` suspends the branch policies and the required reviewers, and
+  // nothing else.
+  it.each(OVERRIDABLE)('offers the override against %s', (_state, over) => {
+    expect(mergeBlocker(detail(over), {})?.overridable).toBe(true)
+  })
+
+  it.each(FINAL)('offers no override against %s', (_state, over) => {
+    expect(mergeBlocker(detail(over), {})?.overridable).toBe(false)
+  })
+
+  it('offers no override on a policy list that never loaded', () => {
+    // "Override the rules I could not read" is not a thing to offer.
+    expect(mergeBlocker(detail(), { policies: true })?.overridable).toBe(false)
   })
 
   it('allows it when nothing we can see is in the way', () => {

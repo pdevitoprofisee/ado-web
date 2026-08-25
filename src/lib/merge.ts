@@ -149,6 +149,26 @@ function awaitedReviewers(reviewers: readonly Reviewer[]): string | null {
 }
 
 /**
+ * One refusal: the sentence, and whether Azure DevOps' policy override would get
+ * past it.
+ *
+ * `overridable` exists so the page can offer the override where it would work and
+ * stay quiet where it would not. Ticking a box that cannot help is worse than not
+ * being offered one, because the button beside it stays dead and the reviewer is
+ * left to work out which of the two things they read was the lie.
+ */
+export interface MergeRefusal {
+  readonly reason: string
+  readonly overridable: boolean
+}
+
+/** A refusal nothing in this app can talk ADO out of. */
+const refuse = (reason: string): MergeRefusal => ({ reason, overridable: false })
+
+/** A refusal ADO's "Override branch policies and enable merge" clears. */
+const overridable = (reason: string): MergeRefusal => ({ reason, overridable: true })
+
+/**
  * Why this pull request cannot be squash-merged from here, or `null` when it can
  * be.
  *
@@ -165,6 +185,14 @@ function awaitedReviewers(reviewers: readonly Reviewer[]): string | null {
  * still a draft, does it merge at all, do we know about the policies, do the
  * policies allow it, have the people who must approve approved, and do we know
  * what we would be merging.
+ *
+ * **Two of those are overridable and the rest are not**, and the split is not a
+ * judgement of severity — it is what ADO's checkbox actually does. `bypassPolicy`
+ * suspends the branch policies and the required reviewers on one completion. It
+ * does not merge a conflicted branch, publish a draft, reopen a completed pull
+ * request, or tell us a source tip ADO never named. Nor does it help a policy
+ * list that failed to load: an unread list is a hole in what this page knows, and
+ * "override the rules I could not read" is not a thing to offer.
  */
 export function mergeBlocker(
   pr: Pick<
@@ -172,44 +200,50 @@ export function mergeBlocker(
     'status' | 'isDraft' | 'merge' | 'policies' | 'reviewers' | 'lastMergeSourceCommit'
   >,
   failed: FailedSections,
-): string | null {
+): MergeRefusal | null {
   if (pr.status !== 'active') {
-    if (pr.status === 'completed') return 'This pull request has already been completed.'
-    if (pr.status === 'abandoned') return 'This pull request has been abandoned.'
+    if (pr.status === 'completed') return refuse('This pull request has already been completed.')
+    if (pr.status === 'abandoned') return refuse('This pull request has been abandoned.')
 
     // An unrecognised status is not narrowed into one of the two above: ADO's
     // word is shown as-is, because guessing which of them a fourth value means
     // is how a page tells somebody their merged PR is still open.
-    return `Azure DevOps says this pull request is ${pr.status === '' ? 'in a state it did not name' : pr.status}, not active.`
+    return refuse(
+      `Azure DevOps says this pull request is ${pr.status === '' ? 'in a state it did not name' : pr.status}, not active.`,
+    )
   }
-  if (pr.isDraft) return 'This is a draft. Publish it in Azure DevOps before merging.'
+  if (pr.isDraft) return refuse('This is a draft. Publish it in Azure DevOps before merging.')
   // Ahead of the status because a conflicted PR *has* a status, `conflicts`, and
   // the conflict is the sentence worth saying. Same reason `MergeBanner` keys on
   // this flag rather than on the word.
-  if (pr.merge.conflicted) return 'This branch conflicts with its target.'
+  if (pr.merge.conflicted) return refuse('This branch conflicts with its target.')
   // Not the banner's sentence word for word, which is deliberate: the banner
   // reports the state, and a reason attached to a disabled control owes the
   // consequence as well. Repeating it verbatim would also put the same string on
   // the page twice, two lines apart.
   if (UNTESTED.has(pr.merge.status)) {
-    return 'Azure DevOps has not tested this merge yet, so it cannot be completed from here.'
+    return refuse('Azure DevOps has not tested this merge yet, so it cannot be completed from here.')
   }
   if (pr.merge.status !== 'succeeded') {
-    return pr.merge.status === ''
-      ? 'Azure DevOps did not say whether this branch merges cleanly.'
-      : `Azure DevOps says the merge is ${pr.merge.status}.`
+    return refuse(
+      pr.merge.status === ''
+        ? 'Azure DevOps did not say whether this branch merges cleanly.'
+        : `Azure DevOps says the merge is ${pr.merge.status}.`,
+    )
   }
   if (failed.policies === true) {
-    return 'The branch policies could not be loaded, so whether this may merge is unknown.'
+    return refuse('The branch policies could not be loaded, so whether this may merge is unknown.')
   }
 
   // `Policy.blocking` already means "required and not yet satisfied", so a
   // passing required policy does not count itself here.
   const blocking = pr.policies.filter((policy) => policy.blocking).length
   if (blocking > 0) {
-    return blocking === 1
-      ? 'One blocking policy is not satisfied yet.'
-      : `${blocking} blocking policies are not satisfied yet.`
+    return overridable(
+      blocking === 1
+        ? 'One blocking policy is not satisfied yet.'
+        : `${blocking} blocking policies are not satisfied yet.`,
+    )
   }
 
   // After the policies, because a required reviewer is the same class of question
@@ -218,14 +252,25 @@ export function mergeBlocker(
   // of the two. The reviewers come from the detail call, which is this page's one
   // hard dependency, so there is no "did the list load" case to answer here.
   const awaited = awaitedReviewers(pr.reviewers)
-  if (awaited !== null) return awaited
+  if (awaited !== null) return overridable(awaited)
 
   if (pr.lastMergeSourceCommit === null) {
-    return 'Azure DevOps did not say which commit the source branch is on, so merging from here could merge work this page never showed.'
+    return refuse(
+      'Azure DevOps did not say which commit the source branch is on, so merging from here could merge work this page never showed.',
+    )
   }
 
   return null
 }
+
+/**
+ * What the override control says, and what the confirmation says once it is on.
+ *
+ * Azure DevOps' own words for the label, deliberately: this is the same checkbox
+ * as the one in the Complete pull request panel, and a reviewer who has ticked it
+ * there should not have to work out that this is it.
+ */
+export const OVERRIDE_LABEL = 'Override branch policies and enable merge'
 
 /**
  * How long Azure DevOps is given to re-judge the policy before the page re-reads.
@@ -290,15 +335,25 @@ export function useSquashStrategy(ref: PullRequestRef): SquashStrategy {
   }
 }
 
+/**
+ * What is being asked for: which commit, what the squashed commit says, and
+ * whether the branch policies are being overridden on the way through.
+ *
+ * One object, not three positional arguments: a sha and a commit message are both
+ * strings, and swapping them at the call site would type-check and merge.
+ * `bypassPolicy` is not optional here either, for `MergeRequest`'s reason — the
+ * caller has been asked, so it can say.
+ */
+export interface Completion {
+  readonly lastMergeSourceCommit: string
+  readonly commitMessage: string
+  readonly bypassPolicy: boolean
+}
+
 /** One button's worth of state: what pressing it does, and what came back. */
 export interface SquashMerge {
-  /**
-   * Sends the completion.
-   *
-   * One object, not two positional strings: a sha and a commit message are both
-   * strings, and swapping them at the call site would type-check and merge.
-   */
-  readonly run: (completion: { lastMergeSourceCommit: string; commitMessage: string }) => void
+  /** Sends the completion. */
+  readonly run: (completion: Completion) => void
   readonly isPending: boolean
   /**
    * What Azure DevOps said, verbatim, or `null`.
@@ -321,7 +376,7 @@ export function useSquashMerge(ref: PullRequestRef, onMerged: () => void): Squas
   const client = useQueryClient()
 
   const mutation = useMutation({
-    mutationFn: async (completion: { lastMergeSourceCommit: string; commitMessage: string }) => {
+    mutationFn: async (completion: Completion) => {
       const result = await squashMerge({ data: { ...ref, ...completion } })
       // The server function answers a refusal rather than throwing one; react-query
       // only calls something a failure if it rejects. Reconciled here, as in

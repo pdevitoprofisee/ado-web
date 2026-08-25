@@ -9,7 +9,7 @@ import { pullRequestQuery, squashMerge } from '@/server/pull-request-fn'
 
 import type { ReactNode } from 'react'
 import type { AddressableRow } from './pr-list'
-import type { PullRequestDetail } from '@/server/pull-request'
+import type { Policy, PullRequestDetail, Reviewer } from '@/server/pull-request'
 import type { PullRequestDetailResult } from '@/server/pull-request-fn'
 
 // The write is mocked for the reason `pr-detail.test.tsx` records: this is the one
@@ -77,6 +77,32 @@ const detail = (over: Partial<PullRequestDetail> = {}): PullRequestDetail => ({
   viewerId: 'me',
   approvalReset: null,
   errors: { policies: null, commits: null, files: null, conflicts: null },
+  ...over,
+})
+
+/** A policy in the one state that refuses a merge: required, and not satisfied. */
+const policy = (over: Partial<Policy> = {}): Policy => ({
+  id: 'cfg-1',
+  name: 'Build',
+  status: 'queued',
+  blocking: true,
+  detail: null,
+  url: null,
+  waitsOnPeople: false,
+  clearedBySquash: false,
+  requeueId: null,
+  ...over,
+})
+
+/** Required, and no vote yet — the refusal that never shows up as a policy row. */
+const reviewer = (over: Partial<Reviewer> = {}): Reviewer => ({
+  id: 'rev-1',
+  displayName: 'Naveen Angali',
+  vote: 0,
+  isContainer: false,
+  isRequired: true,
+  votedFor: [],
+  avatarHref: null,
   ...over,
 })
 
@@ -213,9 +239,65 @@ describe('MergeDialog', () => {
           id: 3302,
           lastMergeSourceCommit: SOURCE_TIP,
           commitMessage: 'chore: turn sql auditing off\n\nthe shared server does not need it',
+          // Nothing was in the way, so nothing is overridden. The flag follows
+          // the refusal, never the preference.
+          bypassPolicy: false,
         },
       }),
     )
+  })
+
+  it('offers no override when nothing is refusing the merge', async () => {
+    render(<Table />)
+    await opened()
+
+    // A box that would change nothing is a box that says the wrong thing about
+    // what this merge does.
+    expect(dialog().queryByRole('checkbox')).toBeNull()
+  })
+
+  it('overrides a blocking policy by default, and says so before merging', async () => {
+    vi.mocked(pullRequestQuery).mockResolvedValue(
+      read({ pullRequest: detail({ policies: [policy({ blocking: true })] }) }),
+    )
+    render(<Table />)
+    await opened()
+
+    const box = dialog().getByRole('checkbox', {
+      name: /Override branch policies and enable merge/,
+    })
+    expect(box).toBeChecked()
+    // The dialog says which rule is being broken, not only that one is.
+    expect(screen.getByRole('dialog')).toHaveTextContent(
+      'The branch policies are overridden: One blocking policy is not satisfied yet.',
+    )
+    expect(screen.getByRole('dialog')).not.toHaveTextContent('no policy is bypassed')
+
+    await userEvent.click(confirm())
+
+    await waitFor(() =>
+      expect(squashMerge).toHaveBeenCalledWith({
+        data: expect.objectContaining({ bypassPolicy: true }),
+      }),
+    )
+  })
+
+  it('blocks the merge again when the override is turned off', async () => {
+    vi.mocked(pullRequestQuery).mockResolvedValue(
+      read({ pullRequest: detail({ reviewers: [reviewer({ displayName: 'Patrick Mize' })] }) }),
+    )
+    render(<Table />)
+    await opened()
+
+    await userEvent.click(
+      dialog().getByRole('checkbox', { name: /Override branch policies and enable merge/ }),
+    )
+
+    expect(confirm()).toBeDisabled()
+    expect(confirm()).toHaveAccessibleDescription(
+      /Patrick Mize is a required reviewer and has not approved\./,
+    )
+    expect(squashMerge).not.toHaveBeenCalled()
   })
 
   it('tells the table which row it merged, once Azure DevOps accepted it', async () => {

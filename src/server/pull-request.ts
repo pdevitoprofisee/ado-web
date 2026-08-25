@@ -948,30 +948,57 @@ export async function setMergeStrategy(client: AdoClient, ref: PullRequestRef): 
  * the field. The commits are not lost either way; they are in the squashed
  * commit on the target branch.
  *
- * Still deliberately absent: `bypassPolicy` and `bypassReason`, because
- * bypassing a branch policy is out of this app's scope entirely (docs/map.md)
- * and a write that could do it by mistake is a write that will.
+ * - `completionOptions.bypassPolicy` is ADO's own "Override branch policies and
+ *   enable merge", and it is a **parameter, never a default**. It is the one
+ *   field here that changes what the org's rules mean, so the caller has to have
+ *   been asked for it: `mergeBlocker` decides whether an override would even
+ *   change the answer, and the page draws the box only then, beside the button
+ *   it un-disables. Sent only when true, so a completion that needed no override does
+ *   not carry the flag at all — an override is recorded on the pull request
+ *   permanently, and one stamped on a clean merge is a lie in the audit trail.
+ *   It clears branch policies **and** required reviewers, which is what ADO's
+ *   own checkbox does.
+ * - `completionOptions.bypassReason` rides with it, because a bypass with no
+ *   reason is what ADO shows on the pull request afterwards: nothing. Ours names
+ *   this app, since "who overrode it" is already the identity of the PAT and the
+ *   only thing left worth recording is where the press happened.
  *
  * Unproven against ADO: no write has ever been sent from this app, and the PAT
- * needs `vso.code_write`. The refreshed pull request it answers with is dropped
- * for `requeueEvaluation`'s reason — the caller re-reads the page.
+ * needs `vso.code_write`. Overriding a policy needs more than that — ADO wants
+ * the caller to hold **Bypass policies when completing pull requests** on the
+ * branch, and refuses the completion otherwise. That refusal is passed through
+ * verbatim (`squashMerge`), because no sentence of ours could name the
+ * permission. The refreshed pull request it answers with is dropped for
+ * `requeueEvaluation`'s reason — the caller re-reads the page.
  */
 export async function completePullRequest(
   client: AdoClient,
   ref: PullRequestRef,
-  lastMergeSourceCommit: string,
-  mergeCommitMessage: string,
+  completion: {
+    lastMergeSourceCommit: string
+    mergeCommitMessage: string
+    bypassPolicy: boolean
+  },
 ): Promise<void> {
   await client.write('PATCH', prBase(ref), {
     status: 'completed',
-    lastMergeSourceCommit: { commitId: lastMergeSourceCommit },
+    lastMergeSourceCommit: { commitId: completion.lastMergeSourceCommit },
     completionOptions: {
       mergeStrategy: 'squash',
-      mergeCommitMessage,
+      mergeCommitMessage: completion.mergeCommitMessage,
       deleteSourceBranch: true,
+      ...(completion.bypassPolicy
+        ? { bypassPolicy: true, bypassReason: BYPASS_REASON }
+        : {}),
     },
   })
 }
+
+/**
+ * What Azure DevOps records beside the override, in place of the blank it shows
+ * when a bypass carries no reason.
+ */
+const BYPASS_REASON = 'Overridden from ado-web while completing the pull request.'
 
 /**
  * ADO is not consistent about GUID casing between endpoints, which is `inbox.ts`'
