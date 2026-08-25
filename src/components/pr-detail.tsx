@@ -608,7 +608,7 @@ function MergeControl({
                 `whitespace-pre-wrap`: the blank line between subject and body is
                 the structure, so it is shown rather than collapsed. */}
             <span className="annotation text-ink">Commit message</span>
-            <pre className="sketch-box sketch-box--quiet max-h-40 overflow-y-auto px-2 py-1.5 font-mono text-xs whitespace-pre-wrap">
+            <pre className="sketch-box sketch-box--quiet max-h-40 overflow-y-auto px-2 py-1.5 font-mono text-xs whitespace-pre-wrap wrap-anywhere">
               {message}
             </pre>
             {/* Both stated because both are things a reviewer would otherwise

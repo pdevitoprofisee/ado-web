@@ -80,14 +80,23 @@ function Dialog({
         // hard-edged box that squared off the very corners it was meant to
         // trace; a border follows them. `max-w-[calc(...)]` is a *width*, not a
         // radius, so the calc() hazard doesn't reach it.
+        //
+        // The single column is `minmax(0,1fr)`, not the default `auto`: an `auto`
+        // track is at least as wide as its widest child, so one long unbroken
+        // token — a URL or an identifier in a quoted commit message — grew the
+        // track past the dialog and spilled the text, the rule and the footer
+        // out over the right border.
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border-[1.5px] border-ink bg-popover p-4 text-sm text-popover-foreground shadow-popover duration-100 outline-none data-entering:animate-in data-entering:fade-in-0 data-entering:zoom-in-95 data-exiting:animate-out data-exiting:fade-out-0 data-exiting:zoom-out-95 sm:max-w-sm",
+          "fixed top-1/2 left-1/2 z-50 grid w-full grid-cols-[minmax(0,1fr)] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border-[1.5px] border-ink bg-popover p-4 text-sm text-popover-foreground shadow-popover duration-100 outline-none data-entering:animate-in data-entering:fade-in-0 data-entering:zoom-in-95 data-exiting:animate-out data-exiting:fade-out-0 data-exiting:zoom-out-95 sm:max-w-sm",
           className
         )}
       >
         <DialogPrimitive
           data-slot="dialog"
-          className="[display:inherit] [gap:inherit] outline-none"
+          // The dialog element is the real parent of everything below, so it
+          // takes the modal's grid whole — the clamped column included, or a wide
+          // child would overflow this box instead of the one above it.
+          className="[display:inherit] [gap:inherit] [grid-template-columns:inherit] outline-none"
         >
           {children}
           {showCloseButton && (
