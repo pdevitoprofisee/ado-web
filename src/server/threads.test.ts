@@ -11,6 +11,7 @@ import {
   createThread,
   postReply,
   resolutionOf,
+  setCommentLike,
   setThreadStatus,
   toThreadList,
 } from './threads'
@@ -274,7 +275,7 @@ describe('the mapper', () => {
     })
   })
 
-  it('reads likes without offering a way to write one', async () => {
+  it('reads who liked a comment', async () => {
     const liked = comment({ usersLiked: [{ id: COLLEAGUE, displayName: 'Melissa Stan' }] })
     const list = toThreadList([thread({ comments: [liked] })])
 
@@ -690,6 +691,30 @@ describe('the writes', () => {
     await expect(deleteComment(client, REF, target)).resolves.toBeUndefined()
     expect(writes).toEqual([
       { method: 'DELETE', path: `${THREADS}/312114/comments/2`, body: undefined, params: {} },
+    ])
+  })
+
+  it('likes with a PUT and unlikes with a DELETE, both on the likes collection', async () => {
+    // Two verbs on one path, and no body on either: ADO takes the liker from the
+    // token. Both answer 204, so `write`'s `null` is the whole reply.
+    const { client, writes } = fakeClient({})
+
+    await expect(setCommentLike(client, REF, { ...target, liked: true })).resolves.toBeUndefined()
+    await expect(setCommentLike(client, REF, { ...target, liked: false })).resolves.toBeUndefined()
+
+    expect(writes).toEqual([
+      {
+        method: 'PUT',
+        path: `${THREADS}/312114/comments/2/likes`,
+        body: undefined,
+        params: {},
+      },
+      {
+        method: 'DELETE',
+        path: `${THREADS}/312114/comments/2/likes`,
+        body: undefined,
+        params: {},
+      },
     ])
   })
 

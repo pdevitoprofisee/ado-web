@@ -1,14 +1,16 @@
 import { useState } from 'react'
+import { ThumbsUpIcon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 
 import { Composer } from './composer'
-import { isMine, isOwn } from './thread-actions'
+import { isMine, isOwn, likedByMe } from './thread-actions'
 import { Avatar } from '@/components/avatar'
 import { Markdown } from '@/components/markdown'
 import { Button } from '@/components/ui/button'
 import { age } from '@/components/pr-list'
 import { cn } from '@/lib/utils'
 
-import type { Comment } from '@/lib/comment-contract'
+import type { Comment, LikeChange } from '@/lib/comment-contract'
 import type { ThreadActions } from './thread-actions'
 
 // One comment. Author, when, body, and — on your own — edit and delete.
@@ -27,13 +29,14 @@ import type { ThreadActions } from './thread-actions'
 // because a reviewer's `imageUrl` is the *other* form and rendering either on
 // trust is how you get a broken glyph; see `avatar.tsx`.
 //
-// Two things this still does not render. **No like control**: `usersLiked` was
-// present on 59 of 59 sampled comments and non-empty on none of them, and the
-// `POST .../likes` route has never been authorised against a real person's
-// comment — reading likes is proven, writing one is not, so nothing here writes
-// one. **No @mention picker**: T-022 declined to probe `graph/subjectquery`, so
-// there is no identity search to build one on. Mentions already *written* are
-// resolved and drawn; see `markdown.tsx`.
+// Likes are a control now, and a count when there is nobody to like as: the
+// button appears only with an `onLike` handler, so a read-only render still
+// shows who liked what and offers no way to join in. It is the one action here
+// that is offered on a stranger's comment — see `ThreadActions.onLike`.
+//
+// One thing this still does not render. **No @mention picker**: T-022 declined
+// to probe `graph/subjectquery`, so there is no identity search to build one on.
+// Mentions already *written* are resolved and drawn; see `markdown.tsx`.
 
 /**
  * A soft-deleted comment.
@@ -48,6 +51,70 @@ function Tombstone({ comment }: { comment: Comment }) {
     <p className="text-muted-foreground text-xs italic">
       {comment.author.displayName} deleted this comment.
     </p>
+  )
+}
+
+/**
+ * The like, as a count when nobody can write one and a toggle when somebody can.
+ *
+ * Not offered on a tombstone: ADO keeps a deleted comment in the thread, and a
+ * like on words that are gone is a like on nothing.
+ *
+ * `liked` is sent as the state wanted rather than as a toggle — see `LikeChange`
+ * — and the button is disabled until the write lands, because the count beside
+ * it does not move until the re-read arrives and a second click before then
+ * would be aimed at a number that is already stale.
+ */
+function LikeControl({
+  comment,
+  threadId,
+  viewerId,
+  onLike,
+  onFailure,
+}: {
+  comment: Comment
+  threadId: number
+  viewerId: string | null
+  onLike?: (input: LikeChange) => Promise<void>
+  onFailure: (message: string) => void
+}) {
+  const [busy, setBusy] = useState(false)
+
+  const names = comment.likedBy.map((person) => person.displayName).join(', ')
+  const count = comment.likedBy.length
+
+  if (onLike === undefined || comment.isDeleted) {
+    return count === 0 ? null : <span title={names}>{count} liked</span>
+  }
+
+  const mine = likedByMe(comment, viewerId)
+
+  return (
+    // The tooltip is on a wrapper because `Button` is a react-aria control and
+    // filters DOM props it does not know; `title` is one of them.
+    <span title={count === 0 ? 'Like this comment' : names} className="flex">
+      <Button
+        variant="ghost"
+        size="xs"
+        aria-label={mine ? 'Unlike' : 'Like'}
+        aria-pressed={mine}
+        isDisabled={busy}
+        className={cn('gap-1', mine && 'text-primary')}
+        onPress={() => {
+          setBusy(true)
+          onLike({ threadId, commentId: comment.id, liked: !mine })
+            .catch((cause: unknown) => {
+              onFailure(
+                cause instanceof Error ? cause.message : 'Azure DevOps did not record that like.',
+              )
+            })
+            .finally(() => setBusy(false))
+        }}
+      >
+        <HugeiconsIcon icon={ThumbsUpIcon} size={12} aria-hidden />
+        {count === 0 ? null : count}
+      </Button>
+    </span>
   )
 }
 
@@ -130,12 +197,13 @@ export function CommentView({
           <span className="text-foreground font-medium">{comment.author.displayName}</span>
           <span title={comment.publishedDate}>{age(comment.publishedDate)}</span>
           {edited(comment) ? <span>edited</span> : null}
-          {comment.likedBy.length === 0 ? null : (
-            // Read-only, and a count rather than a control for the reason above.
-            <span title={comment.likedBy.map((person) => person.displayName).join(', ')}>
-              {comment.likedBy.length} liked
-            </span>
-          )}
+          <LikeControl
+            comment={comment}
+            threadId={threadId}
+            viewerId={actions?.viewerId ?? null}
+            onLike={actions?.onLike}
+            onFailure={setFailure}
+          />
           {onEdit === undefined && onDelete === undefined ? null : (
             // No `ml-auto` any more. This column is content-width, so there is no
             // slack left to push the buttons into — and these only ever render on

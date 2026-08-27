@@ -194,9 +194,7 @@ describe('ThreadCard', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Azure DevOps answered 403.')
   })
 
-  it('reads likes and offers no way to write one', () => {
-    // Present on 59 of 59 sampled comments and non-empty on none of them, and the
-    // likes write has never been authorised against a real person's comment.
+  it('reads likes as a count when there is nobody to like as', () => {
     const liked = thread({
       comments: [
         {
@@ -209,6 +207,50 @@ describe('ThreadCard', () => {
 
     expect(screen.getByText('1 liked')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /like/i })).not.toBeInTheDocument()
+  })
+
+  it('likes a comment, and asks for the state rather than for a toggle', async () => {
+    const onLike = vi.fn().mockResolvedValue(undefined)
+    render(<ThreadCard threads={[thread()]} actions={{ viewerId: 'reader', onLike }} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Like' }))
+
+    expect(onLike).toHaveBeenCalledWith({ threadId: 7, commentId: 1, liked: true })
+  })
+
+  it('takes a like back off, matching the viewer’s id however ADO cased it', async () => {
+    // `sameIdentity`'s reason: ADO does not agree with itself about GUID casing
+    // between endpoints, and a `===` here would draw the button unlit on a
+    // comment this person had already liked.
+    const onLike = vi.fn().mockResolvedValue(undefined)
+    const liked = thread({
+      comments: [
+        {
+          ...comment(1, 'Nice.'),
+          likedBy: [{ id: 'READER', displayName: 'Grace Hopper', uniqueName: null, imageUrl: null }],
+        },
+      ],
+    })
+    render(<ThreadCard threads={[liked]} actions={{ viewerId: 'reader', onLike }} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Unlike' }))
+
+    expect(onLike).toHaveBeenCalledWith({ threadId: 7, commentId: 1, liked: false })
+  })
+
+  it('says when a like did not land, and offers no like on a tombstone', async () => {
+    const onLike = vi.fn().mockRejectedValue(new Error('Azure DevOps answered 403.'))
+    const one = thread({ comments: [comment(1, 'Nice.'), comment(2, null)] })
+    render(<ThreadCard threads={[one]} actions={{ viewerId: 'reader', onLike }} />)
+
+    // One button, not two: the deleted comment's words are gone, so there is
+    // nothing there to like.
+    const buttons = screen.getAllByRole('button', { name: 'Like' })
+    expect(buttons).toHaveLength(1)
+
+    await userEvent.click(buttons[0])
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Azure DevOps answered 403.')
   })
 
   it('marks a comment that was edited after it was posted', () => {

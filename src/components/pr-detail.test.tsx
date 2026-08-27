@@ -103,7 +103,7 @@ vi.mock('@/server/pull-request-fn', () => ({
 // they were written against; the ones below override the read per test.
 //
 // Every write is mocked too, and not because anything here calls one: `useConversation`
-// closes over all five, so an unmocked module would drag the real server functions
+// closes over every one of them, so an unmocked module would drag the real server functions
 // into a jsdom bundle that has no fetch to send them with.
 vi.mock('@/server/threads-fn', () => ({
   threadsQuery: vi.fn(async () => ({
@@ -118,6 +118,7 @@ vi.mock('@/server/threads-fn', () => ({
   changeThreadStatus: vi.fn(async () => ok()),
   editThreadComment: vi.fn(async () => ok()),
   deleteThreadComment: vi.fn(async () => ok()),
+  likeThreadComment: vi.fn(async () => ok()),
 }))
 
 // The checks panel, which reads for itself the way the conversation does. Mocked

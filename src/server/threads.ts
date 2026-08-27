@@ -140,7 +140,7 @@ interface AdoComment {
   /** Absent on the 52 live comments; `true` on the 7 deleted ones. */
   readonly isDeleted?: boolean
   readonly commentType?: string
-  /** Present on 59 of 59 and empty on all 59, which is why likes stay read-only. */
+  /** Present on 59 of 59 and empty on all 59; `setCommentLike` is what fills it. */
   readonly usersLiked?: readonly AdoIdentity[]
 }
 
@@ -875,6 +875,31 @@ export async function deleteComment(
   await client.write(
     'DELETE',
     `${threadsBase(ref)}/${target.threadId}/comments/${target.commentId}`,
+  )
+}
+
+/**
+ * A like on somebody's comment, put on or taken off.
+ *
+ * The route was measured by T-022 and reads: `GET .../comments/{c}/likes`
+ * answers 200 authenticated, 401 anonymously, and 404 for an invented sibling
+ * path — so the controller is there. The two writes are ADO's documented `PUT`
+ * and `DELETE` on that same path, both with no body and both answering 204,
+ * which is why nothing is parsed back and the panel re-reads the thread instead.
+ *
+ * No own-author guard, unlike edit and delete: a like is for other people's
+ * comments, and ADO takes the liker from the token rather than from the body.
+ *
+ * Unproven against ADO. See `postReply`.
+ */
+export async function setCommentLike(
+  client: AdoClient,
+  ref: PullRequestRef,
+  change: { readonly threadId: number; readonly commentId: number; readonly liked: boolean },
+): Promise<void> {
+  await client.write(
+    change.liked ? 'PUT' : 'DELETE',
+    `${threadsBase(ref)}/${change.threadId}/comments/${change.commentId}/likes`,
   )
 }
 

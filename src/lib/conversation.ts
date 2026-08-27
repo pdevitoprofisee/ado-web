@@ -7,6 +7,7 @@ import {
   changeThreadStatus,
   deleteThreadComment,
   editThreadComment,
+  likeThreadComment,
   replyToThread,
   startThread,
   threadsQuery,
@@ -17,7 +18,7 @@ import type { FileThreads, Thread, VoteEvent } from './comment-contract'
 import type { PullRequestRef } from '@/server/pull-request'
 import type { WriteResult } from '@/server/threads-fn'
 
-// The conversation's client half: one read, five writes, and the grouping that
+// The conversation's client half: one read, six writes, and the grouping that
 // cannot cross the wire.
 //
 // `fileThreads` is imported from `@/server/threads` and that is deliberate, not a
@@ -142,6 +143,7 @@ export function useConversation(ref: PullRequestRef, viewerId: string | null): C
         settle(await changeThreadStatus({ data: { ...ref, ...input } })),
       onEdit: async (input) => settle(await editThreadComment({ data: { ...ref, ...input } })),
       onDelete: async (input) => settle(await deleteThreadComment({ data: { ...ref, ...input } })),
+      onLike: async (input) => settle(await likeThreadComment({ data: { ...ref, ...input } })),
       // `status` is dropped rather than sent: it is `'active'` by the contract's
       // own type, and the server asserts it. Sending it would be offering the
       // client a say in something it has no say in.

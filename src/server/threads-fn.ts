@@ -12,6 +12,7 @@ import {
   isSettableStatus,
   loadThreads,
   postReply,
+  setCommentLike,
   setThreadStatus,
 } from './threads'
 
@@ -27,8 +28,7 @@ import type {
   ThreadList,
 } from '../lib/comment-contract'
 
-// The conversation's five server functions: one read and the project's first four
-// writes.
+// The conversation's server functions: one read and the writes behind it.
 //
 // Every input is validated by shape for the reason `pull-request-fn.ts` spells
 // out — three of these values are interpolated into an Azure DevOps path — and
@@ -37,15 +37,11 @@ import type {
 // and there is no undo button on someone else's pull request. So a thread id
 // that is not a positive integer is refused here rather than sent.
 //
-// The four writes are four functions and not one with a verb parameter, because
+// Each write is its own function rather than one with a verb parameter, because
 // the map is explicit that replying must never be able to change a status: a
 // single `mutateThread({ content?, status? })` is exactly the shape in which a
 // reply silently reopens a thread somebody had marked fixed. Keeping them apart
 // makes that mistake unrepresentable rather than merely discouraged.
-//
-// **Likes are not here.** `usersLiked` came back on 59 of 59 comments and empty
-// on all 59; nothing in the review flow needs to write one, so the read carries
-// them and there is no fifth verb.
 
 /**
  * What the conversation panel renders from.
@@ -125,6 +121,13 @@ export interface EditRequest extends PullRequestRef {
 export interface DeleteRequest extends PullRequestRef {
   readonly threadId: number
   readonly commentId: number
+}
+
+export interface LikeRequest extends PullRequestRef {
+  readonly threadId: number
+  readonly commentId: number
+  /** The state asked for, not a toggle. See `LikeChange`. */
+  readonly liked: boolean
 }
 
 /**
@@ -300,6 +303,28 @@ export function deleteRequest(input: unknown): DeleteRequest {
     ...ref,
     threadId: positive(raw.threadId, 'threadId'),
     commentId: positive(raw.commentId, 'commentId'),
+  }
+}
+
+/**
+ * `liked` is refused unless it is a boolean, and not read as truthy.
+ *
+ * The two values pick two different HTTP verbs, so a missing field coerced to
+ * `false` would send a `DELETE` where the caller meant nothing at all.
+ */
+export function likeRequest(input: unknown): LikeRequest {
+  const ref = pullRequestRef(input)
+  const raw = (input ?? {}) as Record<string, unknown>
+
+  if (typeof raw.liked !== 'boolean') {
+    throw new Error('liked must be true or false.')
+  }
+
+  return {
+    ...ref,
+    threadId: positive(raw.threadId, 'threadId'),
+    commentId: positive(raw.commentId, 'commentId'),
+    liked: raw.liked,
   }
 }
 
@@ -501,6 +526,34 @@ export const deleteThreadComment = createServerFn({ method: 'POST' })
       }
 
       await deleteComment(client, ref, { threadId, commentId })
+
+      return { ok: true, error: null, connected: true, rateLimit: client.rateLimit() }
+    } catch (error) {
+      return failure(client, error)
+    }
+  })
+
+/**
+ * A like, put on or taken off somebody's comment.
+ *
+ * No `refuseUnlessMine` here, and that is the point of a like: it is the one
+ * write in this file that is *supposed* to land on another person's comment. ADO
+ * takes the liker from the token, so there is no identity in the request to
+ * check and none to forge.
+ *
+ * Answers 204 with no body, so there is nothing to hand back and the panel
+ * re-reads the thread for the new `usersLiked`.
+ */
+export const likeThreadComment = createServerFn({ method: 'POST' })
+  .validator(likeRequest)
+  .handler(async ({ data }): Promise<WriteResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) return notConnected(client)
+
+    const { threadId, commentId, liked, ...ref } = data
+
+    try {
+      await setCommentLike(client, ref, { threadId, commentId, liked })
 
       return { ok: true, error: null, connected: true, rateLimit: client.rateLimit() }
     } catch (error) {

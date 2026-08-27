@@ -107,9 +107,10 @@ export interface Comment {
    * Identities who liked this comment.
    *
    * Present on 59 of 59 sampled comments and **non-empty on none of them**, so
-   * every rendering decision here is unexercised by real data. Read-only on
-   * purpose: `POST .../likes` has never been authorised against a real
-   * colleague's comment, and an unproven write is not worth a heart icon.
+   * every rendering decision here is unexercised by real data. The list is also
+   * how the viewer's own like is found: ADO sends no "you liked this" flag, so
+   * the toggle asks whether the viewer's id is in here — case-insensitively, the
+   * way every other identity comparison in this app is.
    */
   readonly likedBy: readonly CommentAuthor[]
   /**
@@ -311,6 +312,21 @@ export interface CommentEdit {
 export interface CommentDelete {
   readonly threadId: number
   readonly commentId: number
+}
+
+/**
+ * A like put on, or taken off, one comment.
+ *
+ * `liked` is the state asked for rather than "toggle", because the two verbs
+ * behind it are a `PUT` and a `DELETE` and both are idempotent. A toggle would
+ * be read-then-write: two clicks in the same poll window, or a colleague liking
+ * the same comment between the read and the write, and the wrong verb goes out.
+ * Saying the destination makes a repeated click a no-op instead of an undo.
+ */
+export interface LikeChange {
+  readonly threadId: number
+  readonly commentId: number
+  readonly liked: boolean
 }
 
 // ---------------------------------------------------------------------------

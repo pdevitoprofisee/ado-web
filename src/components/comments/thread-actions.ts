@@ -2,6 +2,7 @@ import type {
   Comment,
   CommentDelete,
   CommentEdit,
+  LikeChange,
   NewReply,
   NewThread,
   StatusChange,
@@ -50,6 +51,12 @@ export interface ThreadActions {
    * `DiffRow` took its one permitted addition this round.
    */
   readonly onNewThread?: (input: NewThread) => Promise<void>
+  /**
+   * A like on any comment, including a stranger's — the one write here that is
+   * meant to land on somebody else's words, so there is no ownership test in
+   * front of it.
+   */
+  readonly onLike?: (input: LikeChange) => Promise<void>
 }
 
 /**
@@ -82,4 +89,20 @@ export function isMine(comment: Comment, viewerId: string | null): boolean {
  */
 export function isOwn(comment: Comment, viewerId: string | null): boolean {
   return !comment.isDeleted && isMine(comment, viewerId)
+}
+
+/**
+ * Whether this person's like is already on the comment.
+ *
+ * ADO sends no "you liked this" flag, only the list of who did, so the answer is
+ * a search of `likedBy` — case-insensitively, for `isMine`'s measured reason. A
+ * `===` here would draw the button unlit on a comment the viewer had already
+ * liked, and the next click would send a `PUT` that changes nothing.
+ */
+export function likedByMe(comment: Comment, viewerId: string | null): boolean {
+  return (
+    viewerId !== null &&
+    viewerId !== '' &&
+    comment.likedBy.some((who) => who.id.toLowerCase() === viewerId.toLowerCase())
+  )
 }
