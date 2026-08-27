@@ -104,10 +104,10 @@ function MergeSheet({
   // pull request that was just read costs nothing and merging from here corrects
   // the page too. Not polled: this dialog is open for a minute at most, and the
   // write re-reads on its own way out.
-  // On by default, for `MergeControl`'s reason, and reset with the dialog: this
+  // Off by default, for `MergeControl`'s reason, and reset with the dialog: this
   // component is keyed by row, so moving to another pull request asks the
   // question again rather than carrying an answer across.
-  const [override, setOverride] = useState(true)
+  const [override, setOverride] = useState(false)
 
   const query = useQuery({
     queryKey: pullRequestKey(prRef),

@@ -506,12 +506,10 @@ function MergeControl({
 }) {
   const [confirming, setConfirming] = useState(false)
   const [draft, setDraft] = useState(() => defaultDraft(pr))
-  // On by default, which is the whole point of the control: on the repositories
-  // this app was built for, the policy standing in the way is a reviewer count
-  // nobody is coming to satisfy, and the reviewer who opened the page is the
-  // person who would have overridden it in Azure DevOps anyway. Nothing is
-  // bypassed without a refusal to bypass, though — see `canOverride`.
-  const [override, setOverride] = useState(true)
+  // Off by default: an override breaks a rule on purpose, so it takes a tick
+  // rather than arriving pre-ticked. Nothing is bypassed without a refusal to
+  // bypass either — see `canOverride`.
+  const [override, setOverride] = useState(false)
   // Closing on success only, which is what the hook's callback is for: a refused
   // merge has to leave the dialog standing, because ADO's refusal is the whole
   // reason the reviewer pressed the button and it is written right there.

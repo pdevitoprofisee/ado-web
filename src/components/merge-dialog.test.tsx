@@ -256,17 +256,21 @@ describe('MergeDialog', () => {
     expect(dialog().queryByRole('checkbox')).toBeNull()
   })
 
-  it('overrides a blocking policy by default, and says so before merging', async () => {
+  it('overrides a blocking policy once the box is ticked, and says so before merging', async () => {
     vi.mocked(pullRequestQuery).mockResolvedValue(
       read({ pullRequest: detail({ policies: [policy({ blocking: true })] }) }),
     )
     render(<Table />)
-    await opened()
-
-    const box = dialog().getByRole('checkbox', {
+    // Not `opened`: the merge is blocked until the box is ticked, so the message
+    // fields the helper waits for are not drawn yet.
+    const box = await screen.findByRole('checkbox', {
       name: /Override branch policies and enable merge/,
     })
-    expect(box).toBeChecked()
+    expect(box).not.toBeChecked()
+
+    await userEvent.click(box)
+    await opened()
+
     // The dialog says which rule is being broken, not only that one is.
     expect(screen.getByRole('dialog')).toHaveTextContent(
       'The branch policies are overridden: One blocking policy is not satisfied yet.',
@@ -282,17 +286,15 @@ describe('MergeDialog', () => {
     )
   })
 
-  it('blocks the merge again when the override is turned off', async () => {
+  it('leaves the merge blocked while the override is untouched', async () => {
     vi.mocked(pullRequestQuery).mockResolvedValue(
       read({ pullRequest: detail({ reviewers: [reviewer({ displayName: 'Patrick Mize' })] }) }),
     )
     render(<Table />)
-    await opened()
 
-    await userEvent.click(
-      dialog().getByRole('checkbox', { name: /Override branch policies and enable merge/ }),
-    )
-
+    expect(
+      await screen.findByRole('checkbox', { name: /Override branch policies and enable merge/ }),
+    ).not.toBeChecked()
     expect(confirm()).toBeDisabled()
     expect(confirm()).toHaveAccessibleDescription(
       /Patrick Mize is a required reviewer and has not approved\./,

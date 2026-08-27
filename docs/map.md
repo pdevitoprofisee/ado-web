@@ -717,7 +717,7 @@ notifications · running while the app is closed · multi-user or hosted deploym
 per-repository settings.
 
 Branch policies **are** bypassable, which this list said they were not. The merge offers
-Azure DevOps' own "Override branch policies and enable merge", ticked by default, and only
+Azure DevOps' own "Override branch policies and enable merge", unticked by default, and only
 where the override would clear the refusal — a blocking policy or a required reviewer who
 has not approved. It is app-wide rather than scoped to one repository, because there is
 nowhere to scope it to.
