@@ -81,7 +81,7 @@ import type { ChangeView } from '@/lib/changes'
 import type { FileThreads, IterationContext, Thread } from '@/lib/comment-contract'
 import type { Conversation } from '@/lib/conversation'
 import type { DiffLayout } from '@/lib/diff-contract'
-import type { FailedSections } from '@/lib/merge'
+import type { CommitDraft, FailedSections } from '@/lib/merge'
 import type { Withdraw } from '@/lib/reviewers'
 import type { SonarFinding } from '@/lib/sonar-contract'
 import type { SonarReportResult } from '@/server/sonar-fn'
@@ -483,10 +483,12 @@ function MergeBanner({ merge, conflictsError }: { merge: MergeState; conflictsEr
  * that cannot be done; blocked, this is what it always was — a disabled button
  * and the sentence saying why.
  *
- * The draft is initialised once and then owned here. React Query re-reads this
- * pull request on every write and after a refused merge, and that hands down a
- * new `pr` without remounting, so a typed message survives the refusal that made
- * the reviewer want to reword it.
+ * The draft is derived from the pull request, never seeded into state. React
+ * Query re-reads this pull request on every write and after a refused merge, and
+ * that hands down a new `pr` without remounting — a message seeded once would go
+ * on quoting the title the pull request had when the page loaded, long after a
+ * rename. Only what the reviewer typed is held, so it still survives the refusal
+ * that made them want to reword it.
  *
  * The confirmation is not a formality: completing a pull request is irreversible,
  * it deletes the source branch, and everybody watching the repository sees it. So
@@ -505,7 +507,8 @@ function MergeControl({
   failed: FailedSections
 }) {
   const [confirming, setConfirming] = useState(false)
-  const [draft, setDraft] = useState(() => defaultDraft(pr))
+  /** The message as typed, or `null` while it is still Azure DevOps' wording. */
+  const [edited, setEdited] = useState<CommitDraft | null>(null)
   // Off by default: an override breaks a rule on purpose, so it takes a tick
   // rather than arriving pre-ticked. Nothing is bypassed without a refusal to
   // bypass either — see `canOverride`.
@@ -515,6 +518,7 @@ function MergeControl({
   // reason the reviewer pressed the button and it is written right there.
   const merge = useSquashMerge(prRef, () => setConfirming(false))
 
+  const draft = edited ?? defaultDraft(pr)
   const refusal = mergeBlocker(pr, failed)
   // The box is drawn only where it would work. `mergeBlocker` says which refusals
   // Azure DevOps' override actually clears; on the rest a tick would do nothing
@@ -559,7 +563,7 @@ function MergeControl({
           <TextField
             className="flex w-full flex-col gap-1.5"
             value={draft.subject}
-            onChange={(subject) => setDraft((was) => ({ ...was, subject }))}
+            onChange={(subject) => setEdited({ ...draft, subject })}
           >
             <Label>Merge commit message</Label>
             <Input />
@@ -568,7 +572,7 @@ function MergeControl({
           <TextField
             className="flex w-full flex-col gap-1.5"
             value={draft.body}
-            onChange={(body) => setDraft((was) => ({ ...was, body }))}
+            onChange={(body) => setEdited({ ...draft, body })}
           >
             <Label>Description</Label>
             {/* `Input`'s chrome — the same 1.5px pen on the same input sheet —
