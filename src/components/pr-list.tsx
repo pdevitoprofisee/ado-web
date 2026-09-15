@@ -3,6 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import {
   Alert02Icon,
   AlertDiamondIcon,
+  BotIcon,
   Cancel01Icon,
   Clock01Icon,
   GitCommitIcon,
@@ -107,6 +108,22 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
 
   // `failedBuilds` is a subset of `failed`, so this is everything else that broke.
   const failedOther = checks === null ? 0 : checks.failed - checks.failedBuilds
+
+  // `pipelineThreads` is counted *inside* `unresolved` on purpose (see
+  // `hydrate.ts`), so what is left over is what people wrote. Clamped, because
+  // the two are counted by different rules: `unresolved` drops every identity
+  // that posted a status on this pull request, and the pipeline list does not,
+  // so on a pull request where Azure Pipelines did both the bot half can be the
+  // larger number.
+  const fromBots = result?.ok === true ? result.data.pipelineThreads.length : 0
+  const fromPeople = result?.ok === true ? Math.max(0, result.data.unresolved - fromBots) : 0
+
+  const commentLabel =
+    fromPeople === 0
+      ? `${fromBots} Azure Pipelines comments`
+      : fromBots === 0
+        ? `${fromPeople} unresolved comments`
+        : `${fromPeople} unresolved comments, and ${fromBots} from Azure Pipelines`
 
   // One pen per meaning, and the counts in mono because they are figures: at
   // 9rem wide this column is read as a row of coloured marks, so the colour has
@@ -255,9 +272,32 @@ function Rich({ row, result }: { row: PullRequestRow; result: HydrationResult | 
         </Badge>
       ) : null}
 
-      {result?.ok === true && result.data.unresolved > 0 ? (
-        <Badge label={`${result.data.unresolved} unresolved comments`} count={result.data.unresolved}>
-          <HugeiconsIcon icon={Message01Icon} size={12} className="text-ink" aria-hidden />
+      {/* One badge with two faces, for the unmet-policy badge's reason a level
+          further down the scale: "5 unresolved comments" does not say whether a
+          colleague is waiting on an answer or Azure Pipelines left its usual
+          note, and only the first of those is a job for the person reading the
+          row.
+
+          So a person outranks the machine. Whenever anybody wrote anything the
+          count is *their* count, in the speech bubble and in the navy pen, and
+          the bot glyph in the palest ink the column has is what a row falls back
+          to when the machine is all there is. The gap between those two pens is
+          the whole point: the actionable half has to be legible across a page of
+          rows, and the other half only has to be there.
+
+          Not two badges side by side, the way the policy split is drawn: the
+          widest row this column can already draw fills it, so a second comment
+          badge would clip the conflict mark off the left. The bot tally goes in
+          the label instead, and the row's gutter already carries it as the
+          action that clears it. */}
+      {fromPeople > 0 || fromBots > 0 ? (
+        <Badge label={commentLabel} count={fromPeople > 0 ? fromPeople : fromBots}>
+          <HugeiconsIcon
+            icon={fromPeople > 0 ? Message01Icon : BotIcon}
+            size={12}
+            className={fromPeople > 0 ? 'text-ink' : 'text-ink-300'}
+            aria-hidden
+          />
         </Badge>
       ) : null}
 

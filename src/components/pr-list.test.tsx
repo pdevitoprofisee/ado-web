@@ -285,6 +285,38 @@ describe('PullRequestSection', () => {
     expect(screen.queryByTitle(/reviewer policies/)).toBeNull()
   })
 
+  it('counts the comments people wrote, and falls back to the bot glyph', () => {
+    // `pipelineThreads` sits inside `unresolved`, so the human half is the
+    // remainder — and the badge shows that half whenever there is one, because
+    // it is the half the person reading the row has to answer.
+    const section = (data: Partial<Hydration>) => (
+      <PullRequestSection title="Mine" rows={[row()]} empty="none" hydration={() => rich(data)} />
+    )
+
+    const { rerender } = render(section({ unresolved: 5, pipelineThreads: [7, 8, 9] }))
+    const both = screen.getByTitle('2 unresolved comments, and 3 from Azure Pipelines')
+    expect(both).toHaveTextContent('2')
+    expect(both.firstElementChild).toHaveClass('text-ink')
+
+    rerender(section({ unresolved: 3, pipelineThreads: [] }))
+    expect(screen.getByTitle('3 unresolved comments').firstElementChild).toHaveClass('text-ink')
+
+    // Nobody wrote anything, so the count is the machine's and it is drawn in the
+    // palest ink the column has.
+    rerender(section({ unresolved: 3, pipelineThreads: [7, 8, 9] }))
+    const bots = screen.getByTitle('3 Azure Pipelines comments')
+    expect(bots).toHaveTextContent('3')
+    expect(bots.firstElementChild).toHaveClass('text-ink-300')
+
+    // The clamp: ADO skips the pipeline identity from `unresolved` on any pull
+    // request where it also posted a status, which leaves the bot half larger.
+    rerender(section({ unresolved: 0, pipelineThreads: [7, 8] }))
+    expect(screen.getByTitle('2 Azure Pipelines comments')).toBeVisible()
+
+    rerender(section({ unresolved: 0, pipelineThreads: [] }))
+    expect(screen.queryByTitle(/comments/)).toBeNull()
+  })
+
   it('splits the failures the same way, and says which of them is a build', () => {
     const section = (checks: Hydration['checks']) => (
       <PullRequestSection
