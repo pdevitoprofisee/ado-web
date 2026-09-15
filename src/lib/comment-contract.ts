@@ -318,7 +318,7 @@ export interface CommentDelete {
  * A like put on, or taken off, one comment.
  *
  * `liked` is the state asked for rather than "toggle", because the two verbs
- * behind it are a `PUT` and a `DELETE` and both are idempotent. A toggle would
+ * behind it are a `POST` and a `DELETE` and both are idempotent. A toggle would
  * be read-then-write: two clicks in the same poll window, or a colleague liking
  * the same comment between the read and the write, and the wrong verb goes out.
  * Saying the destination makes a repeated click a no-op instead of an undo.

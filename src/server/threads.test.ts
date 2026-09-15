@@ -694,9 +694,10 @@ describe('the writes', () => {
     ])
   })
 
-  it('likes with a PUT and unlikes with a DELETE, both on the likes collection', async () => {
+  it('likes with a POST and unlikes with a DELETE, both on the likes collection', async () => {
     // Two verbs on one path, and no body on either: ADO takes the liker from the
-    // token. Both answer 204, so `write`'s `null` is the whole reply.
+    // token. Neither reply is read, so `write`'s `null` is the whole of it. `PUT`
+    // in place of `POST` answers 405 — the likes controller does not declare it.
     const { client, writes } = fakeClient({})
 
     await expect(setCommentLike(client, REF, { ...target, liked: true })).resolves.toBeUndefined()
@@ -704,7 +705,7 @@ describe('the writes', () => {
 
     expect(writes).toEqual([
       {
-        method: 'PUT',
+        method: 'POST',
         path: `${THREADS}/312114/comments/2/likes`,
         body: undefined,
         params: {},

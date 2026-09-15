@@ -430,8 +430,8 @@ rewrite. Evidence in [`docs/research/`](./research/).
   `isFork` is **absent rather than `false`** on 110 of 114.
 - **Comment likes are a real route** `[LIVE]`: `.../threads/{t}/comments/{c}/likes`
   answers 200 authenticated, 401 anonymously, against 404 for an invented sibling path.
-  Reading is measured. The write rides the same route — `PUT` to like, `DELETE` to
-  unlike, both bodyless — and is not measured; see the unknowns below.
+  Reading is measured. The write rides the same route — `POST` to like, `DELETE` to
+  unlike, both bodyless. `PUT` answers 405; see the unknowns below.
 - `changeType` is a `[Flags]` enum — parse as a comma-separated *set* (`"edit, rename"`).
 - Requeuing the **policy evaluation** is the documented way to re-run a PR build; it
   preserves the policy linkage. `stageRefName` is the YAML stage *id*, not the display
@@ -736,9 +736,10 @@ Settled by T-001 against the live `Profisee` org. Raw responses:
    `quality gate` — *or* `quality_gate_<projectKey>`, one status per Sonar project, on a
    repository that has more than one (T-022).
 4. **Comment likes: the route exists and reads** (200 authenticated, 401 anonymous, 404
-   for an invented path). **The write is now built and offered** — a `PUT` to like and
-   a `DELETE` to unlike, on that same collection. It is still unmeasured: the only proof
-   is a real like on a real comment, and the first one somebody sends is that proof.
+   for an invented path). **The write is built and offered** — a `POST` to like and
+   a `DELETE` to unlike, on that same collection. `PUT` was sent live and answered 405:
+   a like is Microsoft's `Create`, not an upsert. That the `POST` lands is still
+   unmeasured.
 5. **Line drift — not reproduced,** on a PR whose analysis post-dated its last push by
    eight minutes. That is one negative sample, not a guarantee. Note 6 stands unchanged:
    anchor defensively.

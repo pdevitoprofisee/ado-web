@@ -883,9 +883,12 @@ export async function deleteComment(
  *
  * The route was measured by T-022 and reads: `GET .../comments/{c}/likes`
  * answers 200 authenticated, 401 anonymously, and 404 for an invented sibling
- * path — so the controller is there. The two writes are ADO's documented `PUT`
- * and `DELETE` on that same path, both with no body and both answering 204,
- * which is why nothing is parsed back and the panel re-reads the thread instead.
+ * path — so the controller is there. The two writes are ADO's documented `POST`
+ * and `DELETE` on that same path, both with no body. Nothing is parsed back
+ * either way, and the panel re-reads the thread for the new `usersLiked`.
+ *
+ * `POST` and not `PUT`, which answers 405: the likes controller does not declare
+ * that verb. A like is Microsoft's `Create`, not an upsert.
  *
  * No own-author guard, unlike edit and delete: a like is for other people's
  * comments, and ADO takes the liker from the token rather than from the body.
@@ -898,7 +901,7 @@ export async function setCommentLike(
   change: { readonly threadId: number; readonly commentId: number; readonly liked: boolean },
 ): Promise<void> {
   await client.write(
-    change.liked ? 'PUT' : 'DELETE',
+    change.liked ? 'POST' : 'DELETE',
     `${threadsBase(ref)}/${change.threadId}/comments/${change.commentId}/likes`,
   )
 }

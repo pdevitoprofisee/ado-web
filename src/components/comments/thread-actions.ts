@@ -97,7 +97,7 @@ export function isOwn(comment: Comment, viewerId: string | null): boolean {
  * ADO sends no "you liked this" flag, only the list of who did, so the answer is
  * a search of `likedBy` — case-insensitively, for `isMine`'s measured reason. A
  * `===` here would draw the button unlit on a comment the viewer had already
- * liked, and the next click would send a `PUT` that changes nothing.
+ * liked, and the next click would send a `POST` that changes nothing.
  */
 export function likedByMe(comment: Comment, viewerId: string | null): boolean {
   return (
