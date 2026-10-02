@@ -787,6 +787,68 @@ describe('PullRequestSection', () => {
   })
 })
 
+describe('the row card', () => {
+  const reviewer = (over: Partial<PullRequestRow['reviewers'][number]>) => ({
+    id: 'a',
+    displayName: 'Ada Lovelace',
+    vote: 10,
+    isContainer: false,
+    avatarHref: null,
+    ...over,
+  })
+
+  it('opens on a rested hover with the full title and the details', async () => {
+    const user = userEvent.setup()
+    render(
+      <PullRequestSection
+        title="Mine"
+        rows={[
+          row({
+            title: 'a title long enough that the row has to cut it off',
+            isDraft: true,
+            reviewers: [
+              reviewer({}),
+              reviewer({ id: 'b', displayName: '[SaaS]\\DevOps', vote: 0, isContainer: true }),
+            ],
+          }),
+        ]}
+        empty="none"
+      />,
+    )
+
+    await user.hover(screen.getByRole('link', { name: /a title long enough/ }))
+    const card = await screen.findByTestId('row-card')
+
+    expect(card).toHaveTextContent('a title long enough that the row has to cut it off')
+    expect(card).toHaveTextContent('!3302')
+    expect(card).toHaveTextContent('draft')
+    expect(card).toHaveTextContent('Turns off the auditing policy on the shared server.')
+    expect(card).toHaveTextContent('SaaS/PC.IAC.Modules')
+    expect(card).toHaveTextContent('Naveen Angali')
+    expect(card).toHaveTextContent('main')
+    expect(card).toHaveTextContent('Ada Lovelaceapproved')
+    expect(card).toHaveTextContent('+ 1 team')
+  })
+
+  it('closes when the pointer leaves the row', async () => {
+    const user = userEvent.setup()
+    render(<PullRequestSection title="Mine" rows={[row()]} empty="none" />)
+
+    const link = screen.getByRole('link', { name: /disable sql auditing/ })
+    await user.hover(link)
+    await screen.findByTestId('row-card')
+    await user.unhover(link)
+
+    expect(screen.queryByTestId('row-card')).not.toBeInTheDocument()
+  })
+
+  it('does not stack a native tooltip on top of the card', () => {
+    render(<PullRequestSection title="Mine" rows={[row()]} empty="none" />)
+
+    expect(screen.getByRole('link', { name: /disable sql auditing/ })).not.toHaveAttribute('title')
+  })
+})
+
 describe('a grouped section', () => {
   const grouped = (rows: readonly PullRequestRow[]) =>
     render(<PullRequestSection title="Mine" rows={rows} grouped empty="none" />)

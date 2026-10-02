@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useNavigate } from '@tanstack/react-router'
 import {
   Alert02Icon,
@@ -26,7 +27,7 @@ import { voteWord } from '@/lib/people'
 import { groupByRepository } from '@/lib/pr-grouping'
 import { cn } from '@/lib/utils'
 
-import type { ReactNode } from 'react'
+import type { MouseEvent, ReactNode } from 'react'
 import type { IconSvgElement } from '@hugeicons/react'
 
 import type { ResolveCallout } from '@/lib/pipeline-callout'
@@ -426,6 +427,160 @@ function Faces({ reviewers }: { reviewers: readonly RowReviewer[] }) {
   )
 }
 
+/** How long the pointer rests on a row before its card opens. */
+const CARD_DELAY = 500
+
+const exact = new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' })
+
+function stamp(iso: string): string {
+  const at = Date.parse(iso)
+  return Number.isNaN(at) ? '' : `${exact.format(at)} (${age(iso)})`
+}
+
+/**
+ * Opens a row's card after the pointer rests on it, and closes it on leave.
+ *
+ * The card is `fixed` to where the row was when it opened, so a scroll closes it
+ * rather than leaving it behind over some other row.
+ */
+function useRowCard() {
+  const [anchor, setAnchor] = useState<DOMRect | null>(null)
+  const timer = useRef<number | undefined>(undefined)
+
+  const close = () => {
+    window.clearTimeout(timer.current)
+    setAnchor(null)
+  }
+
+  useEffect(() => {
+    if (anchor === null) return
+    const onScroll = () => setAnchor(null)
+    window.addEventListener('scroll', onScroll, true)
+    return () => window.removeEventListener('scroll', onScroll, true)
+  }, [anchor])
+
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+
+  return {
+    anchor,
+    handlers: {
+      onMouseEnter: (event: MouseEvent<HTMLElement>) => {
+        const target = event.currentTarget
+        window.clearTimeout(timer.current)
+        timer.current = window.setTimeout(
+          () => setAnchor(target.getBoundingClientRect()),
+          CARD_DELAY,
+        )
+      },
+      onMouseLeave: close,
+      onMouseDown: close,
+    },
+  }
+}
+
+/**
+ * The whole pull request in one place, for the mouse: the row truncates the
+ * title and hides its columns at narrow widths, and this does neither.
+ *
+ * `aria-hidden` because the row link already carries the title and the place as
+ * its name and description. `pointer-events-none` so the card can never catch the
+ * pointer and close itself.
+ */
+function RowCard({ row, anchor }: { row: PullRequestRow; anchor: DOMRect }) {
+  const width = Math.min(384, window.innerWidth - 32)
+  const left = Math.max(16, Math.min(anchor.left, window.innerWidth - width - 16))
+  // Above a row that sits low on the screen, where a card below would be cut off.
+  const below = anchor.bottom < window.innerHeight * 0.6
+  const people = row.reviewers.filter((reviewer) => !reviewer.isContainer)
+  const teams = row.reviewers.length - people.length
+
+  return createPortal(
+    <div
+      aria-hidden
+      data-testid="row-card"
+      className="sketch-box bg-popover text-popover-foreground shadow-popover pointer-events-none fixed z-50 flex flex-col gap-2 p-3 text-sm"
+      style={{
+        width,
+        left,
+        ...(below ? { top: anchor.bottom + 4 } : { bottom: window.innerHeight - anchor.top + 4 }),
+      }}
+    >
+      <span className="flex items-center gap-1.5">
+        <span className="text-muted-foreground font-mono text-xs">!{row.id}</span>
+        {row.isDraft ? (
+          <span className="prof-badge prof-badge--amber tracking-label px-1.5 py-0.5 text-2xs leading-none uppercase">
+            draft
+          </span>
+        ) : null}
+        {row.closed ? (
+          <span
+            className={cn(
+              'prof-badge tracking-label px-1.5 py-0.5 text-2xs leading-none uppercase',
+              row.closed.outcome === 'completed' ? 'prof-badge--teal' : 'prof-badge--red',
+            )}
+          >
+            {row.closed.outcome}
+          </span>
+        ) : null}
+      </span>
+      <span className="font-medium break-words">{row.title}</span>
+      {/* The list endpoint cuts this at 400 characters, so it is a preview at best. */}
+      {row.description === '' ? null : (
+        <span className="text-muted-foreground line-clamp-4 text-xs break-words whitespace-pre-line">
+          {row.description}
+        </span>
+      )}
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+        <dt className="text-muted-foreground">Repository</dt>
+        <dd className="truncate font-mono">
+          {row.project}/{row.repository}
+        </dd>
+        <dt className="text-muted-foreground">Author</dt>
+        <dd className="truncate">{row.author}</dd>
+        {row.viaTeam ? (
+          <>
+            <dt className="text-muted-foreground">Via</dt>
+            <dd className="truncate">{row.viaTeam}</dd>
+          </>
+        ) : null}
+        <dt className="text-muted-foreground">Target</dt>
+        <dd className="truncate font-mono">{row.targetBranch}</dd>
+        <dt className="text-muted-foreground">Opened</dt>
+        <dd>{stamp(row.createdAt)}</dd>
+        {row.closed?.at ? (
+          <>
+            <dt className="text-muted-foreground">Closed</dt>
+            <dd>{stamp(row.closed.at)}</dd>
+          </>
+        ) : null}
+        <dt className="text-muted-foreground">Reviewers</dt>
+        <dd className="flex min-w-0 flex-col gap-0.5">
+          {people.map((reviewer) => (
+            <span key={reviewer.id} className="flex min-w-0 items-center gap-1.5">
+              <Avatar
+                href={reviewer.avatarHref}
+                name={reviewer.displayName}
+                className={cn('size-4 shrink-0 text-2xs', VOTE_RINGS.get(reviewer.vote))}
+              />
+              <span className="truncate">{reviewer.displayName}</span>
+              <span className="text-muted-foreground shrink-0">{voteWord(reviewer.vote)}</span>
+            </span>
+          ))}
+          {teams > 0 ? (
+            <span className="text-muted-foreground">
+              {people.length > 0 ? '+ ' : ''}
+              {teams} {teams === 1 ? 'team' : 'teams'}
+            </span>
+          ) : people.length === 0 ? (
+            <span className="text-muted-foreground">None</span>
+          ) : null}
+        </dd>
+      </dl>
+    </div>,
+    document.body,
+  )
+}
+
 /**
  * What every glyph in the row's right-hand gutter aligns to: the first line of
  * the row, wherever the rest of the row ends.
@@ -537,6 +692,8 @@ function Row({
   // accessible name has to carry what the eye might not get — including the
   // outcome, which is otherwise a coloured pill and a relative date.
   const label = `${row.project}/${row.repository}${mine ? '' : ` · ${row.author}`}${row.viaTeam ? ` · via ${row.viaTeam}` : ''}${row.closed ? ` · ${row.closed.outcome}${row.closed.at ? ` ${row.closed.at.slice(0, 10)}` : ''}` : ''}`
+  const labelId = useId()
+  const card = useRowCard()
   // `rounded-sm` on the link, not just on the row: this is the element the
   // keyboard focuses all day, and Prof's focus ring is a box-shadow that follows
   // whatever radius it finds. On a square link it would be a square ring.
@@ -690,7 +847,10 @@ function Row({
               prId: String(row.id),
             }}
             className={columns}
-            title={label}
+            // A description and not a `title`: the row card is the hover, and a
+            // native tooltip on top of it would say half of the same thing.
+            aria-describedby={labelId}
+            {...card.handlers}
           >
             {body}
           </Link>
@@ -770,10 +930,21 @@ function Row({
         // ADO answered without the GUIDs, so there is no internal address for
         // this row. Its own click goes where it always went rather than to a
         // route that cannot be built.
-        <a href={row.url} target="_blank" rel="noreferrer" className={columns} title={label}>
+        <a
+          href={row.url}
+          target="_blank"
+          rel="noreferrer"
+          className={columns}
+          aria-describedby={labelId}
+          {...card.handlers}
+        >
           {body}
         </a>
       )}
+      <span id={labelId} hidden>
+        {label}
+      </span>
+      {card.anchor === null ? null : <RowCard row={row} anchor={card.anchor} />}
     </li>
   )
 }
