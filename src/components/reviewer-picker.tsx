@@ -1,6 +1,6 @@
 import { UserAdd01Icon, UserMultipleIcon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { TextField } from 'react-aria-components'
 
 import { Avatar } from './avatar'
@@ -91,6 +91,7 @@ function ReviewerField({
   const invite = useInviteReviewer(prRef)
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
+  const root = useRef<HTMLDivElement>(null)
 
   const listId = 'reviewer-suggestions'
 
@@ -111,6 +112,15 @@ function ReviewerField({
   useEffect(() => {
     setActive(0)
   }, [query])
+
+  useEffect(() => {
+    function onPointerDown(event: PointerEvent) {
+      if (root.current?.contains(event.target as Node) === false) onClose()
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [onClose])
 
   // Named from the directory rather than remembered on the side: `invite.pending`
   // is the id being written, and the list it came from is right here.
@@ -177,7 +187,7 @@ function ReviewerField({
   }
 
   return (
-    <div className="mt-1.5 flex flex-col gap-1">
+    <div ref={root} className="mt-1.5 flex flex-col gap-1">
       {/* `relative`, because the list is positioned against this and not against
           the section: a suggestion list that overlaps the Description below it is
           the point — the section must not grow by 200px as you type. */}
