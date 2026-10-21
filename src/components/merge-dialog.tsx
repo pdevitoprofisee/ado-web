@@ -246,10 +246,12 @@ function MergeSheet({
             <Label>Description</Label>
             {/* `Input`'s chrome grown downward, as on the detail page: a
                 description copied out of the pull request can be four lines or
-                forty. */}
+                forty. Capped at part of the viewport, because the dialog is
+                fixed and does not scroll: a forty-line body pushed the buttons
+                off the screen. */}
             <TextArea
               rows={4}
-              className="field-sizing-content min-h-20 w-full resize-y rounded-sm border-[1.5px] border-input bg-popover px-2.5 py-1.5 text-base outline-none md:text-sm"
+              className="field-sizing-content min-h-20 max-h-[40dvh] w-full resize-y rounded-sm border-[1.5px] border-input bg-popover px-2.5 py-1.5 text-base outline-none md:text-sm"
             />
           </TextField>
         </div>
