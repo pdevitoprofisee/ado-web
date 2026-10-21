@@ -249,6 +249,22 @@ describe('WorkItemPicker', () => {
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   })
 
+  it('closes on a click outside it', async () => {
+    render(
+      <>
+        <p>Elsewhere on the page</p>
+        <WorkItemPicker prRef={REF} attached={new Set()} />
+      </>,
+    )
+
+    await userEvent.click(ask())
+    await offered()
+    await userEvent.click(screen.getByText('Elsewhere on the page'))
+
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(ask()).toBeInTheDocument()
+  })
+
   it('names the work item it is waiting on', async () => {
     let land: (result: { ok: boolean; error: string | null; connected: boolean }) => void = () => {}
     vi.mocked(attachWorkItem).mockReturnValueOnce(

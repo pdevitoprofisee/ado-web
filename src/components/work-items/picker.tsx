@@ -1,6 +1,6 @@
 import { Tag01Icon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { TextField } from 'react-aria-components'
 
 import { Button } from '@/components/ui/button'
@@ -100,6 +100,7 @@ function WorkItemField({
   const [active, setActive] = useState(0)
   const search = useWorkItemSearch(prRef.projectId, query)
   const attach = useAttachWorkItem(prRef)
+  const root = useRef<HTMLDivElement>(null)
 
   const listId = 'work-item-suggestions'
 
@@ -114,6 +115,15 @@ function WorkItemField({
   useEffect(() => {
     setActive(0)
   }, [query])
+
+  useEffect(() => {
+    function onPointerDown(event: PointerEvent) {
+      if (root.current?.contains(event.target as Node) === false) onClose()
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [onClose])
 
   function pick(item: WorkItem) {
     attach.run(item.id)
@@ -156,7 +166,7 @@ function WorkItemField({
   const note = searchNote(search, query, items.length)
 
   return (
-    <div className="mt-1.5 flex flex-col gap-1">
+    <div ref={root} className="mt-1.5 flex flex-col gap-1">
       {/* `relative`, so the list is positioned against this and not against the
           section: the suggestions are meant to overlap what is below them rather
           than push the page down 200px as you type. */}
