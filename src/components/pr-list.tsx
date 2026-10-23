@@ -801,18 +801,24 @@ function Row({
       {identifier}
       <span className="min-w-0 flex-1 truncate">{heading}</span>
       {/* One line has to spend its width on the title first, so each of these
-          three waits for a breakpoint wide enough to afford it. That ranking is
-          the reason the roomy arrangement exists. */}
-      <span className="text-muted-foreground hidden shrink-0 truncate font-mono text-xs sm:block sm:max-w-40">
+          three waits for a row wide enough to afford it. That ranking is the
+          reason the roomy arrangement exists.
+
+          The breakpoints measure the row, not the window: the page is capped
+          far narrower than a desktop window, so window breakpoints showed all
+          three on every desktop and left the title nothing. Each threshold is
+          the fixed columns' ~470px, about 260px of title, and the columns
+          before it. */}
+      <span className="text-muted-foreground hidden max-w-40 shrink-0 truncate font-mono text-xs @min-[57rem]:block">
         {row.repository}
       </span>
       {mine ? null : (
-        <span className="text-muted-foreground hidden shrink-0 truncate text-xs md:block md:max-w-32">
+        <span className="text-muted-foreground hidden max-w-32 shrink-0 truncate text-xs @min-[66rem]:block">
           {row.author}
         </span>
       )}
       {faces}
-      <span className="text-muted-foreground hidden shrink-0 truncate font-mono text-xs lg:block lg:max-w-28">
+      <span className="text-muted-foreground hidden max-w-28 shrink-0 truncate font-mono text-xs @min-[74rem]:block">
         →{row.targetBranch}
       </span>
       {status}
@@ -833,7 +839,7 @@ function Row({
         // list. No transition on it either: `j`/`k` move the selection faster
         // than a settle would finish, and a trailing highlight lies about where
         // the cursor is.
-        'border-border flex border-b last:border-b-0',
+        '@container border-border flex border-b last:border-b-0',
         isSelected ? 'bg-accent rounded-sm' : 'hover:bg-accent/50 hover:rounded-sm',
       )}
     >
