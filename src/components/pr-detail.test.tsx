@@ -13,6 +13,7 @@ import { viewedKey } from '@/lib/viewed-key'
 import {
   abandonPullRequest,
   iterationChangesQuery,
+  publishPullRequest,
   reactivatePullRequest,
   renamePullRequest,
   requeuePolicy,
@@ -76,6 +77,7 @@ vi.mock('@/server/pull-request-fn', () => ({
   setMyVote: vi.fn(async () => ({ ok: true, error: null, connected: true })),
   abandonPullRequest: vi.fn(async () => ({ ok: true, error: null, connected: true })),
   reactivatePullRequest: vi.fn(async () => ({ ok: true, error: null, connected: true })),
+  publishPullRequest: vi.fn(async () => ({ ok: true, error: null, connected: true })),
   // The reviewer writes, closed over by `ReviewerList` on every render of the
   // Reviewers section — and the pair that would put somebody's name on a real
   // colleague's pull request, or take it off.
@@ -698,7 +700,7 @@ const BLOCKED: ReadonlyArray<[string, Partial<PullRequestDetail>, string]> = [
   // ADO's word, passed through rather than guessed at.
   ['a status nobody wrote a case for', { status: 'notSet' }, 'Azure DevOps says this pull request is notSet, not active.'],
   ['a status ADO omitted', { status: '' }, 'Azure DevOps says this pull request is in a state it did not name, not active.'],
-  ['a draft', { isDraft: true }, 'This is a draft. Publish it in Azure DevOps before merging.'],
+  ['a draft', { isDraft: true }, 'This is a draft. Publish it before merging.'],
   [
     'a conflicted branch',
     { merge: { status: 'conflicts', conflicted: true, conflicts: [] } },
@@ -1060,7 +1062,7 @@ describe('PullRequestDetailView squash merge', () => {
     expect(button).toBeDisabled()
     // On the page for the eye, and on the control for anything that reads it out.
     expect(button).toHaveAccessibleDescription(
-      'This is a draft. Publish it in Azure DevOps before merging.',
+      'This is a draft. Publish it before merging.',
     )
 
     await userEvent.click(button)
@@ -1188,6 +1190,49 @@ describe('PullRequestDetailView vote', () => {
 
     expect(group()).toHaveAccessibleDescription('')
     expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled()
+  })
+})
+
+describe('PullRequestDetailView publish', () => {
+  beforeEach(() => {
+    vi.mocked(publishPullRequest).mockClear()
+    vi.mocked(publishPullRequest).mockResolvedValue({ ok: true, error: null, connected: true })
+  })
+
+  it('publishes a draft without asking', async () => {
+    render(<PullRequestDetailView pr={detail({ isDraft: true })} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Publish' }))
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(publishPullRequest).toHaveBeenCalledWith({ data: REF })
+  })
+
+  it('offers nothing on a pull request that is not a draft', () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    expect(screen.queryByRole('button', { name: 'Publish' })).toBeNull()
+  })
+
+  it('offers nothing on an abandoned draft', () => {
+    render(<PullRequestDetailView pr={detail({ isDraft: true, status: 'abandoned' })} />)
+
+    expect(screen.queryByRole('button', { name: 'Publish' })).toBeNull()
+  })
+
+  it('surfaces a refused publish', async () => {
+    vi.mocked(publishPullRequest).mockResolvedValue({
+      ok: false,
+      error: 'TF401027: You need the Contribute to pull requests permission.',
+      connected: true,
+    })
+    render(<PullRequestDetailView pr={detail({ isDraft: true })} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Publish' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Azure DevOps did not publish it: TF401027: You need the Contribute to pull requests permission.',
+    )
   })
 })
 

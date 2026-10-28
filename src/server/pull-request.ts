@@ -1207,6 +1207,16 @@ export async function reactivate(client: AdoClient, ref: PullRequestRef): Promis
   await client.write('PATCH', prBase(ref), { status: 'active' })
 }
 
+/**
+ * Take a draft out of draft, so it can merge and reviewers are told about it.
+ *
+ * `{ isDraft: false }` and nothing wider, for `setTitle`'s reason. No inverse is
+ * offered here, so there is nothing for this to be confused with.
+ */
+export async function publish(client: AdoClient, ref: PullRequestRef): Promise<void> {
+  await client.write('PATCH', prBase(ref), { isDraft: false })
+}
+
 async function loadCommits(
   client: AdoClient,
   ref: PullRequestRef,

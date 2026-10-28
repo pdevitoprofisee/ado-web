@@ -321,13 +321,13 @@ describe('MergeDialog', () => {
     // A field that invites a commit message on a pull request ADO will not take
     // offers something that cannot happen.
     const blocked = await screen.findByText(
-      'This is a draft. Publish it in Azure DevOps before merging.',
+      'This is a draft. Publish it before merging.',
     )
     expect(blocked).toBeVisible()
     expect(dialog().queryByRole('textbox')).toBeNull()
     expect(confirm()).toBeDisabled()
     expect(confirm()).toHaveAccessibleDescription(
-      'This is a draft. Publish it in Azure DevOps before merging.',
+      'This is a draft. Publish it before merging.',
     )
   })
 

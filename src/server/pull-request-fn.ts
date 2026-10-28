@@ -11,6 +11,7 @@ import {
   isVote,
   loadChanges,
   loadPullRequest,
+  publish,
   reactivate,
   removeReviewer,
   requeueEvaluation,
@@ -418,6 +419,12 @@ export interface ReactivateResult {
   readonly connected: boolean
 }
 
+export interface PublishResult {
+  readonly ok: boolean
+  readonly error: string | null
+  readonly connected: boolean
+}
+
 /**
  * "Did a push wipe my approval" — read out of the inbox's cache, not out of ADO.
  *
@@ -756,6 +763,28 @@ export const reactivatePullRequest = createServerFn({ method: 'POST' })
 
     try {
       await reactivate(client, data)
+
+      return { ok: true, error: null, connected: true }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        connected: true,
+      }
+    }
+  })
+
+/** Take a draft out of draft. Who may do it is ADO's answer, as for `abandonPullRequest`. */
+export const publishPullRequest = createServerFn({ method: 'POST' })
+  .validator(pullRequestRef)
+  .handler(async ({ data }): Promise<PublishResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) {
+      return { ok: false, error: client.message, connected: false }
+    }
+
+    try {
+      await publish(client, data)
 
       return { ok: true, error: null, connected: true }
     } catch (error) {

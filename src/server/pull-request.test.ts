@@ -11,6 +11,7 @@ import {
   isVote,
   loadChanges,
   loadPullRequest,
+  publish,
   reactivate,
   removeReviewer,
   requeueEvaluation,
@@ -1127,6 +1128,14 @@ describe('abandoning and reactivating', () => {
     // all is the assertion: neither pre-flights a permission check whose answer
     // would be stale by the time the write went out.
     expect(writes).toHaveLength(2)
+  })
+
+  it('publishes a draft by clearing the draft flag and nothing else', async () => {
+    const { client, writes } = capture()
+
+    await publish(client, REF)
+
+    expect(writes).toEqual([{ method: 'PATCH', path: PR, body: { isDraft: false }, params: {} }])
   })
 })
 

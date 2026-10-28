@@ -52,7 +52,7 @@ import { adoDiffSource, useWarmDiff } from '@/lib/blob-query'
 import { COMBINED, lastReview, useChanges, viewRange } from '@/lib/changes'
 import { useConversation } from '@/lib/conversation'
 import { buildFileTree, treeFiles } from '@/lib/file-tree'
-import { lifecycleAction, useAbandon, useReactivate } from '@/lib/lifecycle'
+import { lifecycleAction, useAbandon, usePublish, useReactivate } from '@/lib/lifecycle'
 import { readLineTarget } from '@/lib/line-link'
 import {
   OVERRIDE_LABEL,
@@ -1273,6 +1273,24 @@ function LifecycleControl({ pr, prRef }: { pr: PullRequestDetail; prRef: PullReq
   )
 }
 
+/** Take a draft out of draft. Drawn only on an active draft, the one place it means anything. */
+function PublishControl({ prRef }: { prRef: PullRequestRef }) {
+  const publish = usePublish(prRef)
+
+  return (
+    <div className="flex shrink-0 flex-col items-start gap-1.5">
+      <Button size="sm" isDisabled={publish.isPending} onPress={() => publish.run()}>
+        {publish.isPending ? 'Publishing…' : 'Publish'}
+      </Button>
+      {publish.error === null ? null : (
+        <p role="alert" className="text-destructive text-xs">
+          Azure DevOps did not publish it: {publish.error}
+        </p>
+      )}
+    </div>
+  )
+}
+
 /**
  * Taking one person off, from their own row.
  *
@@ -2478,7 +2496,10 @@ export function PullRequestDetailView({
 
         <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
           <VoteControl pr={pr} prRef={prRef} />
-          <LifecycleControl pr={pr} prRef={prRef} />
+          <div className="flex flex-wrap items-start gap-2">
+            {pr.isDraft && pr.status === 'active' ? <PublishControl prRef={prRef} /> : null}
+            <LifecycleControl pr={pr} prRef={prRef} />
+          </div>
         </div>
       </header>
 

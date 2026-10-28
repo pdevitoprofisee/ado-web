@@ -212,7 +212,7 @@ export function mergeBlocker(
       `Azure DevOps says this pull request is ${pr.status === '' ? 'in a state it did not name' : pr.status}, not active.`,
     )
   }
-  if (pr.isDraft) return refuse('This is a draft. Publish it in Azure DevOps before merging.')
+  if (pr.isDraft) return refuse('This is a draft. Publish it before merging.')
   // Ahead of the status because a conflicted PR *has* a status, `conflicts`, and
   // the conflict is the sentence worth saying. Same reason `MergeBanner` keys on
   // this flag rather than on the word.

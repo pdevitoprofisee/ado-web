@@ -1,7 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { pullRequestKey } from './requeue'
-import { abandonPullRequest, reactivatePullRequest } from '@/server/pull-request-fn'
+import {
+  abandonPullRequest,
+  publishPullRequest,
+  reactivatePullRequest,
+} from '@/server/pull-request-fn'
 
 import type { PullRequestDetail, PullRequestRef } from '@/server/pull-request'
 
@@ -144,6 +148,34 @@ export function useReactivate(ref: PullRequestRef): Reactivate {
   const mutation = useMutation({
     mutationFn: async () => {
       const result = await reactivatePullRequest({ data: ref })
+      if (!result.ok) throw new Error(result.error ?? 'Azure DevOps did not say why.')
+    },
+    onSettled: () => client.invalidateQueries({ queryKey: pullRequestKey(ref) }),
+  })
+
+  return {
+    run: () => mutation.mutate(),
+    isPending: mutation.isPending,
+    error: mutation.error === null ? null : mutation.error.message,
+  }
+}
+
+export interface Publish {
+  readonly run: () => void
+  readonly isPending: boolean
+  readonly error: string | null
+}
+
+/**
+ * Take a draft out of draft. No confirmation, for `useReactivate`'s reason: it
+ * opens work rather than closing it, and ADO can mark it as a draft again.
+ */
+export function usePublish(ref: PullRequestRef): Publish {
+  const client = useQueryClient()
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const result = await publishPullRequest({ data: ref })
       if (!result.ok) throw new Error(result.error ?? 'Azure DevOps did not say why.')
     },
     onSettled: () => client.invalidateQueries({ queryKey: pullRequestKey(ref) }),
