@@ -1,0 +1,33 @@
+<!--
+  The dev server's favicon, so a dev tab never passes for the installed app. A
+  copy of favicon.svg in gold: keep the paths in step with that file, and read
+  its notes before you change anything here.
+
+  Dark is pen-amber. Light is darker than pen-amber, which is 2.79 on the light
+  tab strip and fails 3:1. This one is 3.32 on the strip and 4.35 on white.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="1 1 22 22">
+  <style>
+    .mark { stroke: #a0701a; }
+    @media (prefers-color-scheme: dark) {
+      .mark { stroke: #d9b36a; }
+    }
+  </style>
+  <g
+    class="mark"
+    fill="none"
+    stroke="#a0701a"
+    stroke-width="1.75"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M3 10C3 6.22876 3 4.34315 4.17157 3.17157C5.34315 2 7.22876 2 11 2H13C16.7712 2 18.6569 2 19.8284 3.17157C21 4.34315 21 6.22876 21 10V16H3V10Z" />
+    <path d="M2 16H22" />
+    <path d="M4 22L7 16" />
+    <path d="M20 22L17 16" />
+    <path d="M13 9H11" />
+    <path d="M8 11L8 7L7 8" />
+    <path d="M17 11L17 7L16 8" />
+    <path d="M12 20L12 16" />
+  </g>
+</svg>

@@ -310,8 +310,8 @@ function Home() {
             alignment absorbs. */}
         <h1 className="text-2xl font-semibold tracking-tight">
           {/* The app's mark, and the same one the tab draws — see
-              `public/favicon.svg`, which is a hand copy of this icon and has to
-              be edited alongside it. A chalkboard because that is what the sheet
+              `public/favicon.svg` and `public/favicon-dev.svg`, which are hand
+              copies of this icon and have to be edited alongside it. A chalkboard because that is what the sheet
               under all of this is: Prof's dark mode is chalk on a deep board,
               and in a tab strip of Azure DevOps pages the thing worth being is
               not another git glyph. It also stays out of the way of `pr-list`,
