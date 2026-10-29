@@ -10,6 +10,7 @@ import {
   completePullRequest,
   isVote,
   loadChanges,
+  loadCommitChanges,
   loadPullRequest,
   publish,
   reactivate,
@@ -1348,6 +1349,64 @@ describe('the file list', () => {
     expect(pr.files).toEqual({ files: [], iterationId: null, iterations: [], truncated: false })
     expect(pr.errors.files).toBeNull()
     expect(calls.some((call) => call.path.endsWith('/changes'))).toBe(false)
+  })
+})
+
+describe('one commit’s changes', () => {
+  const SHA = 'c'.repeat(40)
+  const OLD = 'd'.repeat(40)
+
+  it('asks the repository for the commit and reads its changes', async () => {
+    // The shape measured on a real commit: a delete keeps its path on the item
+    // and sends `""` for the blob it no longer has, and a rename arrives twice,
+    // once as itself and once as a `sourceRename` delete of the old path.
+    const { client, calls } = fakeClient({
+      [`/commits/${SHA}/changes`]: {
+        changeCounts: { Edit: 1, Delete: 1, Rename: 1 },
+        changes: [
+          change('/src/log.ts', 'edit', { originalObjectId: OLD }),
+          change('/src/gone.ts', 'delete', { objectId: '', originalObjectId: OLD }),
+          change('/src/old-name.ts', 'delete, sourceRename', { objectId: '', originalObjectId: OLD }),
+          {
+            ...change('/src/new-name.ts', 'edit, rename', { originalObjectId: OLD }),
+            sourceServerItem: '/src/old-name.ts',
+          },
+        ],
+      },
+    })
+
+    const changes = await loadCommitChanges(client, REF, SHA)
+
+    expect(calls.map((call) => call.path)).toEqual([
+      `${PROJECT}/_apis/git/repositories/${REPOSITORY}/commits/${SHA}/changes`,
+    ])
+    expect(calls[0]?.params).toMatchObject({ top: 5000 })
+    expect(changes).toEqual({
+      files: [
+        {
+          path: '/src/log.ts',
+          changeType: ['edit'],
+          originalPath: null,
+          objectId: 'a'.repeat(40),
+          originalObjectId: OLD,
+        },
+        {
+          path: '/src/gone.ts',
+          changeType: ['delete'],
+          originalPath: null,
+          objectId: null,
+          originalObjectId: OLD,
+        },
+        {
+          path: '/src/new-name.ts',
+          changeType: ['edit', 'rename'],
+          originalPath: '/src/old-name.ts',
+          objectId: 'a'.repeat(40),
+          originalObjectId: OLD,
+        },
+      ],
+      truncated: false,
+    })
   })
 })
 

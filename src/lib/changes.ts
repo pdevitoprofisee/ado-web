@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { iterationChangesQuery } from '@/server/pull-request-fn'
+import { iterationChangesQuery, prCommitChangesQuery } from '@/server/pull-request-fn'
 
 import type { Thread, VoteEvent } from './comment-contract'
 import type { ChangeSet, FileList, Iteration, PullRequestRef } from '@/server/pull-request'
 
-// Which changes the Files section is showing. Three views over the same pull
+// Which changes the Files section is showing. Four views over the same pull
 // request:
 //
 //   combined — every file that differs from the merge base. GitHub's default,
@@ -13,6 +13,8 @@ import type { ChangeSet, FileList, Iteration, PullRequestRef } from '@/server/pu
 //   update k — only what push k changed, `$compareTo=k-1`.
 //   since    — an arbitrary range, `$compareTo=j` against head. What a reviewer
 //              coming back to a 39-push pull request is actually asking.
+//   commit   — what one commit changed against its first parent. Not an
+//              iteration at all, so it is asked of the repository instead.
 //
 // The first two do not agree, and not because either is wrong. Measured on
 // !24766 (39 updates): the combined diff holds 294 files, the union of all 39
@@ -35,10 +37,11 @@ export type ChangeView =
   | { readonly kind: 'combined' }
   | { readonly kind: 'update'; readonly iterationId: number }
   | SinceView
+  | { readonly kind: 'commit'; readonly commitId: string }
 
 export const COMBINED: ChangeView = { kind: 'combined' }
 
-/** The two iterations a view spans, or `null` for the combined diff, which spans none. */
+/** The two iterations a view spans, or `null` for the combined diff and a commit, which span none. */
 export interface Range {
   readonly iterationId: number
   readonly compareTo: number
@@ -58,7 +61,7 @@ export interface Range {
  * asked for, or "line 40" means line 40 of a file nobody is looking at.
  */
 export function viewRange(view: ChangeView): Range | null {
-  if (view.kind === 'combined') return null
+  if (view.kind === 'combined' || view.kind === 'commit') return null
   if (view.kind === 'update') return { iterationId: view.iterationId, compareTo: view.iterationId - 1 }
 
   return { iterationId: view.iterationId, compareTo: view.compareTo }
@@ -88,24 +91,25 @@ export interface ViewedChanges {
  */
 export function useChanges(ref: PullRequestRef, view: ChangeView, combined: FileList): ViewedChanges {
   const range = viewRange(view)
+  const commitId = view.kind === 'commit' ? view.commitId : null
+  const pr = { projectId: ref.projectId, repositoryId: ref.repositoryId, id: ref.id }
 
   const query = useQuery({
-    queryKey: ['pr-changes', ref.repositoryId, ref.id, range?.iterationId ?? null, range?.compareTo ?? null],
+    queryKey:
+      commitId !== null
+        ? ['pr-commit-changes', ref.repositoryId, commitId]
+        : ['pr-changes', ref.repositoryId, ref.id, range?.iterationId ?? null, range?.compareTo ?? null],
     queryFn: () =>
-      iterationChangesQuery({
-        data: {
-          projectId: ref.projectId,
-          repositoryId: ref.repositoryId,
-          id: ref.id,
-          iterationId: range!.iterationId,
-          compareTo: range!.compareTo,
-        },
-      }),
-    enabled: range !== null,
+      commitId !== null
+        ? prCommitChangesQuery({ data: { ...pr, commitId } })
+        : iterationChangesQuery({
+            data: { ...pr, iterationId: range!.iterationId, compareTo: range!.compareTo },
+          }),
+    enabled: range !== null || commitId !== null,
     // An iteration is immutable — a new push is a new iteration, never an edit to
-    // an old one — so this answer cannot go stale. A range is two iterations, so
-    // it is immutable for the same reason. The page polls; without this it would
-    // poll a set of files that cannot change.
+    // an old one — so this answer cannot go stale. A range is two iterations, and a
+    // commit is a commit, so both are immutable for the same reason. The page
+    // polls; without this it would poll a set of files that cannot change.
     staleTime: Infinity,
     // And it cannot be worth fetching twice, so it outlives being unmounted. The
     // gesture this covers is real: reading update 3, flipping to combined to check
@@ -114,7 +118,7 @@ export function useChanges(ref: PullRequestRef, view: ChangeView, combined: File
     gcTime: Infinity,
   })
 
-  if (range === null) return { changes: combined, pending: false, error: null }
+  if (view.kind === 'combined') return { changes: combined, pending: false, error: null }
 
   return {
     // `EMPTY` rather than the combined list while an update loads: showing every

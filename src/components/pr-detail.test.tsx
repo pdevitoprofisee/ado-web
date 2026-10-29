@@ -13,6 +13,7 @@ import { viewedKey } from '@/lib/viewed-key'
 import {
   abandonPullRequest,
   iterationChangesQuery,
+  prCommitChangesQuery,
   publishPullRequest,
   reactivatePullRequest,
   renamePullRequest,
@@ -62,6 +63,13 @@ vi.mock('@/server/viewed-fn', () => ({
 // `requeuePolicy` is mocked for `useRequeue`'s sake — the checklist closes over
 // it whether or not a test presses anything, and an unmocked module would drag
 // the real server function into a jsdom bundle with no fetch to send it with.
+// These four reach `node:sqlite` through the server modules behind them, and
+// jsdom cannot bundle it.
+vi.mock('@/server/identity-fn', () => ({ directoryQuery: vi.fn() }))
+vi.mock('@/server/blob-fn', () => ({ fileBlobsQuery: vi.fn(async () => ({ blobs: {}, error: null })) }))
+vi.mock('@/server/local-git-fn', () => ({ localBlobsQuery: vi.fn() }))
+vi.mock('@/server/pr-cache', () => ({ readPrCache: vi.fn() }))
+
 vi.mock('@/server/pull-request-fn', () => ({
   requeuePolicy: vi.fn(async () => ({ ok: true, error: null, connected: true })),
   // Same reason as the requeue: `useRename` is called by the header on every
@@ -92,6 +100,21 @@ vi.mock('@/server/pull-request-fn', () => ({
           originalPath: null,
           objectId: '11',
           originalObjectId: '22',
+        },
+      ],
+      truncated: false,
+    },
+    error: null,
+  })),
+  prCommitChangesQuery: vi.fn(async () => ({
+    changes: {
+      files: [
+        {
+          path: '/src/only-in-commit.ts',
+          changeType: ['edit'],
+          originalPath: null,
+          objectId: '33',
+          originalObjectId: '44',
         },
       ],
       truncated: false,
@@ -1638,6 +1661,40 @@ describe('PullRequestDetailView commits', () => {
     )
 
     expect(screen.queryByText('+ body')).toBeNull()
+  })
+
+  it('opens a clicked commit’s own changes, with a way out to Azure DevOps', async () => {
+    const later = commit({
+      id: 'f'.repeat(16),
+      subject: 'address review',
+      url: 'https://dev.azure.com/Profisee/_git/utilities/commit/ffff',
+    })
+    render(<PullRequestDetailView pr={detail({ commits: [later, commit()] })} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'point the sink at the new workspace' }))
+
+    expect(screen.getByRole('tab', { name: 'By commit' })).toHaveAttribute('aria-selected', 'true')
+    expect(await list().findByTitle('/src/only-in-commit.ts')).toBeVisible()
+    expect(vi.mocked(prCommitChangesQuery).mock.lastCall?.[0]?.data).toEqual({
+      projectId: REF.projectId,
+      repositoryId: REF.repositoryId,
+      id: REF.id,
+      commitId: 'a1b2c3d4e5f6a7b8',
+    })
+    expect(screen.getByRole('link', { name: 'open in Azure DevOps' })).toHaveAttribute(
+      'href',
+      commit().url,
+    )
+
+    await userEvent.selectOptions(screen.getByLabelText('Commit'), later.id)
+
+    expect(vi.mocked(prCommitChangesQuery).mock.lastCall?.[0]?.data).toMatchObject({
+      commitId: later.id,
+    })
+    expect(screen.getByRole('link', { name: 'open in Azure DevOps' })).toHaveAttribute(
+      'href',
+      later.url,
+    )
   })
 
   it('tells the two empty commit states apart', () => {

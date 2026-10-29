@@ -4,6 +4,7 @@ import {
   Clock01Icon,
   Copy01Icon,
   HelpCircleIcon,
+  LinkSquare02Icon,
   MinusSignIcon,
   PencilEdit02Icon,
   RefreshIcon,
@@ -1460,7 +1461,7 @@ function ReviewerList({
   )
 }
 
-function CommitRow({ commit }: { commit: Commit }) {
+function CommitRow({ commit, onOpen }: { commit: Commit; onOpen: () => void }) {
   return (
     <li className="border-border flex items-baseline gap-2 border-b px-2 py-1 text-sm last:border-b-0">
       {/* Bare mono with no underline until you want it: seven hex characters
@@ -1471,12 +1472,21 @@ function CommitRow({ commit }: { commit: Commit }) {
         href={commit.url}
         target="_blank"
         rel="noreferrer"
-        className="text-muted-foreground hover:text-primary w-16 shrink-0 font-mono text-2xs"
+        title="Open in Azure DevOps"
+        className="text-muted-foreground hover:text-primary flex w-16 shrink-0 items-center gap-1 font-mono text-2xs"
       >
         {commit.id.slice(0, 7)}
+        <HugeiconsIcon icon={LinkSquare02Icon} size={10} aria-hidden />
       </a>
       <span className="min-w-0 flex-1 truncate">
-        {commit.subject}
+        <button
+          type="button"
+          onClick={onOpen}
+          title="Show this commit's changes"
+          className="hover:text-primary cursor-pointer text-left hover:underline"
+        >
+          {commit.subject}
+        </button>
         {/* Not "truncated": the subject is whole, and ADO's own name for this
             flag is a trap the contract now spells out. It says there is a
             message body underneath, which is worth knowing and is not a
@@ -1558,6 +1568,44 @@ function UpdatePicker({
   )
 }
 
+/** Which commit the commit tab shows, and the way out to it in Azure DevOps. */
+function CommitPicker({
+  commits,
+  selected,
+  onSelect,
+}: {
+  commits: readonly Commit[]
+  selected: Commit
+  onSelect: (commitId: string) => void
+}) {
+  return (
+    <span className="flex min-w-0 items-baseline gap-2">
+      <select
+        aria-label="Commit"
+        value={selected.id}
+        onChange={(event) => onSelect(event.target.value)}
+        // `UpdatePicker`'s control, for its reasons.
+        className="border-ink bg-paper-3 max-w-full rounded-sm border-[1.5px] px-1.5 py-0.5 text-xs"
+      >
+        {commits.map((commit) => (
+          <option key={commit.id} value={commit.id}>
+            {commit.id.slice(0, 7)} · {commit.subject}
+          </option>
+        ))}
+      </select>
+      <a
+        href={selected.url}
+        target="_blank"
+        rel="noreferrer"
+        className="text-muted-foreground hover:text-primary flex shrink-0 items-center gap-1 text-2xs underline decoration-[1.5px] underline-offset-[3px]"
+      >
+        <HugeiconsIcon icon={LinkSquare02Icon} size={12} aria-hidden />
+        open in Azure DevOps
+      </a>
+    </span>
+  )
+}
+
 /**
  * A date a sentence can hold: "3 August", and the year too when it was not this one.
  *
@@ -1577,8 +1625,8 @@ function onDate(iso: string): string {
   })
 }
 
-/** The four things this page can be showing. */
-export type DetailTab = 'details' | 'combined' | 'update' | 'since'
+/** The five things this page can be showing. */
+export type DetailTab = 'details' | 'combined' | 'update' | 'since' | 'commit'
 
 interface TabSpec {
   readonly id: DetailTab
@@ -1794,6 +1842,8 @@ interface ChangeScope {
   readonly empty: string
 }
 
+const NO_FILE_THREADS: ReadonlyMap<string, FileThreads> = new Map()
+
 function ChangedFiles({
   changes,
   scope,
@@ -1867,7 +1917,7 @@ function ChangedFiles({
    */
   findings: readonly SonarFinding[]
   /** The pull request's ADO address, which each line's open-in-ADO link is built from. */
-  webUrl: string
+  webUrl?: string
 }) {
   const nodes = useMemo(() => buildFileTree(changes.files), [changes.files])
 
@@ -2280,6 +2330,7 @@ export function PullRequestDetailView({
           { id: 'since', label: 'Since my review' },
         ] as const)
       : []),
+    ...(pr.commits.length > 0 ? ([{ id: 'commit', label: 'By commit' }] as const) : []),
   ]
 
   // A tab that is not on offer cannot be the one we are showing: the two update
@@ -2302,8 +2353,23 @@ export function PullRequestDetailView({
   // know is empty.
   const since = active === 'since' && review.kind === 'behind' ? review.view : null
 
+  // The commit tab opens on whichever commit row was clicked, and on the first in
+  // ADO's list when the tab itself was.
+  const [chosenCommit, setChosenCommit] = useState<string | null>(null)
+  const commit =
+    active === 'commit'
+      ? (pr.commits.find((entry) => entry.id === chosenCommit) ?? pr.commits[0] ?? null)
+      : null
+
+  const openCommit = (commitId: string) => {
+    setChosenCommit(commitId)
+    onTabChange('commit')
+  }
+
   const view: ChangeView =
-    since ?? (update === null ? COMBINED : { kind: 'update', iterationId: update })
+    commit !== null
+      ? { kind: 'commit', commitId: commit.id }
+      : (since ?? (update === null ? COMBINED : { kind: 'update', iterationId: update }))
   const changes = useChanges(prRef, view, pr.files)
 
   // Which of the three questions the file list is answering, in the three places
@@ -2312,27 +2378,35 @@ export function PullRequestDetailView({
   // approval" and "since your comment" are different sentences, because one of
   // them means you finished and the other means you were passing through.
   const changeScope: ChangeScope =
-    since !== null && review.kind === 'behind'
+    commit !== null
       ? {
           control: (
-            <span>
-              Since {review.basis.what} on {onDate(review.basis.at)}
-            </span>
+            <CommitPicker commits={pr.commits} selected={commit} onSelect={setChosenCommit} />
           ),
-          what: 'the changes since your last review',
-          empty:
-            'Nothing has changed in the files since then. The pushes since your review only moved the branch pointer — a rebase, or a merge from the target.',
+          what: 'this commit’s changes',
+          empty: 'This commit changed no files.',
         }
-      : update === null
-        ? { control: null, what: 'the changed files', empty: 'No files changed.' }
-        : {
+      : since !== null && review.kind === 'behind'
+        ? {
             control: (
-              <UpdatePicker iterations={iterations} selected={update} onSelect={setChosen} />
+              <span>
+                Since {review.basis.what} on {onDate(review.basis.at)}
+              </span>
             ),
-            what: 'this update’s changes',
+            what: 'the changes since your last review',
             empty:
-              'This update changed no files. A push that only moves the branch pointer — a rebase or a merge from the target — leaves nothing new to read.',
+              'Nothing has changed in the files since then. The pushes since your review only moved the branch pointer — a rebase, or a merge from the target.',
           }
+        : update === null
+          ? { control: null, what: 'the changed files', empty: 'No files changed.' }
+          : {
+              control: (
+                <UpdatePicker iterations={iterations} selected={update} onSelect={setChosen} />
+              ),
+              what: 'this update’s changes',
+              empty:
+                'This update changed no files. A push that only moves the branch pointer — a rebase or a merge from the target — leaves nothing new to read.',
+            }
 
   // The bytes for the first few files, fetched while you are reading the details
   // tab, so that clicking Combined paints a diff instead of starting one. The
@@ -2640,7 +2714,7 @@ export function PullRequestDetailView({
             ) : (
               <ul className="sketch-box sketch-box--quiet w-full">
                 {pr.commits.map((commit) => (
-                  <CommitRow key={commit.id} commit={commit} />
+                  <CommitRow key={commit.id} commit={commit} onOpen={() => openCommit(commit.id)} />
                 ))}
               </ul>
             )}
@@ -2682,18 +2756,24 @@ export function PullRequestDetailView({
               onIgnoreWhitespaceChange={setIgnoreWhitespace}
               viewed={viewed}
               onViewedChange={setViewed}
-              threads={conversation.files}
+              // None on a commit: a thread is anchored to an iteration's lines,
+              // and a commit's lines are not any iteration's.
+              threads={commit === null ? conversation.files : NO_FILE_THREADS}
               // Offered only when the write can actually go out. `connected` is
               // false when there is no credential, and a composer that can only
               // fail is worse than no composer.
-              threadActions={conversation.connected ? conversation.actions : undefined}
+              threadActions={
+                conversation.connected && commit === null ? conversation.actions : undefined
+              }
               threadError={conversation.error}
               hideDone={hideDone}
               onHideDoneChange={setHideDone}
               iterationContext={iterationContext}
               jump={jump}
               findings={findings}
-              webUrl={pr.url}
+              // The line links open the pull request's files, which show its
+              // latest lines, not this commit's.
+              webUrl={commit === null ? pr.url : undefined}
             />
           )}
         </div>

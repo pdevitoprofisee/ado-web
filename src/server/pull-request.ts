@@ -492,6 +492,8 @@ interface AdoChangeEntry {
   readonly changeType?: string
   /** Present only on a delete and a rename. Absent — not null — otherwise. */
   readonly originalPath?: string
+  /** The commit changes endpoint's name for a rename's old path. */
+  readonly sourceServerItem?: string
   readonly item?: {
     readonly path?: string | null
     readonly objectId?: string
@@ -1264,14 +1266,23 @@ function toChangeSet(entries: readonly AdoChangeEntry[]): ChangeSet {
     // would render as a file that changed by nothing.
     if (path === null || entry.item?.isFolder === true) continue
 
+    const changeType = changeFlags(entry.changeType)
+    // A commit's changes list a rename twice: once at the new path, and once as a
+    // delete of the old one. The rename entry already carries both paths.
+    if (changeType.includes('sourceRename')) continue
+
+    const originalPath = entry.originalPath ?? entry.sourceServerItem
+
     files.push({
       path,
-      changeType: changeFlags(entry.changeType),
+      changeType,
       // Only a rename has somewhere else to have been: a delete's old path is
       // already `path`, and an edit or an add never sends one.
-      originalPath: now !== null && entry.originalPath !== undefined ? entry.originalPath : null,
-      objectId: entry.item?.objectId ?? null,
-      originalObjectId: entry.item?.originalObjectId ?? null,
+      originalPath: now !== null && originalPath !== undefined ? originalPath : null,
+      // `||` because the commit changes endpoint sends an empty string, not
+      // nothing, for the side of an add or a delete that has no blob.
+      objectId: entry.item?.objectId || null,
+      originalObjectId: entry.item?.originalObjectId || null,
     })
   }
 
@@ -1302,6 +1313,25 @@ export async function loadChanges(
   )
 
   return toChangeSet(result.changeEntries ?? [])
+}
+
+/**
+ * The changes one commit made, against its first parent.
+ *
+ * A repository endpoint, not a pull request one: ADO has no per-commit view of a
+ * pull request, and a commit's diff does not depend on which pull request it is in.
+ */
+export async function loadCommitChanges(
+  client: AdoClient,
+  ref: PullRequestRef,
+  commitId: string,
+): Promise<ChangeSet> {
+  const result = await client.get<{ changes?: readonly AdoChangeEntry[] }>(
+    `${ref.projectId}/_apis/git/repositories/${ref.repositoryId}/commits/${commitId}/changes`,
+    { top: FILE_LIMIT },
+  )
+
+  return toChangeSet(result.changes ?? [])
 }
 
 async function loadFiles(client: AdoClient, ref: PullRequestRef, base: string): Promise<FileList> {

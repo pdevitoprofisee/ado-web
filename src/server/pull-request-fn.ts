@@ -10,6 +10,7 @@ import {
   completePullRequest,
   isVote,
   loadChanges,
+  loadCommitChanges,
   loadPullRequest,
   publish,
   reactivate,
@@ -529,6 +530,38 @@ export const iterationChangesQuery = createServerFn({ method: 'GET' })
 
     try {
       return { changes: await loadChanges(client, ref, iterationId, compareTo), error: null }
+    } catch (error) {
+      return { changes: null, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+/** One commit's changes, addressed through the pull request it is shown on. */
+export interface CommitChangesRequest extends PullRequestRef {
+  readonly commitId: string
+}
+
+function commitChangesRequest(input: unknown): CommitChangesRequest {
+  const ref = pullRequestRef(input)
+  const raw = (input ?? {}) as Record<string, unknown>
+
+  if (typeof raw.commitId !== 'string' || !SHA.test(raw.commitId)) {
+    throw new Error('commitId must be a full commit sha.')
+  }
+
+  return { ...ref, commitId: raw.commitId }
+}
+
+/** The files one commit on the pull request changed. Same answer shape as `iterationChangesQuery`. */
+export const prCommitChangesQuery = createServerFn({ method: 'GET' })
+  .validator(commitChangesRequest)
+  .handler(async ({ data }): Promise<IterationChangesResult> => {
+    const client = connectedClient()
+    if (client instanceof NotConnectedError) return { changes: null, error: client.message }
+
+    const { commitId, ...ref } = data
+
+    try {
+      return { changes: await loadCommitChanges(client, ref, commitId), error: null }
     } catch (error) {
       return { changes: null, error: error instanceof Error ? error.message : String(error) }
     }
