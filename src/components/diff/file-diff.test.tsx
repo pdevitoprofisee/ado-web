@@ -280,6 +280,76 @@ describe('FileDiffPanel', () => {
   })
 })
 
+describe('a Markdown file', () => {
+  const MD: FileBlobs = {
+    path: 'docs/readme.md',
+    before: { kind: 'text', lines: ['# Old title'], bytes: 11, noFinalNewline: false },
+    after: {
+      kind: 'text',
+      lines: ['# New title', '', 'Some **bold**', 'wrapped text.'],
+      bytes: 40,
+      noFinalNewline: false,
+    },
+    renamedOnly: false,
+  }
+
+  it('has no preview button for a file that is not Markdown', () => {
+    render(<FileDiffPanel blobs={BLOBS} diff={DIFF} rows={ROWS} layout="unified" />)
+
+    expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull()
+  })
+
+  it('shows the new version rendered in place of the diff', async () => {
+    render(<FileDiffPanel blobs={MD} diff={DIFF} rows={ROWS} layout="unified" />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    expect(screen.getByRole('button', { name: 'Preview' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByRole('region', { name: MD.path })).toBeNull()
+    expect(screen.getByRole('heading', { name: 'New title' })).toBeInTheDocument()
+    expect(screen.getByText('bold').tagName).toBe('STRONG')
+    expect(screen.queryByRole('heading', { name: 'Old title' })).toBeNull()
+    // A wrapped line in a repository file is one paragraph, not a line break.
+    expect(document.querySelector('br')).toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    expect(screen.getByRole('region', { name: MD.path })).toBeInTheDocument()
+  })
+
+  it('shows both versions side by side in the split layout', async () => {
+    render(<FileDiffPanel blobs={MD} diff={DIFF} rows={ROWS} layout="split" />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    expect(screen.getByRole('heading', { name: 'Old title' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'New title' })).toBeInTheDocument()
+  })
+
+  it('shows the old version of a deleted file', async () => {
+    render(
+      <FileDiffPanel
+        blobs={{ ...MD, after: { kind: 'absent' } }}
+        diff={DIFF}
+        rows={ROWS}
+        layout="unified"
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    expect(screen.getByRole('heading', { name: 'Old title' })).toBeInTheDocument()
+  })
+
+  it('opens a shut file when the preview is turned on', async () => {
+    render(<FileDiffPanel blobs={MD} diff={DIFF} rows={ROWS} layout="unified" defaultOpen={false} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    expect(screen.getByRole('heading', { name: 'New title' })).toBeInTheDocument()
+  })
+})
+
 describe('a file with conversations on it', () => {
   const thread = (id: number, body: string): Thread => ({
     id,

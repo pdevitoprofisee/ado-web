@@ -258,11 +258,13 @@ function remarkMentions(names: Readonly<Record<string, string>>) {
 }
 
 const PLUGINS = [remarkGfm, remarkBreaks]
+const FILE_PLUGINS = [remarkGfm]
 
 /** Markdown text, rendered. Whitespace-only input renders nothing; the caller decides what to say about that. */
 export function Markdown({
   children,
   mentions = {},
+  lineBreaks = true,
 }: {
   children: string
   /**
@@ -274,9 +276,15 @@ export function Markdown({
    * caller is untouched.
    */
   mentions?: Readonly<Record<string, string>>
+  /**
+   * Keep each single newline as a line break. Turn it off for a `.md` file from
+   * a repository, where hard-wrapped prose is one paragraph.
+   */
+  lineBreaks?: boolean
 }) {
+  const base = lineBreaks ? PLUGINS : FILE_PLUGINS
   const plugins =
-    Object.keys(mentions).length === 0 ? PLUGINS : [...PLUGINS, remarkMentions(mentions)]
+    Object.keys(mentions).length === 0 ? base : [...base, remarkMentions(mentions)]
 
   return (
     <div className="w-full text-sm break-words">

@@ -4,6 +4,7 @@ import { HugeiconsIcon } from '@hugeicons/react'
 
 import { DiffView, blobNotice } from './diff-view'
 import { FileThreadList } from '@/components/comments/file-thread-list'
+import { Markdown } from '@/components/markdown'
 import { anyThreads, countThreads } from '@/lib/thread-counts'
 import { cn } from '@/lib/utils'
 
@@ -88,6 +89,51 @@ function CommentBadge({ threads, hideDone }: { threads: FileThreads | null; hide
         ? `${total} ${total === 1 ? 'comment' : 'comments'}, ${count.open} open`
         : `${total} ${total === 1 ? 'comment' : 'comments'}, resolved`}
     </span>
+  )
+}
+
+/** The text of each side of a Markdown file, or `null` for a file that is not one. */
+function markdownSides(blobs: FileBlobs): { before: string | null; after: string | null } | null {
+  if (!/\.(md|markdown)$/i.test(blobs.path)) return null
+
+  const text = (side: FileBlobs['before']) => (side.kind === 'text' ? side.lines.join('\n') : null)
+  const sides = { before: text(blobs.before), after: text(blobs.after) }
+  return sides.before === null && sides.after === null ? null : sides
+}
+
+/**
+ * The file as it reads, not as it is written. Side by side shows both versions.
+ * Unified shows the newest one there is.
+ */
+function MarkdownPreview({
+  before,
+  after,
+  layout,
+}: {
+  before: string | null
+  after: string | null
+  layout: DiffLayout
+}) {
+  if (layout === 'split' && before !== null && after !== null) {
+    return (
+      <div className="grid grid-cols-2 divide-x">
+        {[
+          ['Before', before],
+          ['After', after],
+        ].map(([label, text]) => (
+          <div key={label} className="min-w-0 px-3 py-2">
+            <p className="annotation mb-1">{label}</p>
+            <Markdown lineBreaks={false}>{text}</Markdown>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div className="px-3 py-2">
+      <Markdown lineBreaks={false}>{after ?? before ?? ''}</Markdown>
+    </div>
   )
 }
 
@@ -237,6 +283,7 @@ export function FileDiffPanel({
   // "I have looked at this" and "I am looking at it now" — and tying them
   // together in one flag means one of the two is always being told wrong.
   const [open, setOpen] = useState(defaultOpen ?? !viewed)
+  const [preview, setPreview] = useState(false)
 
   function show(next: boolean) {
     setOpen(next)
@@ -258,6 +305,7 @@ export function FileDiffPanel({
           : blobNotice(blobs, sourceName)
 
   const noNewline = notice === null ? noNewlineNotice(blobs) : null
+  const markdown = notice === null ? markdownSides(blobs) : null
 
   const cut = blobs.path.lastIndexOf('/')
   const badge = kind === null ? undefined : KIND_BADGE[kind]
@@ -325,6 +373,23 @@ export function FileDiffPanel({
 
         <CommentBadge threads={threads} hideDone={hideDone} />
 
+        {markdown === null ? null : (
+          <button
+            type="button"
+            aria-pressed={preview}
+            onClick={() => {
+              setPreview(!preview)
+              if (!open) show(true)
+            }}
+            className={cn(
+              'shrink-0 rounded-sm px-1.5',
+              preview ? 'text-ink bg-accent' : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            Preview
+          </button>
+        )}
+
         <Counts added={diff.added} removed={diff.removed} />
 
         {onViewedChange === undefined ? null : (
@@ -385,22 +450,26 @@ export function FileDiffPanel({
                 hideDone={hideDone}
                 iterationContext={iterationContext}
               />
-              <DiffView
-                rows={rows}
-                layout={layout}
-                label={blobs.path}
-                before={before}
-                after={after}
-                find={find}
-                onExpand={onExpand}
-                onCompose={onCompose}
-                onCopyLink={onCopyLink}
-                adoLineUrl={adoLineUrl}
-                threadActions={threadActions}
-                iterationContext={iterationContext}
-                jumped={jumped}
-                arrival={arrival}
-              />
+              {preview && markdown !== null ? (
+                <MarkdownPreview before={markdown.before} after={markdown.after} layout={layout} />
+              ) : (
+                <DiffView
+                  rows={rows}
+                  layout={layout}
+                  label={blobs.path}
+                  before={before}
+                  after={after}
+                  find={find}
+                  onExpand={onExpand}
+                  onCompose={onCompose}
+                  onCopyLink={onCopyLink}
+                  adoLineUrl={adoLineUrl}
+                  threadActions={threadActions}
+                  iterationContext={iterationContext}
+                  jumped={jumped}
+                  arrival={arrival}
+                />
+              )}
               {noNewline === null ? null : (
                 // The marker is part of the file's text, not chrome around it, so
                 // it sits on the same sunken sheet the gutters use with no rule
