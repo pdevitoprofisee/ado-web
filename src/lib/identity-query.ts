@@ -43,10 +43,46 @@ export const MENTION_SUGGESTIONS = 8
 export function directoryOptions() {
   return queryOptions({
     queryKey: ['identity-directory'],
-    queryFn: () => directoryQuery(),
+    queryFn: async () => {
+      const directory = await directoryQuery()
+      if (directory.error === null) saveDirectory(directory)
+
+      return directory
+    },
     staleTime: DIRECTORY_STALE_MS,
     gcTime: Infinity,
+    // The fetch takes seconds, so a reload starts from the last good copy and
+    // refetches behind it once that copy is older than the staleTime.
+    initialData: () => savedDirectory()?.directory,
+    initialDataUpdatedAt: () => savedDirectory()?.savedAt,
   })
+}
+
+const STORAGE_KEY = 'identity-directory'
+
+interface SavedDirectory {
+  readonly savedAt: number
+  readonly directory: DirectoryResult
+}
+
+// `localStorage` throws in a hardened profile and is absent during prerender.
+function savedDirectory(): SavedDirectory | undefined {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+
+    return raw === null ? undefined : (JSON.parse(raw) as SavedDirectory)
+  } catch {
+    return undefined
+  }
+}
+
+function saveDirectory(directory: DirectoryResult): void {
+  try {
+    const saved: SavedDirectory = { savedAt: Date.now(), directory }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(saved))
+  } catch {
+    // A session that cannot persist still gets the in-memory cache.
+  }
 }
 
 export function useDirectory() {
