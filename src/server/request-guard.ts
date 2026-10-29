@@ -24,8 +24,12 @@ import { LAUNCH_TOKEN_HEADER, LAUNCH_TOKEN_PATH } from '../lib/launch-token'
  * every rebinding case is decided by the hostname — while pinning it would
  * break `pnpm build`, whose prerender step drives the app through a Vite
  * preview server on `localhost:<random port>`.
+ *
+ * `adoweb.localhost` is the bookmarkable name for the installed build. It is
+ * safe for the same reason `localhost` is: browsers resolve `*.localhost` to
+ * loopback themselves and never ask DNS, so a rebinding page cannot claim it.
  */
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]'])
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', 'adoweb.localhost'])
 
 /**
  * Forwarded headers are refused outright rather than parsed. A loopback-bound

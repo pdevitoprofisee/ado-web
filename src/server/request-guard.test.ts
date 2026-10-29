@@ -112,10 +112,15 @@ describe('Host validation', () => {
   it('accepts every loopback spelling, on any port', async () => {
     // localhost:<random port> is what the prerenderer sends: `pnpm build`
     // drives the app through a Vite preview server on port 0.
-    for (const host of ['127.0.0.1:7331', 'localhost:52341', 'LocalHost', '[::1]:7331']) {
+    for (const host of ['127.0.0.1:7331', 'localhost:52341', 'LocalHost', '[::1]:7331', 'adoweb.localhost:7330']) {
       const request = new Request(`${ORIGIN}/`, { headers: { host, 'sec-fetch-site': 'same-origin' } })
       expect(await runChain(request, { pathname: '/', handlerType: 'router' }), host).toBe(PASSED)
     }
+  })
+
+  it('accepts only the one named localhost, not every subdomain', async () => {
+    const request = new Request(`${ORIGIN}/`, { headers: { host: 'other.localhost:7330', 'sec-fetch-site': 'same-origin' } })
+    expect((await runChain(request, { pathname: '/', handlerType: 'router' }) as Response).status).toBe(403)
   })
 })
 

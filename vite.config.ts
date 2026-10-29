@@ -27,7 +27,8 @@ const config = defineConfig({
   // native addon cannot be bundled at all, so leave the import standing and let
   // Node resolve it at runtime — safe here precisely because the server half
   // never ships anywhere: `.output/` runs from this checkout, next to the
-  // node_modules that holds the binary.
+  // node_modules that holds the binary. scripts/deploy-local.ps1 copies the
+  // package into the local install for the same reason.
   //
   // Three settings because three separate passes reach for it: `optimizeDeps`
   // is the dev prebundler, `resolve.external` is dev SSR resolution, and

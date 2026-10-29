@@ -10,6 +10,8 @@
     "generate-routes": "tsr generate",
     "build": "vite build",
     "start": "node scripts/start.mjs",
+    "deploy:local": "pwsh -NoProfile -File scripts/deploy-local.ps1",
+    "uninstall:local": "pwsh -NoProfile -File scripts/uninstall-local.ps1",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
