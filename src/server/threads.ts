@@ -121,6 +121,17 @@ interface AdoIdentity {
   readonly imageUrl?: string
 }
 
+/**
+ * An identity as `_apis/identities` returns it at `api-version=7.1`. Unlike a
+ * comment's `author`, it has no `displayName`: the name is `providerDisplayName`,
+ * or `customDisplayName` when the person set one.
+ */
+interface AdoLookedUpIdentity {
+  readonly id?: string
+  readonly providerDisplayName?: string
+  readonly customDisplayName?: string
+}
+
 /** `{"$type": "System.String", "$value": "…"}` on every property of every thread. */
 interface AdoPropertyValue {
   readonly $type?: string
@@ -558,7 +569,7 @@ async function mentionNames(
 
   try {
     const pages = await client.fanOut(chunks, (chunk) =>
-      client.get<{ value?: readonly AdoIdentity[] }>(
+      client.get<{ value?: readonly AdoLookedUpIdentity[] }>(
         '_apis/identities',
         { identityIds: chunk.join(',') },
         'vssps',
@@ -568,8 +579,9 @@ async function mentionNames(
     for (const page of pages) {
       for (const identity of page.value ?? []) {
         const id = identity.id
-        if (typeof id !== 'string' || identity.displayName === undefined) continue
-        known.set(id.toLowerCase(), identity.displayName)
+        const name = identity.customDisplayName || identity.providerDisplayName
+        if (typeof id !== 'string' || name === undefined) continue
+        known.set(id.toLowerCase(), name)
       }
     }
     // Asked and not answered — a mention of an identity this org no longer

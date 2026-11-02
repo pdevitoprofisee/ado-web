@@ -486,7 +486,7 @@ describe('mentions', () => {
     fakeClient({
       '/threads': { value: [tagging()] },
       '/statuses': { value: [sonarStatus()] },
-      '/identities': { value: [{ id: TAGGED.toUpperCase(), displayName: 'Patrick Mize' }] },
+      '/identities': { value: [{ id: TAGGED.toUpperCase(), providerDisplayName: 'Patrick Mize' }] },
       ...over,
     })
 
@@ -509,6 +509,16 @@ describe('mentions', () => {
     // The body is left as ADO stored it. The edit composer opens on `content`, so
     // rewriting the name in would post a comment that had lost its tag.
     expect(list.threads[0]?.comments[0]?.content).toBe(`cc @<${TAGGED.toUpperCase()}>`)
+  })
+
+  it('prefers the name the person chose over the one their directory gave', async () => {
+    const { client } = tagged({
+      '/identities': {
+        value: [{ id: TAGGED, providerDisplayName: 'Patrick Mize', customDisplayName: 'Pat Mize' }],
+      },
+    })
+
+    expect(mentionsOf(await loadThreads(client, REF))).toEqual({ [TAGGED]: 'Pat Mize' })
   })
 
   it('asks nothing when nobody is tagged, which is nearly every conversation', async () => {
