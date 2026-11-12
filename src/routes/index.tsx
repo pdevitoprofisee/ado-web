@@ -14,6 +14,7 @@ import { inReadingOrder, useGroupByRepository } from '@/lib/pr-grouping'
 import { SEARCHES, filterPullRequests } from '@/lib/pr-search'
 import { useRequeueRow } from '@/lib/requeue'
 import { useRoomyRows } from '@/lib/row-density'
+import { useHideDrafts } from '@/lib/draft-visibility'
 import { toggleTheme, useTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import { MergeDialog } from '@/components/merge-dialog'
@@ -114,6 +115,8 @@ function InboxControls({
   onGrouped,
   roomy,
   onRoomy,
+  hideDrafts,
+  onHideDrafts,
   listId,
 }: {
   query: string
@@ -122,6 +125,8 @@ function InboxControls({
   onGrouped: (next: boolean) => void
   roomy: boolean
   onRoomy: (next: boolean) => void
+  hideDrafts: boolean
+  onHideDrafts: (next: boolean) => void
   /** What the box controls, for anyone who cannot see the sections move. */
   listId: string
 }) {
@@ -173,8 +178,15 @@ function InboxControls({
           looking at.
 
           Grouping keeps the right-hand end it has always had, and the newer
-          toggle takes the space that opened up to its left. */}
-      <ToggleButton isSelected={roomy} onChange={onRoomy} className={cn(TOGGLE, 'ml-auto')}>
+          toggles take the space that opened up to its left. */}
+      <ToggleButton
+        isSelected={hideDrafts}
+        onChange={onHideDrafts}
+        className={cn(TOGGLE, 'ml-auto')}
+      >
+        Hide drafts
+      </ToggleButton>
+      <ToggleButton isSelected={roomy} onChange={onRoomy} className={TOGGLE}>
         Two-line rows
       </ToggleButton>
       <ToggleButton isSelected={grouped} onChange={onGrouped} className={TOGGLE}>
@@ -214,16 +226,29 @@ function Home() {
   const [search, setSearch] = useState('')
   const [grouped, setGrouped] = useGroupByRepository()
   const [roomy, setRoomy] = useRoomyRows()
+  const [hideDrafts, setHideDrafts] = useHideDrafts()
   const searched = useId()
 
-  // What each section actually draws. The unfiltered arrays stay reachable as
-  // `inbox.mine` / `inbox.assignedToMe`, and the headings below use them to say
+  // Drafts leave before search and hydration, so a hidden draft costs no
+  // hydration calls and does not count in the "3 of 9" totals.
+  const shown = useMemo(() => {
+    const keep = (rows: readonly PullRequestRow[]) =>
+      hideDrafts ? rows.filter((row) => !row.isDraft) : rows
+    const mine = keep(inbox?.mine ?? [])
+    const assignedToMe = keep(inbox?.assignedToMe ?? [])
+    const all = (inbox?.mine.length ?? 0) + (inbox?.assignedToMe.length ?? 0)
+
+    return { mine, assignedToMe, drafts: all - mine.length - assignedToMe.length }
+  }, [inbox, hideDrafts])
+
+  // What each section actually draws. The unsearched arrays stay reachable as
+  // `shown.mine` / `shown.assignedToMe`, and the headings below use them to say
   // "3 of 9" — a section that silently shrinks under a search reads as pull
   // requests having gone away.
-  const mine = useMemo(() => filterPullRequests(inbox?.mine ?? [], search), [inbox, search])
+  const mine = useMemo(() => filterPullRequests(shown.mine, search), [shown, search])
   const assigned = useMemo(
-    () => filterPullRequests(inbox?.assignedToMe ?? [], search),
-    [inbox, search],
+    () => filterPullRequests(shown.assignedToMe, search),
+    [shown, search],
   )
 
   // Both sections as one list, in the order they are read — "Mine" first,
@@ -237,7 +262,7 @@ function Home() {
   )
   const selectedId = useInboxSelection(selectable)
 
-  // Hydration gets the *unfiltered* rows, and that difference is the point.
+  // Hydration gets the *unsearched* rows, and that difference is the point.
   // `useHydration` keys on the content of what it is handed, so filtering here
   // would make every keystroke a new set of targets and a fresh round trip — and
   // it would leave a row you just revealed by clearing the box wearing no
@@ -252,10 +277,7 @@ function Home() {
   // reason the notification panel below does: the inbox is the only clock in the
   // app, and badges that only ever redraw on a push are badges that go stale
   // quietly.
-  const rows = useMemo(
-    () => [...(inbox?.mine ?? []), ...(inbox?.assignedToMe ?? [])],
-    [inbox],
-  )
+  const rows = useMemo(() => [...shown.mine, ...shown.assignedToMe], [shown])
   const { hydrationOf, registerList, refresh } = useHydration(rows, generation, query.dataUpdatedAt)
   // The inbox's two writes, wired here rather than inside the list because
   // `refresh` is what each one owes the row afterwards — the buttons are in
@@ -422,6 +444,8 @@ function Home() {
             onGrouped={setGrouped}
             roomy={roomy}
             onRoomy={setRoomy}
+            hideDrafts={hideDrafts}
+            onHideDrafts={setHideDrafts}
             listId={searched}
           />
 
@@ -436,13 +460,15 @@ function Home() {
             <PullRequestSection
               title="Mine"
               rows={mine}
-              total={inbox.mine.length}
+              total={shown.mine.length}
               grouped={grouped}
               mine
               roomy={roomy}
               empty={
-                inbox.mine.length === 0
-                  ? 'You have no open pull requests.'
+                shown.mine.length === 0
+                  ? inbox.mine.length === 0
+                    ? 'You have no open pull requests.'
+                    : 'You have only drafts, and they are hidden.'
                   : noMatch('pull request of yours')
               }
               hydration={hydrationOf}
@@ -455,12 +481,14 @@ function Home() {
             <PullRequestSection
               title="Assigned to me"
               rows={assigned}
-              total={inbox.assignedToMe.length}
+              total={shown.assignedToMe.length}
               grouped={grouped}
               roomy={roomy}
               empty={
-                inbox.assignedToMe.length === 0
-                  ? 'Nothing waiting on you.'
+                shown.assignedToMe.length === 0
+                  ? inbox.assignedToMe.length === 0
+                    ? 'Nothing waiting on you.'
+                    : 'Only drafts are waiting on you, and they are hidden.'
                   : noMatch('pull request waiting on you')
               }
               hydration={hydrationOf}
@@ -504,6 +532,7 @@ function Home() {
                 : 'no teams'}{' '}
               · {inbox.scanned} active PRs scanned
               {inbox.hidden > 0 ? ` · ${inbox.hidden} hidden as over 3 years old` : ''}
+              {shown.drafts > 0 ? ` · ${shown.drafts} drafts hidden` : ''}
             </span>
             {/* The budget, in the only unit that is actually observable. ADO
                 sends no `X-RateLimit-Remaining` on any endpoint we call, so a
