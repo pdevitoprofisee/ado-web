@@ -63,11 +63,16 @@ $node = (Get-Command node).Source
 $action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\conhost.exe" `
   -Argument "--headless `"$node`" `"$launcher`"" -WorkingDirectory $root
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+# RestartCount covers only a failed launch, not node exiting later, for example
+# when Windows resets the session. This trigger starts the app again within 5
+# minutes. While the app runs, the default IgnoreNew makes the trigger do nothing.
+$watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+  -RepetitionInterval (New-TimeSpan -Minutes 5)
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
   -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
   -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger, $watchdog `
   -Principal $principal -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
 
