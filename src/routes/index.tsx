@@ -178,14 +178,20 @@ function InboxControls({
           looking at.
 
           Grouping keeps the right-hand end it has always had, and the newer
-          toggles take the space that opened up to its left. */}
-      <ToggleButton
-        isSelected={hideDrafts}
-        onChange={onHideDrafts}
-        className={cn(TOGGLE, 'ml-auto')}
+          toggles take the space that opened up to its left.
+
+          The drafts control is the exception: its label names the next action,
+          so it is a plain button. `aria-pressed` on a label that flips would
+          read as "Show drafts, pressed". It stays filled while drafts are
+          hidden, so the filter is still visible at a glance. */}
+      <Button
+        variant={hideDrafts ? 'default' : 'outline'}
+        size="sm"
+        onPress={() => onHideDrafts(!hideDrafts)}
+        className="ml-auto"
       >
-        Hide drafts
-      </ToggleButton>
+        {hideDrafts ? 'Show drafts' : 'Hide drafts'}
+      </Button>
       <ToggleButton isSelected={roomy} onChange={onRoomy} className={TOGGLE}>
         Two-line rows
       </ToggleButton>
