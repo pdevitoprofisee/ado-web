@@ -5,6 +5,7 @@ import {
 } from '@tanstack/react-start'
 
 import { LAUNCH_TOKEN_HEADER, LAUNCH_TOKEN_PATH, launchToken } from './lib/launch-token'
+import { withContentSecurityPolicy } from './server/content-security'
 import { guardRequest } from './server/request-guard'
 
 // Every request into this process runs this chain before any handler does.
@@ -28,6 +29,13 @@ const localhostGuard = createMiddleware({ type: 'request' }).server(
   (ctx) => guardRequest(ctx) ?? ctx.next(),
 )
 
+const documentPolicy = createMiddleware({ type: 'request' }).server(async ({ next, handlerType }) => {
+  const result = await next()
+  if (handlerType !== 'router') return result
+
+  return { ...result, response: await withContentSecurityPolicy(result.response) }
+})
+
 /**
  * Client half of the token: runs on every server-function call, which is what
  * puts the header on the wire without touching a single call site.
@@ -37,6 +45,6 @@ const sendLaunchToken = createMiddleware({ type: 'function' }).client(
 )
 
 export const startInstance = createStart(() => ({
-  requestMiddleware: [originGuard, localhostGuard],
+  requestMiddleware: [originGuard, localhostGuard, documentPolicy],
   functionMiddleware: [sendLaunchToken],
 }))

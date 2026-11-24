@@ -33,11 +33,14 @@ async function runChain(
   const next = async (): Promise<unknown> => {
     index++
     const middleware = chain[index]
-    if (!middleware) return PASSED
+    if (!middleware) return { request, pathname, context: {}, response: new Response(PASSED.description) }
     return middleware.options.server({ request, pathname, handlerType, context: {}, next })
   }
 
-  return (await next()) as Response | typeof PASSED
+  const outcome = (await next()) as Response | { response: Response }
+  if (outcome instanceof Response) return outcome
+
+  return (await outcome.response.text()) === PASSED.description ? PASSED : outcome.response
 }
 
 /** A well-formed same-origin browser call, which every negative case below mutates one field of. */
