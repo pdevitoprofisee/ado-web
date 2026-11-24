@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { execFileSync } from 'node:child_process'
+
 import { Entry } from '@napi-rs/keyring'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
@@ -16,6 +18,10 @@ import {
 // `ADO_WEB_KEYRING_SERVICE` keeps the test's entries away from the running
 // app's, and the pid keeps two concurrent runs away from each other.
 const SERVICE = `ado-web-test-${process.pid}`
+
+// A Windows write starts PowerShell, which takes about a second alone and much
+// longer while the full suite loads the machine.
+vi.setConfig({ testTimeout: 30_000 })
 
 beforeAll(() => {
   process.env.ADO_WEB_KEYRING_SERVICE = SERVICE
@@ -39,15 +45,15 @@ describe('reading nothing', () => {
 })
 
 describe('round trip', () => {
-  it('stores and returns the ADO org and PAT', () => {
-    writeAdoCredential({ org: 'Contoso', pat: PAT })
+  it('stores and returns the ADO org and PAT', async () => {
+    await writeAdoCredential({ org: 'Contoso', pat: PAT })
 
     expect(readAdoCredential()).toEqual({ org: 'Contoso', pat: PAT })
   })
 
   it('survives a fresh module instance — the credential is in the OS, not in memory', async () => {
-    writeAdoCredential({ org: 'Contoso', pat: PAT })
-    writeSonarCredential({ token: 'squ_abc' })
+    await writeAdoCredential({ org: 'Contoso', pat: PAT })
+    await writeSonarCredential({ token: 'squ_abc' })
 
     // The closest thing a test has to "restart the app": drop every module
     // instance and read it back through a newly evaluated one.
@@ -58,8 +64,8 @@ describe('round trip', () => {
     expect(fresh.readSonarCredential()).toEqual({ token: 'squ_abc' })
   })
 
-  it('keeps the two services independent', () => {
-    writeAdoCredential({ org: 'Contoso', pat: PAT })
+  it('keeps the two services independent', async () => {
+    await writeAdoCredential({ org: 'Contoso', pat: PAT })
 
     expect(readSonarCredential()).toBeNull()
   })
@@ -94,8 +100,8 @@ describe('an entry that is present but unusable reads as not configured', () => 
 })
 
 describe('forgetting', () => {
-  it('removes the credential', () => {
-    writeAdoCredential({ org: 'Contoso', pat: PAT })
+  it('removes the credential', async () => {
+    await writeAdoCredential({ org: 'Contoso', pat: PAT })
 
     expect(forgetCredential('azure-devops')).toBe(true)
     expect(readAdoCredential()).toBeNull()
@@ -103,5 +109,17 @@ describe('forgetting', () => {
 
   it('is idempotent — false means there was nothing there, not that it failed', () => {
     expect(forgetCredential('azure-devops')).toBe(false)
+  })
+})
+
+describe.runIf(process.platform === 'win32')('on Windows', () => {
+  it('replaces a keyring entry with one that does not roam to other machines', async () => {
+    new Entry(SERVICE, 'azure-devops').setPassword(JSON.stringify({ org: 'Old', pat: 'o'.repeat(52) }))
+
+    await writeAdoCredential({ org: 'Contoso', pat: PAT })
+
+    expect(readAdoCredential()).toEqual({ org: 'Contoso', pat: PAT })
+    const listing = execFileSync('cmdkey', [`/list:azure-devops.${SERVICE}`], { encoding: 'utf8' })
+    expect(listing).toContain('Local machine persistence')
   })
 })

@@ -1,5 +1,7 @@
 import { Entry } from '@napi-rs/keyring'
 
+import { writeLocalMachineCredential } from './windows-credential'
+
 // Server-only, and more strictly so than the rest of src/server: this is the
 // one module in the app that can read a token back out of the OS. Importing it
 // from a component would break the browser bundle long before it leaked
@@ -8,7 +10,7 @@ import { Entry } from '@napi-rs/keyring'
 //
 // `@napi-rs/keyring`, never `keytar` (map: security constraints). On Windows
 // this is the Credential Manager; the entries appear under the target name
-// `<service>/<kind>`.
+// `<kind>.<service>`.
 
 /**
  * Overridable so a test can exercise the *real* credential store without
@@ -44,6 +46,24 @@ export interface SonarCredential {
  */
 function entryFor(kind: CredentialKind): Entry {
   return new Entry(service(), kind)
+}
+
+/**
+ * The keyring's own default target, repeated because Windows writes bypass the
+ * keyring and must land on the entry it reads. `Entry.withTarget` would make
+ * this explicit, but constructing one overwrites the stored credential with an
+ * empty one (measured on @napi-rs/keyring 1.3.0).
+ */
+function targetFor(kind: CredentialKind): string {
+  return `${kind}.${service()}`
+}
+
+function writeRecord(kind: CredentialKind, record: object): Promise<void> {
+  const secret = JSON.stringify(record)
+  if (process.platform === 'win32') return writeLocalMachineCredential(targetFor(kind), kind, secret)
+
+  entryFor(kind).setPassword(secret)
+  return Promise.resolve()
 }
 
 function readRecord(kind: CredentialKind): Record<string, unknown> | null {
@@ -88,12 +108,12 @@ export function readSonarCredential(): SonarCredential | null {
   return { token: record.token }
 }
 
-export function writeAdoCredential(credential: AdoCredential): void {
-  entryFor('azure-devops').setPassword(JSON.stringify(credential))
+export function writeAdoCredential(credential: AdoCredential): Promise<void> {
+  return writeRecord('azure-devops', credential)
 }
 
-export function writeSonarCredential(credential: SonarCredential): void {
-  entryFor('sonarcloud').setPassword(JSON.stringify(credential))
+export function writeSonarCredential(credential: SonarCredential): Promise<void> {
+  return writeRecord('sonarcloud', credential)
 }
 
 /** Idempotent: `false` means there was nothing to delete, not that it failed. */

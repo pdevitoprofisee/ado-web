@@ -64,7 +64,7 @@ export const saveAdoCredential = createServerFn({ method: 'POST' })
     // Test *before* accepting, so a credential that has never worked cannot
     // displace one that does — retyping a PAT with a typo should leave the
     // app exactly as authenticated as it was.
-    if (result.ok) writeAdoCredential(data)
+    if (result.ok) await writeAdoCredential(data)
 
     return result
   })
@@ -77,7 +77,7 @@ export const saveSonarCredential = createServerFn({ method: 'POST' })
   })
   .handler(async ({ data }): Promise<ConnectionResult> => {
     const result = await testSonarConnection(data)
-    if (result.ok) writeSonarCredential(data)
+    if (result.ok) await writeSonarCredential(data)
 
     return result
   })
