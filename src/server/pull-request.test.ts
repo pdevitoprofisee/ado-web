@@ -49,6 +49,7 @@ const EVALUATIONS_ID = [
 
 const PR = `${PROJECT}/_apis/git/repositories/${REPOSITORY}/pullRequests/24698`
 const EVALUATIONS = `${PROJECT}/_apis/policy/evaluations`
+const ACTIVE = `${PROJECT}/_apis/git/repositories/${REPOSITORY}/pullrequests`
 
 interface Call {
   readonly path: string
@@ -143,6 +144,8 @@ const REPLIES: Record<string, Reply> = {
   '/iterations': { value: [{ id: 1 }, { id: 2 }] },
   '/changes': { nextTop: 1, nextSkip: 5, changeEntries: [change('/src/log.ts', 'edit')] },
   '/conflicts': { count: 0, value: [] },
+  '/pullrequests': { value: [] },
+  '_apis/git/repositories': { value: [{ id: REPOSITORY, defaultBranch: 'refs/heads/main' }] },
 }
 
 function load(over: Record<string, Reply> = {}) {
@@ -152,13 +155,13 @@ function load(over: Record<string, Reply> = {}) {
 }
 
 describe('the call budget', () => {
-  it('meets the whole page in five calls once it knows who is looking', async () => {
+  it('meets the whole page in six calls once it knows who is looking', async () => {
     const { client, calls } = fakeClient(REPLIES)
 
-    // Six on the first PR opened per credential and five on every one after:
-    // an account's own id cannot change under the memo, so it is asked once.
+    // Eight on the first PR opened per credential and six on every one after:
+    // the viewer and the default branches are memoised.
     await loadPullRequest(client, REF)
-    expect(calls).toHaveLength(6)
+    expect(calls).toHaveLength(8)
     expect(calls.some((call) => call.path.endsWith('_apis/connectionData'))).toBe(true)
 
     calls.length = 0
@@ -169,6 +172,7 @@ describe('the call budget', () => {
       EVALUATIONS,
       `${PR}/commits`,
       `${PR}/iterations`,
+      ACTIVE,
       `${PR}/iterations/2/changes`,
     ])
   })
@@ -1436,6 +1440,7 @@ describe('degrading one section', () => {
       commits: 'Azure DevOps answered 503.',
       files: 'Azure DevOps answered 503.',
       conflicts: null,
+      stack: null,
     })
     expect(pr.policies).toEqual([])
     expect(pr.files).toEqual({ files: [], iterationId: null, iterations: [], truncated: false })
@@ -1462,6 +1467,73 @@ describe('degrading one section', () => {
 
     expect((await loadPullRequest(client, REF)).viewerId).toBeNull()
     expect((await loadPullRequest(client, REF)).viewerId).toBe(ME)
+  })
+
+  it('keeps the page when the stack cannot be read', async () => {
+    const pr = await load({ '/pullrequests': new Error('Azure DevOps answered 500.') }).loading
+
+    expect(pr.title).toBe('Add structured logging to the utilities host')
+    expect(pr.stack).toBeNull()
+    expect(pr.errors.stack).toBe('Azure DevOps answered 500.')
+  })
+})
+
+describe('the stack', () => {
+  const listed = (id: number, source: string, target: string) => ({
+    pullRequestId: id,
+    title: `PR ${id}`,
+    sourceRefName: `refs/heads/${source}`,
+    targetRefName: `refs/heads/${target}`,
+    creationDate: '2026-07-01T00:00:00Z',
+    repository: { id: REPOSITORY.toUpperCase() },
+  })
+
+  it('places the pull request between its parent and its child, from the repository list', async () => {
+    const { calls, loading } = load({
+      '/pullRequests/24698': detail({ targetRefName: 'refs/heads/feature/base' }),
+      '/pullrequests': (params) =>
+        params.$skip === 0
+          ? {
+              value: [
+                listed(24000, 'feature/base', 'main'),
+                listed(25000, 'feature/next', 'feature/logging'),
+                listed(26000, 'other', 'main'),
+              ],
+            }
+          : { value: [] },
+    })
+    const pr = await loading
+
+    expect(pr.stack).toMatchObject({
+      trunk: 'main',
+      position: 2,
+      parent: { id: 24000, title: 'PR 24000' },
+    })
+    expect(pr.stack?.members.map((member) => member.id)).toEqual([25000, 24698, 24000])
+    expect(pr.errors.stack).toBeNull()
+    expect(calls.find((call) => call.path === ACTIVE)?.params['searchCriteria.status']).toBe(
+      'active',
+    )
+  })
+
+  it('is null for a closed pull request, even when an active one targets its branch', async () => {
+    const pr = await load({
+      '/pullRequests/24698': detail({ status: 'completed' }),
+      '/pullrequests': (params) =>
+        params.$skip === 0
+          ? { value: [listed(25000, 'feature/next', 'feature/logging')] }
+          : { value: [] },
+    }).loading
+
+    expect(pr.stack).toBeNull()
+  })
+
+  it('is null for a pull request nothing stacks on', async () => {
+    const pr = await load({
+      '/pullrequests': { value: [listed(26000, 'other', 'main')] },
+    }).loading
+
+    expect(pr.stack).toBeNull()
   })
 })
 

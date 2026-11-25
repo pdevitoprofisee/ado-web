@@ -202,7 +202,7 @@ function PullRequestPage() {
       ) : null}
 
       {/* The same budget line the inbox carries, for the same reason: this page
-          is five calls where the inbox is two, and it polls. `.annotation`
+          is seven calls where the inbox is two, and it polls. `.annotation`
           because that is what the line is — a note in the margin about the page
           rather than part of it, and mono keeps the count from reflowing the
           words after it as it climbs. */}

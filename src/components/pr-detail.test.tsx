@@ -301,6 +301,7 @@ const detail = (over: Partial<PullRequestDetail> = {}): PullRequestDetail => ({
   status: 'active',
   sourceBranch: 'refs/heads/feature/logging-sink',
   targetBranch: 'refs/heads/main',
+  stack: null,
   merge: { status: 'succeeded', conflicted: false, conflicts: [] },
   lastMergeSourceCommit: SOURCE_TIP,
   reviewers: [],
@@ -314,7 +315,7 @@ const detail = (over: Partial<PullRequestDetail> = {}): PullRequestDetail => ({
   // `null` is the shape of "nobody has hydrated this pull request", which is the
   // state most of these tests are in and the one that must draw nothing.
   approvalReset: null,
-  errors: { policies: null, commits: null, files: null, conflicts: null },
+  errors: { policies: null, commits: null, files: null, conflicts: null, stack: null },
   ...over,
 })
 
@@ -690,6 +691,7 @@ describe('PullRequestDetailView merge state', () => {
             commits: null,
             files: null,
             conflicts: 'Azure DevOps answered 500.',
+            stack: null,
           },
         })}
       />,

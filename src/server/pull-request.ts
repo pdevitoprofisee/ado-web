@@ -1,7 +1,10 @@
-import { resolveIdentity } from './inbox'
+import { defaultBranchesOf, listActivePullRequests, resolveIdentity, stackNodes } from './inbox'
 import { clearedBySquash, waitsOnPeople } from './policy-kind'
+import { buildStacks } from '@/lib/stack'
 
 import type { AdoClient } from './ado-client'
+import type { AdoPullRequest } from './inbox'
+import type { PullRequestStack } from '@/lib/stack'
 
 // Server-only. One pull request, assembled into the shape the detail page reads.
 //
@@ -322,6 +325,7 @@ export interface SectionErrors {
   readonly files: string | null
   /** The conflicting *paths*. Whether the PR conflicts at all is not in here. */
   readonly conflicts: string | null
+  readonly stack: string | null
 }
 
 export interface PullRequestDetail {
@@ -336,6 +340,8 @@ export interface PullRequestDetail {
   readonly status: string
   readonly sourceBranch: string
   readonly targetBranch: string
+  /** `null` when the pull request is not stacked, or the stack could not be read. */
+  readonly stack: PullRequestStack | null
   readonly merge: MergeState
   /**
    * The source branch's tip commit as ADO last saw it, or `null` if ADO did not
@@ -745,6 +751,7 @@ const NO_POLICIES: readonly Policy[] = []
 const NO_COMMITS: readonly Commit[] = []
 const NO_CONFLICTS: readonly Conflict[] = []
 const NO_FILES: FileList = { files: [], iterationId: null, iterations: [], truncated: false }
+const NO_PULL_REQUESTS: readonly AdoPullRequest[] = []
 
 /** Where every call about one pull request hangs off. Shared, hence a name. */
 export const prBase = (ref: PullRequestRef): string =>
@@ -773,10 +780,10 @@ async function fanOutTuple<T extends readonly unknown[]>(
 /**
  * The viewer's id, remembered for the life of the client.
  *
- * The page's five calls are already spoken for and this would be a sixth. The
+ * The page's seven calls are already spoken for and this would be an eighth. The
  * inbox memoises the same answer behind a TTL because *team membership* can
  * change under it; an account's own id cannot, so there is nothing here for a
- * TTL to protect against and the second PR you open costs five again. Keyed on
+ * TTL to protect against and the second PR you open does not ask again. Keyed on
  * the client, so a re-entered PAT or a switched org gets a new one (`ado.ts`).
  */
 const viewers = new WeakMap<AdoClient, Promise<string>>()
@@ -1366,7 +1373,7 @@ async function loadFiles(client: AdoClient, ref: PullRequestRef, base: string): 
 /**
  * The conflicting paths, asked for only when the PR says it has some. On a
  * clean PR this endpoint answers 200 with `count: 0`, so the guard is not about
- * avoiding an error — it is about keeping the common page at five calls.
+ * avoiding an error — it is about keeping the common page at seven calls.
  */
 async function loadConflicts(client: AdoClient, base: string): Promise<readonly Conflict[]> {
   const result = await client.get<{ value?: readonly AdoConflict[] }>(`${base}/conflicts`)
@@ -1383,12 +1390,15 @@ async function loadConflicts(client: AdoClient, base: string): Promise<readonly 
 }
 
 /**
- * Five calls: the PR, its policy evaluations, its commits, its iterations and
- * the changes on the latest of them. Four of those are independent and go out
- * together; the changes wait only because they need an iteration id.
+ * Seven calls: the PR, its policy evaluations, its commits, its iterations, the
+ * changes on the latest of them, and two for the repository's active PRs (a page
+ * and the empty one that ends it). All but the changes go out together; the
+ * changes wait only because they need an iteration id.
  *
- * A conflicted PR is a sixth, and it cannot be anything else: which endpoint to
- * call is the answer the first call gives you.
+ * Two memoised calls come on top: the viewer once per credential, and the
+ * default branches at most once in 30 minutes. A conflicted PR costs one more,
+ * and it cannot be anything else: which endpoint to call is the answer the first
+ * call gives you.
  */
 export async function loadPullRequest(
   client: AdoClient,
@@ -1396,17 +1406,38 @@ export async function loadPullRequest(
 ): Promise<PullRequestDetail> {
   const base = prBase(ref)
 
-  const [pr, viewerId, policies, commits, files] = await fanOutTuple(client, [
+  const [pr, viewerId, policies, commits, files, active, defaults] = await fanOutTuple(client, [
     () => client.get<AdoDetail>(base),
     () => resolveViewer(client),
     () => section(() => loadPolicies(client, ref), NO_POLICIES),
     () => section(() => loadCommits(client, ref, base), NO_COMMITS),
     () => section(() => loadFiles(client, ref, base), NO_FILES),
+    () =>
+      section(
+        () =>
+          listActivePullRequests(
+            client,
+            `${ref.projectId}/_apis/git/repositories/${ref.repositoryId}/pullrequests`,
+          ),
+        NO_PULL_REQUESTS,
+      ),
+    () => defaultBranchesOf(client, false),
   ])
 
   if (typeof pr.pullRequestId !== 'number') {
     throw new Error(`Azure DevOps answered without a pull request for !${ref.id}.`)
   }
+
+  // The detail payload has no repository id, and every entry here is in this
+  // repository anyway.
+  const inRepository = (entry: AdoPullRequest): AdoPullRequest => ({
+    ...entry,
+    repository: { ...entry.repository, id: ref.repositoryId },
+  })
+  // The list holds only active PRs, so a closed one must not join it.
+  const nodes = pr.status === 'active' ? [...active.data, pr] : active.data
+  const stack =
+    buildStacks(stackNodes(nodes.map(inRepository)), defaults).get(pr.pullRequestId) ?? null
 
   const conflicted = pr.mergeStatus === 'conflicts'
   const conflicts = conflicted
@@ -1425,6 +1456,7 @@ export async function loadPullRequest(
     status: pr.status ?? 'active',
     sourceBranch: branch(pr.sourceRefName),
     targetBranch: branch(pr.targetRefName),
+    stack,
     merge: {
       // Empty rather than a stand-in: `notSet` is a documented value that never
       // once occurred live, and inventing it here would be reporting an ADO
@@ -1460,6 +1492,7 @@ export async function loadPullRequest(
       commits: commits.error,
       files: files.error,
       conflicts: conflicts.error,
+      stack: active.error,
     },
   }
 }

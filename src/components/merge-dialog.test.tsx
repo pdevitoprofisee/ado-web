@@ -67,6 +67,7 @@ const detail = (over: Partial<PullRequestDetail> = {}): PullRequestDetail => ({
   status: 'active',
   sourceBranch: 'refs/heads/feature/no-auditing',
   targetBranch: 'refs/heads/main',
+  stack: null,
   merge: { status: 'succeeded', conflicted: false, conflicts: [] },
   lastMergeSourceCommit: SOURCE_TIP,
   reviewers: [],
@@ -78,7 +79,7 @@ const detail = (over: Partial<PullRequestDetail> = {}): PullRequestDetail => ({
   url: 'https://dev.azure.com/Profisee/SaaS/_git/PC.IAC.Modules/pullrequest/3302',
   viewerId: 'me',
   approvalReset: null,
-  errors: { policies: null, commits: null, files: null, conflicts: null },
+  errors: { policies: null, commits: null, files: null, conflicts: null, stack: null },
   ...over,
 })
 
