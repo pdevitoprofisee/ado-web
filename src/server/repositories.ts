@@ -30,6 +30,7 @@ import type { RepositoryRow } from '../lib/repositories-contract'
 
 /** One repository as the wire hands it over. Only the fields a row reads. */
 interface AdoRepository {
+  readonly id?: string
   readonly name?: string
   readonly project?: { readonly name?: string }
   readonly defaultBranch?: string
@@ -124,4 +125,15 @@ export async function loadRepositories(client: AdoClient): Promise<Repositories>
       .sort(byProjectThenName),
     returned: value.length,
   }
+}
+
+/** Each repository's default branch, keyed by repository id. */
+export async function loadDefaultBranches(client: AdoClient): Promise<ReadonlyMap<string, string>> {
+  const page = await client.get<RepositoryPage>('_apis/git/repositories')
+
+  return new Map(
+    (page.value ?? []).flatMap(({ id, defaultBranch }) =>
+      id && defaultBranch ? [[id, branch(defaultBranch)] as const] : [],
+    ),
+  )
 }

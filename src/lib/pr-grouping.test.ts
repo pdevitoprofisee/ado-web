@@ -14,6 +14,7 @@ const row = (over: Partial<PullRequestRow> = {}): PullRequestRow => ({
   project: 'SaaS',
   repository: 'PC.IAC.Modules',
   author: 'Naveen Angali',
+  sourceBranch: 'feature',
   targetBranch: 'main',
   createdAt: '2026-07-20T00:00:00Z',
   isDraft: false,
@@ -26,6 +27,7 @@ const row = (over: Partial<PullRequestRow> = {}): PullRequestRow => ({
   myVote: 0,
   reviewers: [],
   closed: null,
+  stack: null,
   ...over,
 })
 

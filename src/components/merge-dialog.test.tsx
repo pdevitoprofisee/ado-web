@@ -40,6 +40,7 @@ const row = (over: Partial<AddressableRow> = {}): AddressableRow => ({
   project: 'SaaS',
   repository: 'PC.IAC.Modules',
   author: 'Naveen Angali',
+  sourceBranch: 'feature',
   targetBranch: 'main',
   createdAt: '2026-07-20T00:00:00Z',
   isDraft: false,
@@ -52,6 +53,7 @@ const row = (over: Partial<AddressableRow> = {}): AddressableRow => ({
   myVote: 0,
   reviewers: [],
   closed: null,
+  stack: null,
   ...over,
 })
 

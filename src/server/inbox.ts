@@ -1,4 +1,8 @@
+import { loadDefaultBranches } from './repositories'
+import { buildStacks } from '@/lib/stack'
+
 import type { AdoClient } from './ado-client'
+import type { PullRequestStack, StackNode } from '@/lib/stack'
 
 // Server-only. Answers one question: which active pull requests belong in front
 // of this person right now, and in which of the two sections.
@@ -93,6 +97,7 @@ export interface AdoPullRequest {
     readonly name?: string
     readonly project?: { readonly id?: string; readonly name?: string }
   }
+  readonly sourceRefName?: string
   readonly targetRefName?: string
   readonly creationDate?: string
   /** Present only once the PR is closed; `completed` and `abandoned` both carry it. */
@@ -162,6 +167,7 @@ export interface PullRequestRow {
   readonly project: string
   readonly repository: string
   readonly author: string
+  readonly sourceBranch: string
   readonly targetBranch: string
   readonly createdAt: string
   readonly isDraft: boolean
@@ -204,6 +210,8 @@ export interface PullRequestRow {
    * would render them identically rather than fail.
    */
   readonly closed: { readonly at: string; readonly outcome: ClosedOutcome } | null
+  /** `null` when the pull request is not stacked, and always on history rows. */
+  readonly stack: PullRequestStack | null
 }
 
 export interface Inbox {
@@ -310,11 +318,14 @@ export async function resolveMyTeams(client: AdoClient, identity: Identity): Pro
  * allowed to see all of. T-001 measured this. There is no continuation token.
  * Advance by the *requested* size, stop on empty, dedupe by id.
  */
-export async function listActivePullRequests(client: AdoClient): Promise<AdoPullRequest[]> {
+export async function listActivePullRequests(
+  client: AdoClient,
+  path = '_apis/git/pullrequests',
+): Promise<AdoPullRequest[]> {
   const seen = new Map<number, AdoPullRequest>()
 
   for (let page = 0; page < MAX_PAGES; page++) {
-    const result = await client.get<PullRequestPage>('_apis/git/pullrequests', {
+    const result = await client.get<PullRequestPage>(path, {
       'searchCriteria.status': 'active',
       $top: PAGE_SIZE,
       $skip: page * PAGE_SIZE,
@@ -335,7 +346,7 @@ export async function listActivePullRequests(client: AdoClient): Promise<AdoPull
  * decisions about *me*, and the third is the caller's own filter restated —
  * `status` is what we asked ADO for, not something the row carries back.
  */
-type RowFacts = Partial<Pick<PullRequestRow, 'viaTeam' | 'myVote' | 'closed'>>
+type RowFacts = Partial<Pick<PullRequestRow, 'viaTeam' | 'myVote' | 'closed' | 'stack'>>
 
 /**
  * One ADO list entry flattened into a row. Exported so `history.ts` gets the
@@ -346,7 +357,7 @@ type RowFacts = Partial<Pick<PullRequestRow, 'viaTeam' | 'myVote' | 'closed'>>
 export function toRow(
   pr: AdoPullRequest,
   org: string,
-  { viaTeam = null, myVote = 0, closed = null }: RowFacts = {},
+  { viaTeam = null, myVote = 0, closed = null, stack = null }: RowFacts = {},
 ): PullRequestRow {
   const project = pr.repository?.project?.name ?? ''
   const repository = pr.repository?.name ?? ''
@@ -358,6 +369,7 @@ export function toRow(
     project,
     repository,
     author: pr.createdBy?.displayName ?? 'unknown',
+    sourceBranch: branch(pr.sourceRefName),
     targetBranch: branch(pr.targetRefName),
     createdAt: pr.creationDate ?? '',
     isDraft: pr.isDraft === true,
@@ -376,7 +388,27 @@ export function toRow(
       avatarHref: reviewer._links?.avatar?.href ?? null,
     })),
     closed,
+    stack,
   }
+}
+
+/** The list entries that can take part in a stack, which needs a repository id. */
+export function stackNodes(pullRequests: readonly AdoPullRequest[]): StackNode[] {
+  return pullRequests.flatMap((pr) =>
+    typeof pr.pullRequestId === 'number' && pr.repository?.id
+      ? [
+          {
+            id: pr.pullRequestId,
+            repositoryId: pr.repository.id,
+            sourceBranch: branch(pr.sourceRefName),
+            targetBranch: branch(pr.targetRefName),
+            title: pr.title ?? '(untitled)',
+            isDraft: pr.isDraft === true,
+            createdAt: pr.creationDate ?? '',
+          },
+        ]
+      : [],
+  )
 }
 
 /** Newest first, which is what the ADO web UI shows and what we compare against. */
@@ -387,6 +419,7 @@ export function partition(
   identity: Identity,
   teams: readonly Team[],
   org: string,
+  defaultBranches: ReadonlyMap<string, string>,
   now: number = Date.now(),
 ): { assignedToMe: PullRequestRow[]; mine: PullRequestRow[]; hidden: number } {
   const me = key(identity.id)
@@ -394,6 +427,8 @@ export function partition(
   const assignedToMe: PullRequestRow[] = []
   const mine: PullRequestRow[] = []
   let hidden = 0
+  const stacks = buildStacks(stackNodes(pullRequests), defaultBranches)
+  const stackOf = (id: number) => stacks.get(id) ?? null
 
   /**
    * A date ADO did not send is *kept*. "We could not tell how old this is" is
@@ -413,7 +448,7 @@ export function partition(
       // A PR cannot be both. Authoring wins: your own PR appearing under
       // "Assigned to me" is a review request you cannot act on.
       if (tooOld(pr)) hidden++
-      else mine.push(toRow(pr, org))
+      else mine.push(toRow(pr, org, { stack: stackOf(pr.pullRequestId) }))
       continue
     }
 
@@ -435,7 +470,14 @@ export function partition(
     // Counted only once it is established the PR was going to be shown, so
     // `hidden` means "yours, and stale" rather than "old, somewhere in the org".
     if (tooOld(pr)) hidden++
-    else assignedToMe.push(toRow(pr, org, { viaTeam: direct ? null : viaTeam, myVote }))
+    else
+      assignedToMe.push(
+        toRow(pr, org, {
+          viaTeam: direct ? null : viaTeam,
+          myVote,
+          stack: stackOf(pr.pullRequestId),
+        }),
+      )
   }
 
   return { assignedToMe: assignedToMe.sort(byNewest), mine: mine.sort(byNewest), hidden }
@@ -521,16 +563,32 @@ function whoAmI(client: AdoClient, fresh: boolean): Promise<Who> {
   return memoise(remembered, client, fresh, () => resolveWho(client, fresh))
 }
 
+const rememberedDefaultBranches = new WeakMap<AdoClient, Memo<ReadonlyMap<string, string>>>()
+
+/**
+ * Each repository's default branch, for the stacks. Empty when ADO cannot say,
+ * which only lets a pull request from a default branch count as a parent again.
+ */
+export function defaultBranchesOf(
+  client: AdoClient,
+  fresh: boolean,
+): Promise<ReadonlyMap<string, string>> {
+  return memoise(rememberedDefaultBranches, client, fresh, () => loadDefaultBranches(client)).catch(
+    () => new Map(),
+  )
+}
+
 export async function loadInbox(client: AdoClient, fresh = false): Promise<Inbox> {
-  const [{ identity, teams }, pullRequests] = await Promise.all([
+  const [{ identity, teams }, pullRequests, defaultBranches] = await Promise.all([
     whoAmI(client, fresh),
     listActivePullRequests(client),
+    defaultBranchesOf(client, fresh),
   ])
 
   return {
     identity,
     teams,
-    ...partition(pullRequests, identity, teams, client.org),
+    ...partition(pullRequests, identity, teams, client.org, defaultBranches),
     scanned: pullRequests.length,
   }
 }

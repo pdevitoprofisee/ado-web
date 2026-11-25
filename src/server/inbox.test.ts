@@ -117,7 +117,8 @@ describe('paging', () => {
 const NOW = Date.parse('2026-07-27T00:00:00Z')
 
 describe('partition', () => {
-  const split = (prs: unknown[]) => partition(prs as never, IDENTITY, TEAMS, 'Contoso', NOW)
+  const split = (prs: unknown[]) =>
+    partition(prs as never, IDENTITY, TEAMS, 'Contoso', new Map(), NOW)
 
   it('puts a PR reviewed by a team I belong to under Assigned to me', () => {
     const { assignedToMe, mine } = split([
@@ -335,6 +336,9 @@ const membership = (...ids: string[]) => {
         }
 }
 
+// Upper case, as ADO spells the id on this endpoint differently from the PR list.
+const REPOSITORIES = { value: [{ id: 'REPO-1', defaultBranch: 'refs/heads/main' }] }
+
 const CONNECTED = { authenticatedUser: { id: ME, providerDisplayName: 'Paul DeVito' } }
 
 describe('loadInbox', () => {
@@ -451,12 +455,76 @@ describe('loadInbox', () => {
     // An empty closure short-circuits; there is nothing to resolve.
     expect(calls.filter((c) => c.params.descriptors)).toEqual([])
   })
+
+  it('stacks on a pull request nobody asked me to review, never on a default branch', async () => {
+    const repository = { id: 'repo-1', name: 'PC.IAC.Modules', project: { name: 'SaaS' } }
+    const { client, calls } = fakeClient({
+      '_apis/connectionData': CONNECTED,
+      '_apis/identities': membership(TEAM),
+      '_apis/teams': { value: [{ id: TEAM, name: 'DevOps Team', projectName: 'SaaS' }] },
+      '_apis/git/repositories': REPOSITORIES,
+      '_apis/git/pullrequests': [
+        page(
+          pr(1, { repository, sourceRefName: 'refs/heads/base' }),
+          pr(2, {
+            repository,
+            createdBy: { id: ME },
+            sourceRefName: 'refs/heads/top',
+            targetRefName: 'refs/heads/base',
+          }),
+          pr(3, { repository, createdBy: { id: ME }, sourceRefName: 'refs/heads/lone' }),
+          pr(4, {
+            repository,
+            sourceRefName: 'refs/heads/main',
+            targetRefName: 'refs/heads/release',
+          }),
+        ),
+        page(),
+      ],
+    })
+
+    const inbox = await loadInbox(client)
+    const row = (id: number) => inbox.mine.find((one) => one.id === id)
+
+    expect(row(2)?.sourceBranch).toBe('top')
+    expect(row(2)?.stack).toMatchObject({
+      trunk: 'main',
+      position: 2,
+      parent: { id: 1, title: 'PR 1' },
+    })
+    expect(row(2)?.stack?.members.map((member) => member.id)).toEqual([2, 1])
+    expect(row(3)?.stack).toBeNull()
+    expect(calls).toHaveLength(7)
+  })
+
+  it('still stacks when the default branches cannot be read', async () => {
+    const repository = { id: 'repo-1', name: 'PC.IAC.Modules', project: { name: 'SaaS' } }
+    const { client } = fakeClient({
+      '_apis/connectionData': CONNECTED,
+      '_apis/identities': membership(TEAM),
+      '_apis/teams': { value: [{ id: TEAM, name: 'DevOps Team', projectName: 'SaaS' }] },
+      '_apis/git/repositories': () => {
+        throw new Error('Azure DevOps answered 503.')
+      },
+      '_apis/git/pullrequests': [
+        page(
+          pr(1, { repository, sourceRefName: 'refs/heads/base' }),
+          pr(2, { repository, createdBy: { id: ME }, targetRefName: 'refs/heads/base' }),
+        ),
+        page(),
+      ],
+    })
+
+    const inbox = await loadInbox(client)
+
+    expect(inbox.mine.find((one) => one.id === 2)?.stack?.parent?.id).toBe(1)
+  })
 })
 
 /**
  * What a poll costs, which is the whole of T-008. The numbers here are the live
- * ones: a cold `loadInbox` is 6 calls and 4 of them re-derive an identity that
- * does not change between two polls two minutes apart.
+ * ones: a cold `loadInbox` is 7 calls and 5 of them re-derive an identity or
+ * default branches that do not change between two polls two minutes apart.
  */
 describe('the identity memo', () => {
   const polling = () =>
@@ -464,22 +532,23 @@ describe('the identity memo', () => {
       '_apis/connectionData': CONNECTED,
       '_apis/identities': membership(TEAM),
       '_apis/teams': { value: [{ id: TEAM, name: 'DevOps Team', projectName: 'SaaS' }] },
+      '_apis/git/repositories': REPOSITORIES,
       // A function rather than an array: paging has to answer the same way on
       // every poll, not run off the end of a fixture list.
       '_apis/git/pullrequests': (params: Record<string, QueryValue>) =>
         params.$skip === 0 ? page(pr(1)) : page(),
     })
 
-  it('takes a second poll from six calls to two', async () => {
+  it('takes a second poll from seven calls to two', async () => {
     const { client, calls } = polling()
 
     await loadInbox(client)
-    expect(calls).toHaveLength(6)
+    expect(calls).toHaveLength(7)
 
     await loadInbox(client)
 
     // Only the PR list and its empty terminator: the two calls that carry news.
-    expect(calls.slice(6).map((c) => c.path)).toEqual([
+    expect(calls.slice(7).map((c) => c.path)).toEqual([
       '_apis/git/pullrequests',
       '_apis/git/pullrequests',
     ])
@@ -501,7 +570,7 @@ describe('the identity memo', () => {
     await loadInbox(client)
     await loadInbox(client, true)
 
-    expect(calls).toHaveLength(12)
+    expect(calls).toHaveLength(14)
   })
 
   it('does not remember a failure', async () => {
@@ -535,7 +604,7 @@ describe('the identity memo', () => {
       vi.advanceTimersByTime(31 * 60_000)
       await loadInbox(client)
 
-      expect(calls).toHaveLength(12)
+      expect(calls).toHaveLength(14)
     } finally {
       vi.useRealTimers()
     }
