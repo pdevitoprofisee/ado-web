@@ -799,6 +799,33 @@ const FINAL: ReadonlyArray<[string, Partial<PullRequestDetail>]> = [
   ['a source tip ADO did not name', { lastMergeSourceCommit: null }],
 ]
 
+describe('PullRequestDetailView stack', () => {
+  it('draws no stack section for a pull request that is not stacked', () => {
+    render(<PullRequestDetailView pr={detail()} />)
+
+    expect(screen.queryByRole('region', { name: 'Stack' })).toBeNull()
+  })
+
+  it('says the stack is unknown when it could not be read, and still draws the page', () => {
+    render(
+      <PullRequestDetailView
+        pr={detail({
+          errors: {
+            policies: null,
+            commits: null,
+            files: null,
+            conflicts: null,
+            stack: 'Azure DevOps answered 500.',
+          },
+        })}
+      />,
+    )
+
+    expect(screen.getByRole('region', { name: 'Stack' })).toHaveTextContent(/Could not load/)
+    expect(screen.getByRole('heading', { level: 1 })).toBeInTheDocument()
+  })
+})
+
 describe('mergeBlocker', () => {
   it.each(BLOCKED)('refuses %s', (_state, over, reason) => {
     expect(mergeBlocker(detail(over), {})?.reason).toBe(reason)

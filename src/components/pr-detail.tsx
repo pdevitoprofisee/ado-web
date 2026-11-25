@@ -25,6 +25,7 @@ import { Avatar } from './avatar'
 import { Markdown } from './markdown'
 import { Empty, Failed } from './notes'
 import { ReviewerPicker } from './reviewer-picker'
+import { StackMark, StackTree } from './stack'
 import { ChecksPanel } from './checks/panel'
 import { Composer } from './comments/composer'
 import { ThreadCard } from './comments/thread-card'
@@ -2553,6 +2554,12 @@ export function PullRequestDetailView({
           {/* The source and not the target, because the target is `main` and nobody
               needs help typing that. */}
           <CopyBranch sourceBranch={branch(pr.sourceBranch)} />
+          {pr.stack ? (
+            <>
+              {' · '}
+              <StackMark stack={pr.stack} prRef={prRef} />
+            </>
+          ) : null}
           {pr.isDraft ? <Chip tone="amber">draft</Chip> : null}
         </p>
 
@@ -2591,6 +2598,16 @@ export function PullRequestDetailView({
           className="flex w-full flex-col items-start gap-5"
         >
           <MergeBanner merge={pr.merge} conflictsError={pr.errors.conflicts} />
+
+          {pr.stack ? (
+            <Section title="Stack" count={pr.stack.members.length}>
+              <StackTree stack={pr.stack} prRef={prRef} />
+            </Section>
+          ) : pr.errors.stack ? (
+            <Section title="Stack">
+              <Failed>Could not load this repository's open pull requests to find a stack.</Failed>
+            </Section>
+          ) : null}
 
           {/* Ahead of the description deliberately: the description measured 1710
               characters on a real PR, and the checklist is the thing the page
