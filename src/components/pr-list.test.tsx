@@ -15,6 +15,7 @@ import { PullRequestSection, age, useInboxSelection } from './pr-list'
 
 import type { ReactNode } from 'react'
 import type { Hydration, HydrationResult } from '@/server/hydrate'
+import type { PullRequestStack } from '@/lib/stack'
 import type { PullRequestRow } from '@/server/inbox'
 
 const DETAIL = '/pr/$projectId/$repositoryId/$prId'
@@ -848,6 +849,83 @@ describe('the row card', () => {
     render(<PullRequestSection title="Mine" rows={[row()]} empty="none" />)
 
     expect(screen.getByRole('link', { name: /disable sql auditing/ })).not.toHaveAttribute('title')
+  })
+})
+
+describe('a stacked pull request', () => {
+  const STACK: PullRequestStack = {
+    trunk: 'main',
+    members: [
+      {
+        id: 3303,
+        title: 'turn auditing back on',
+        isDraft: true,
+        sourceBranch: 'feature/audit-on',
+        depth: 2,
+        parentId: 3302,
+      },
+      {
+        id: 3302,
+        title: 'disable sql auditing',
+        isDraft: false,
+        sourceBranch: 'feature/audit-off',
+        depth: 1,
+        parentId: 3301,
+      },
+      {
+        id: 3301,
+        title: 'add the audit module',
+        isDraft: false,
+        sourceBranch: 'feature/audit',
+        depth: 0,
+        parentId: null,
+      },
+    ],
+    position: 2,
+    parent: { id: 3301, title: 'add the audit module' },
+  }
+
+  it.each([false, true])('marks the row and says where it sits (roomy: %s)', (roomy) => {
+    render(
+      <PullRequestSection title="Mine" rows={[row({ stack: STACK })]} empty="none" roomy={roomy} />,
+    )
+
+    const link = screen.getByRole('link', { name: /disable sql auditing/ })
+    expect(within(link).getByTestId('stack-icon')).toBeInTheDocument()
+    expect(link).toHaveAccessibleDescription(/stacked on !3301$/)
+  })
+
+  it('names the base of a stack as the base', () => {
+    render(
+      <PullRequestSection
+        title="Mine"
+        rows={[row({ stack: { ...STACK, position: 1, parent: null } })]}
+        empty="none"
+      />,
+    )
+
+    const link = screen.getByRole('link', { name: /disable sql auditing/ })
+    expect(link).toHaveAccessibleDescription(/base of a stack$/)
+  })
+
+  it('draws no mark on a pull request that is not stacked', () => {
+    render(<PullRequestSection title="Mine" rows={[row()]} empty="none" />)
+
+    const link = screen.getByRole('link', { name: /disable sql auditing/ })
+    expect(within(link).queryByTestId('stack-icon')).not.toBeInTheDocument()
+    expect(link).not.toHaveAccessibleDescription(/stacked/)
+  })
+
+  it('lists the whole stack on the card, top first, with the trunk last', async () => {
+    const user = userEvent.setup()
+    render(<PullRequestSection title="Mine" rows={[row({ stack: STACK })]} empty="none" />)
+
+    await user.hover(screen.getByRole('link', { name: /disable sql auditing/ }))
+    const card = await screen.findByTestId('row-card')
+
+    expect(card).toHaveTextContent(
+      'Stack!3303 turn auditing back on!3302 disable sql auditing (this)!3301 add the audit modulemain',
+    )
   })
 })
 

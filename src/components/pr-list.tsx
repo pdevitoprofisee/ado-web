@@ -11,6 +11,7 @@ import {
   GitMergeConflictIcon,
   GitMergeIcon,
   HourglassIcon,
+  Layers01Icon,
   LinkSquare02Icon,
   Message01Icon,
   MessageDone01Icon,
@@ -545,6 +546,26 @@ function RowCard({ row, anchor }: { row: PullRequestRow; anchor: DOMRect }) {
         ) : null}
         <dt className="text-muted-foreground">Target</dt>
         <dd className="truncate font-mono">{row.targetBranch}</dd>
+        {row.stack ? (
+          <>
+            <dt className="text-muted-foreground">Stack</dt>
+            <dd className="flex min-w-0 flex-col gap-0.5">
+              {row.stack.members.map((member) => (
+                <span
+                  key={member.id}
+                  className={cn(
+                    'truncate',
+                    member.id === row.id ? 'font-medium' : 'text-muted-foreground',
+                  )}
+                >
+                  <span className="font-mono">!{member.id}</span> {member.title}
+                  {member.id === row.id ? ' (this)' : ''}
+                </span>
+              ))}
+              <span className="text-muted-foreground truncate font-mono">{row.stack.trunk}</span>
+            </dd>
+          </>
+        ) : null}
         <dt className="text-muted-foreground">Opened</dt>
         <dd>{stamp(row.createdAt)}</dd>
         {row.closed?.at ? (
@@ -691,7 +712,7 @@ function Row({
   // Every other column is truncated or hidden at narrow widths, so the
   // accessible name has to carry what the eye might not get — including the
   // outcome, which is otherwise a coloured pill and a relative date.
-  const label = `${row.project}/${row.repository}${mine ? '' : ` · ${row.author}`}${row.viaTeam ? ` · via ${row.viaTeam}` : ''}${row.closed ? ` · ${row.closed.outcome}${row.closed.at ? ` ${row.closed.at.slice(0, 10)}` : ''}` : ''}`
+  const label = `${row.project}/${row.repository}${mine ? '' : ` · ${row.author}`}${row.viaTeam ? ` · via ${row.viaTeam}` : ''}${row.closed ? ` · ${row.closed.outcome}${row.closed.at ? ` ${row.closed.at.slice(0, 10)}` : ''}` : ''}${row.stack ? ` · ${row.stack.parent ? `stacked on !${row.stack.parent.id}` : 'base of a stack'}` : ''}`
   const labelId = useId()
   const card = useRowCard()
   // `rounded-sm` on the link, not just on the row: this is the element the
@@ -726,6 +747,15 @@ function Row({
   )
   const heading = (
     <>
+      {row.stack ? (
+        <HugeiconsIcon
+          icon={Layers01Icon}
+          size={14}
+          aria-hidden
+          data-testid="stack-icon"
+          className="text-muted-foreground mr-1.5 inline-block align-[-2px]"
+        />
+      ) : null}
       {/* Amber is the waiting pen, and a draft is a pull request waiting on its
           own author. Sized to stay inside the row's line box so a draft row is
           not taller than its neighbours. */}
